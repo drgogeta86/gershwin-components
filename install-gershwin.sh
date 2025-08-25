@@ -49,7 +49,7 @@ pkg update
 # Install Gershwin desktop environment
 log "Installing Gershwin desktop environment..."
 pkg install -y pkg
-pkg install -y -f gershwin-libs-gui gershwin-developer gershwin-desktop gmake
+pkg install -y -f gershwin-libs-gui gershwin-developer gershwin-desktop gmake libvncserver
 
 # Be extra sure
 rm -rf /usr/local/GNUstep || true
