@@ -49,15 +49,6 @@ pkg update
 # Install Gershwin desktop environment
 log "Installing Gershwin desktop environment..."
 pkg install -y pkg
-pkg install -y -f gnustep-gui gnustep-make gershwin-developer gershwin-desktop
-
-# Source GNUstep environment
-log "Setting up GNUstep environment..."
-if [ -f /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh ]; then
-    . /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh
-    log "GNUstep environment sourced successfully"
-else
-    log "Warning: GNUstep.sh not found, manual environment setup may be required"
-fi
+pkg install -y -f gershwin-libs-gui gershwin-developer gershwin-desktop gmake
 
 log "Gershwin installation completed successfully!"
