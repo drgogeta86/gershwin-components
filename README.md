@@ -12,6 +12,8 @@ For now, the basic Gershwin libraries are incompatible with their GNUstep counte
 
 ## Installation
 
+Install https://download.ghostbsd.org/releases/amd64/latest/GhostBSD-25.02-R14.3p2-GERSHWIN.iso, then:
+
 ```
 su
 
