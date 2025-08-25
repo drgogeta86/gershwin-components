@@ -22,4 +22,6 @@ Gershwin-components: {
   enabled: yes
 }
 EOF
+
+sudo pkg install -y gershwin-components
 ```
