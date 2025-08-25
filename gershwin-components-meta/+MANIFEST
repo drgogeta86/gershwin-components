@@ -1,0 +1,28 @@
+name: gershwin-components
+version: g20250826
+origin: sysutils/gershwin-components
+comment: Gershwin Desktop Environment Components Metapackage
+arch: FreeBSD:14:amd64
+www: https://github.com/probonopd/gershwin-components
+maintainer: ports@FreeBSD.org
+prefix: /usr/local
+licenselogic: single
+licenses: [BSD2CLAUSE]
+categories: [gnustep, sysutils, x11]
+deps: {
+  gershwin-bootenvironments: {origin: sysutils/gershwin-bootenvironments, version: "*"},
+  gershwin-display: {origin: sysutils/gershwin-display, version: "*"},
+  gershwin-globalshortcuts: {origin: sysutils/gershwin-globalshortcuts, version: "*"},
+  gershwin-startupdisk: {origin: sysutils/gershwin-startupdisk, version: "*"},
+  gershwin-loginwindow: {origin: sysutils/gershwin-loginwindow, version: "*"},
+  gershwin-globalshortcutsd: {origin: sysutils/gershwin-globalshortcutsd, version: "*"},
+  gershwin-sudoaskpass: {origin: sysutils/gershwin-sudoaskpass, version: "*"},
+  gershwin-initgfx: {origin: sysutils/gershwin-initgfx, version: "*"},
+  gershwin-menu: {origin: sysutils/gershwin-menu, version: "*"},
+  gershwin-fontconfig: {origin: sysutils/gershwin-fontconfig, version: "*"},
+  gershwin-assistantframework: {origin: sysutils/gershwin-assistantframework, version: "*"},
+  gershwin-bhyveassistant: {origin: sysutils/gershwin-bhyveassistant, version: "*"},
+  gershwin-createlivemediaassistant: {origin: sysutils/gershwin-createlivemediaassistant, version: "*"},
+  gershwin-debianruntimeinstaller: {origin: sysutils/gershwin-debianruntimeinstaller, version: "*"}
+}
+desc: Metapackage that installs all Gershwin Desktop Environment components including preference panes, system tools, and assistant applications.

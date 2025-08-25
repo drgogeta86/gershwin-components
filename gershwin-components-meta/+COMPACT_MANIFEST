@@ -1,0 +1,6 @@
+name: gershwin-components
+version: g20250826
+origin: sysutils/gershwin-components
+comment: Gershwin Desktop Environment Components Metapackage
+arch: FreeBSD:14:amd64
+prefix: /usr/local

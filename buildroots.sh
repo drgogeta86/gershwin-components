@@ -11,6 +11,9 @@ ASSISTANTS="Assistants/BhyveAssistant Assistants/CreateLiveMediaAssistant Assist
 FRAMEWORKS="Assistants/AssistantFramework"
 EXAMPLES="" # "Assistants/DebianRuntimeInstaller"
 
+# Metapackage (must be built last as it depends on all other packages)
+METAPACKAGES="gershwin-components-meta"
+
 export CC=clang
 export OBJC=clang
 export OBJCXX=clang++
@@ -286,6 +289,47 @@ for ASSISTANT in $ASSISTANTS; do
     echo ""
 done
 
+# Build metapackages
+echo "=== Building Metapackages ==="
+
+for METAPACKAGE in $METAPACKAGES; do
+    echo "Building metapackage: $METAPACKAGE"
+    
+    # Check if metapackage directory exists
+    if [ ! -d "$HERE/$METAPACKAGE" ]; then
+        echo "Warning: Directory $METAPACKAGE does not exist in $HERE, skipping..."
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        continue
+    fi
+    
+    cd "$HERE/$METAPACKAGE"
+    
+    # Clean any existing root directory
+    if [ -d root ]; then
+        rm -rf root
+    fi
+    
+    # Create minimal root directory structure for metapackage
+    mkdir -p root
+    
+    # Create pkg manifest with current date
+    VERSION="g$(date +%Y%m%d)"
+    sed "s/g\$(shell date +%Y%m%d)/$VERSION/g" +MANIFEST > +MANIFEST.tmp && mv +MANIFEST.tmp +MANIFEST
+    sed "s/g\$(shell date +%Y%m%d)/$VERSION/g" +COMPACT_MANIFEST > +COMPACT_MANIFEST.tmp && mv +COMPACT_MANIFEST.tmp +COMPACT_MANIFEST
+    
+    # Create the pkg file for metapackage
+    if pkg create --verbose -r root -m . -p pkg-plist -o .; then
+        echo "Successfully created metapackage $METAPACKAGE"
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+        echo "Error: Failed to create metapackage $METAPACKAGE"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+    
+    echo "Finished metapackage $METAPACKAGE"
+    echo ""
+done
+
 echo "Build summary:"
 echo "  Successful: $SUCCESS_COUNT"
 echo "  Failed: $FAIL_COUNT"
@@ -356,6 +400,17 @@ for ASSISTANT in $ASSISTANTS; do
     done
 done
 
+# Collect metapackage pkg files
+for METAPACKAGE in $METAPACKAGES; do
+    for pkg_file in "$HERE/$METAPACKAGE"/gershwin-components-*.pkg; do
+        if [ -f "$pkg_file" ]; then
+            echo "  Copying $(basename "$pkg_file") to out/"
+            cp "$pkg_file" "$HERE/out/"
+            COLLECTED_COUNT=$((COLLECTED_COUNT + 1))
+        fi
+    done
+done
+
 echo ""
 echo "Archives and pkg files collected in out/ directory: $COLLECTED_COUNT"
 if [ "$COLLECTED_COUNT" -gt 0 ]; then
@@ -385,6 +440,17 @@ for pkg_file in "$HERE"/*/*.pkg "$HERE"/Assistants/*/*.pkg "$HERE/out"/*.pkg; do
         mv "$pkg_file" "$REPO_DIR/"
         PKG_COUNT=$((PKG_COUNT + 1))
     fi
+done
+
+# Move metapackage .pkg files to repository directory
+for METAPACKAGE in $METAPACKAGES; do
+    for pkg_file in "$HERE/$METAPACKAGE"/*.pkg; do
+        if [ -f "$pkg_file" ]; then
+            echo "  Moving $(basename "$pkg_file") to $ABI/"
+            mv "$pkg_file" "$REPO_DIR/"
+            PKG_COUNT=$((PKG_COUNT + 1))
+        fi
+    done
 done
 
 if [ "$PKG_COUNT" -gt 0 ]; then
