@@ -105,7 +105,7 @@ create_pkg_file() {
 
 print_step "Building all preference panes and tools..."
 
-. /usr/local/GNUstep/System/Library/Makefiles/GNUstep.sh
+. /System/Library/Makefiles/GNUstep.sh
 
 # Debug: Show GNUstep environment
 echo "GNUstep environment:"
