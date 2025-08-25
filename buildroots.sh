@@ -1,4 +1,7 @@
 #!/bin/sh
+
+set -e
+
 # Build all projects and package them into tar.zst archives
 
 # Projects to build
