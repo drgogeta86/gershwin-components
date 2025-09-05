@@ -32,10 +32,13 @@
 @property (nonatomic, strong) NSThread *x11Thread;
 @property (nonatomic, assign) BOOL shouldStopMonitoring;
 @property (nonatomic, assign) int dbusFileDescriptor;
+@property (nonatomic, assign) Display *strutDisplay;
+@property (nonatomic, assign) Window strutWindow;
 
 - (id)init;
 - (NSColor *)backgroundColor;
 - (NSColor *)transparentColor;
+- (void)createPersistentStrutWindow;
 - (void)createMenuBar;
 - (void)applicationDidFinishLaunching:(NSNotification *)notification;
 - (void)applicationWillTerminate:(NSNotification *)notification;

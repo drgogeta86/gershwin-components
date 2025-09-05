@@ -9,6 +9,7 @@
 #import "GNUstepGUI/GSTheme.h"
 #import <X11/Xlib.h>
 #import <X11/Xatom.h>
+#import <X11/Xutil.h>
 #import <sys/select.h>
 #import <errno.h>
 
@@ -40,6 +41,82 @@
 {
     NSColor *color = [NSColor colorWithCalibratedRed:0.992 green:0.992 blue:0.992 alpha:0.0];
     return color;
+}
+
+- (void)createPersistentStrutWindow
+{
+    NSLog(@"MenuController: Creating persistent X11 strut window...");
+    
+    const CGFloat menuBarHeight = [[GSTheme theme] menuBarHeight];
+    
+    // Open X11 display connection that will persist for the application lifetime
+    self.strutDisplay = XOpenDisplay(NULL);
+    if (!self.strutDisplay) {
+        NSLog(@"MenuController: Cannot open X11 display for strut window");
+        return;
+    }
+    
+    int screen = DefaultScreen(self.strutDisplay);
+    Window root = RootWindow(self.strutDisplay, screen);
+    unsigned int width = (unsigned int)self.screenSize.width;
+    unsigned int height = (unsigned int)menuBarHeight;
+    
+    // Create invisible strut window that reserves space but doesn't interfere with our menu
+    XSetWindowAttributes attrs;
+    attrs.override_redirect = False;
+    attrs.background_pixel = BlackPixel(self.strutDisplay, screen);
+    attrs.border_pixel = BlackPixel(self.strutDisplay, screen);
+    
+    // Create a 1x1 pixel window at the top-left corner to avoid visual interference
+    self.strutWindow = XCreateWindow(self.strutDisplay, root, 0, 0, 1, 1, 0, 
+                                   CopyFromParent, InputOutput, CopyFromParent, 
+                                   CWOverrideRedirect | CWBackPixel | CWBorderPixel, &attrs);
+    
+    if (self.strutWindow == None) {
+        NSLog(@"MenuController: Failed to create X11 strut window");
+        XCloseDisplay(self.strutDisplay);
+        self.strutDisplay = NULL;
+        return;
+    }
+    
+    // Set window type to dock
+    Atom windowTypeAtom = XInternAtom(self.strutDisplay, "_NET_WM_WINDOW_TYPE", False);
+    Atom dockAtom = XInternAtom(self.strutDisplay, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    XChangeProperty(self.strutDisplay, self.strutWindow, windowTypeAtom, XA_ATOM, 32, 
+                   PropModeReplace, (unsigned char *)&dockAtom, 1);
+    
+    // Set WM_CLASS to "StrutPanel" to distinguish from our actual menu
+    XClassHint classHint;
+    classHint.res_name = "StrutPanel";
+    classHint.res_class = "StrutPanel";
+    XSetClassHint(self.strutDisplay, self.strutWindow, &classHint);
+    
+    // Set WM_NAME to "MenuBarStrut"
+    XStoreName(self.strutDisplay, self.strutWindow, "MenuBarStrut");
+    
+    // Set struts - this reserves the space for the full menu bar height
+    Atom strutAtom = XInternAtom(self.strutDisplay, "_NET_WM_STRUT", False);
+    Atom strutPartialAtom = XInternAtom(self.strutDisplay, "_NET_WM_STRUT_PARTIAL", False);
+    unsigned long strut[4] = {0, 0, height, 0}; // left, right, top, bottom
+    unsigned long strutPartial[12] = {0, 0, height, 0, 0, 0, 0, 0, 0, width - 1, 0, width - 1};
+    
+    XChangeProperty(self.strutDisplay, self.strutWindow, strutAtom, XA_CARDINAL, 32, 
+                   PropModeReplace, (unsigned char *)strut, 4);
+    XChangeProperty(self.strutDisplay, self.strutWindow, strutPartialAtom, XA_CARDINAL, 32, 
+                   PropModeReplace, (unsigned char *)strutPartial, 12);
+    
+    // Set window state to sticky but NOT above (we want our menu to be above it)
+    Atom stateAtom = XInternAtom(self.strutDisplay, "_NET_WM_STATE", False);
+    Atom stickyAtom = XInternAtom(self.strutDisplay, "_NET_WM_STATE_STICKY", False);
+    XChangeProperty(self.strutDisplay, self.strutWindow, stateAtom, XA_ATOM, 32, 
+                   PropModeReplace, (unsigned char *)&stickyAtom, 1);
+    
+    // Map the window to make the struts active
+    XMapWindow(self.strutDisplay, self.strutWindow);
+    XSync(self.strutDisplay, False);
+    
+    NSLog(@"MenuController: Created persistent X11 strut window (XID: %lu) - invisible 1x1 window with full-width struts", 
+          (unsigned long)self.strutWindow);
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
@@ -74,6 +151,18 @@
     }
     
     self.x11Thread = nil;
+    
+    // Clean up persistent strut window
+    if (self.strutWindow != None && self.strutDisplay) {
+        XDestroyWindow(self.strutDisplay, self.strutWindow);
+        self.strutWindow = None;
+    }
+    
+    // Close strut X11 display
+    if (self.strutDisplay) {
+        XCloseDisplay(self.strutDisplay);
+        self.strutDisplay = NULL;
+    }
     
     // Close X11 display
     if (self.display) {
@@ -126,7 +215,7 @@
     [self.menuBar setTitle:@"MenuBar"];
     [self.menuBar setBackgroundColor:color];
     [self.menuBar setAlphaValue:1.0];
-    [self.menuBar setLevel:NSFloatingWindowLevel]; // Keep higher level
+    [self.menuBar setLevel:NSMainMenuWindowLevel + 1]; // Higher than main menu, but not floating
     [self.menuBar setCanHide:NO];
     [self.menuBar setHidesOnDeactivate:NO];
     [self.menuBar setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces |
@@ -134,10 +223,14 @@
     
     NSLog(@"MenuController: Configured window properties");
     
-    // Make the window visible immediately
+    // Create and maintain a persistent X11 window for struts
+    [self createPersistentStrutWindow];
+
+    // Now map the window - position it at the very top of the screen
+    [self.menuBar setFrameTopLeftPoint:NSMakePoint(0, self.screenSize.height)];
     [self.menuBar makeKeyAndOrderFront:self];
     [self.menuBar orderFront:self];
-    NSLog(@"MenuController: Ordered window front");
+    NSLog(@"MenuController: Ordered window front at top of screen");
     
     // Create the main menu bar view that draws the background
     self.menuBarView = [[MenuBarView alloc] initWithFrame:NSMakeRect(0, 0, self.screenSize.width, menuBarHeight)];
@@ -188,15 +281,9 @@
 {
     NSLog(@"MenuController: Setting up menu bar using createMenuBar method");
     [self createMenuBar];
-    
-    NSLog(@"MenuController: Menu bar setup complete at %.0f,%.0f %.0fx%.0f", 
-          self.screenFrame.origin.x, self.screenFrame.origin.y, self.screenSize.width, [[GSTheme theme] menuBarHeight]);
-    
-    // Set up X11 window monitoring
+    NSLog(@"MenuController: Menu bar setup complete at %.0f,%.0f %.0fx%.0f", self.screenFrame.origin.x, self.screenFrame.origin.y, self.screenSize.width, [[GSTheme theme] menuBarHeight]);
     NSLog(@"MenuController: Setting up X11 window monitoring");
     [self setupWindowMonitoring];
-    
-    // Initialize protocol scanning
     NSLog(@"MenuController: Initializing protocol scanning");
     [self initializeProtocols];
 }

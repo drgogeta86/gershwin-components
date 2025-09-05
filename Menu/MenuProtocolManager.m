@@ -343,17 +343,17 @@
 {
     NSLog(@"MenuProtocolManager: Updating all handlers with AppMenuWidget");
     
-    for (int i = 0; i < [self.protocolHandlers count]; i++) {
+    for (NSUInteger i = 0; i < [self.protocolHandlers count]; i++) {
         id<MenuProtocolHandler> handler = [self.protocolHandlers objectAtIndex:i];
         if (handler && [handler respondsToSelector:@selector(setAppMenuWidget:)]) {
-            NSLog(@"MenuProtocolManager: Setting AppMenuWidget on handler %d", i);
+            NSLog(@"MenuProtocolManager: Setting AppMenuWidget on handler %lu", (unsigned long)i);
             @try {
                 [handler setAppMenuWidget:appMenuWidget];
             } @catch (NSException *exception) {
-                NSLog(@"MenuProtocolManager: Exception setting AppMenuWidget on handler %d: %@", i, exception);
+                NSLog(@"MenuProtocolManager: Exception setting AppMenuWidget on handler %lu: %@", (unsigned long)i, exception);
             }
         } else {
-            NSLog(@"MenuProtocolManager: Handler %d doesn't support setAppMenuWidget", i);
+            NSLog(@"MenuProtocolManager: Handler %lu doesn't support setAppMenuWidget", (unsigned long)i);
         }
     }
 }
