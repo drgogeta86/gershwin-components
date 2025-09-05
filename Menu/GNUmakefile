@@ -65,8 +65,17 @@ Menu_GUI_LIBS += -L/System/Library/Libraries -lgnustep-gui -lgnustep-base -lobjc
 Menu_LDFLAGS += -Wl,--export-dynamic -L/System/Library/Libraries -Wl,-rpath,/System/Library/Libraries -Wl,--no-as-needed
 
 # Compiler flags - Force use of /System GNUstep and objc2 with ARC
-ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -I/System/Library/Headers -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter
-ADDITIONAL_CPPFLAGS = -I/usr/include/dbus-1.0 -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include -I/System/Library/Headers
+
+# Platform-specific flags for Linux and BSD
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+	ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter -D_GNU_SOURCE
+	ADDITIONAL_CPPFLAGS = -I/usr/include/dbus-1.0 -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+endif
+ifeq ($(UNAME_S),FreeBSD)
+	ADDITIONAL_OBJCFLAGS = -Wall -Wextra -O2 -fobjc-runtime=gnustep-2.0 -fobjc-arc -Wno-unused-parameter -D_BSD_SOURCE
+	ADDITIONAL_CPPFLAGS = -I/usr/local/include/dbus-1.0 -I/usr/local/include -I/usr/local/lib/dbus-1.0/include
+endif
 
 INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_APPS)
 
