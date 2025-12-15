@@ -126,22 +126,6 @@ NSDictionary *listViewSettings = @{
 
 The `dsstore` command-line tool provides easy access to .DS_Store file functionality.
 
-### Listing Entries
-
-```bash
-# List entries in current directory's .DS_Store
-dsstore -l
-
-# List entries with verbose output
-dsstore -l -v
-
-# List entries in specific directory
-dsstore -l /path/to/directory
-
-# List entries in specific .DS_Store file
-dsstore -l /path/to/.DS_Store
-```
-
 ### Icon Positions
 
 ```bash
