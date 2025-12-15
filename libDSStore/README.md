@@ -6,6 +6,33 @@ A GNUstep library and command-line tool for reading and writing macOS .DS_Store 
 
 libDSStore provides a pure GNUstep/Objective-C implementation for manipulating .DS_Store files. These files are used by macOS Finder to store metadata about files and folders, including icon positions, view settings, background images, and more.
 
+## Observations
+
+* Mac Finder writes `.DSStore` not just when closing a window
+* x coordinate is from top left in pixels to the right
+* y coordinate is from top left in pixels downwards
+* The coordinates are to the center of the icon
+
+## TODO
+
+Make sure we can also read the following properties:
+
+* Label (None, Red, Orange, Yellow, Green, Blue, Purple, Grey)
+* Icon size (it is per folder)
+* Grid spacing (it is per folder)
+* Text size (it is per folder)
+* Label position (bottom, right) (it is per folder)
+* Show item info (it is per folder)
+* Show icon preview (it is per folder)
+* Arrange by (None, Snap to Grid, Name, Date Modified, Date Created, Size, Kind, Label) (it is per folder)
+* Which colums are shown in column view (Date Modified, Date Created, Last Opened, Size, Kind, Version, Comments, Label (it is per folder)
+* Use relative dates (it is per folder)
+* Calculate all sizes (it is per folder)
+* Show/hide Status Bar
+* Show/hide Path Bar
+* Show/hide Sidebar
+* Show/hide Toolbar (toggles Spatial Mode)
+
 ## Features
 
 - Read and write .DS_Store files
