@@ -33,6 +33,8 @@ Make sure we can also read the following properties:
 * Show/hide Sidebar
 * Show/hide Toolbar (toggles Spatial Mode)
 
+[This documentation](https://github.com/forensiclunch/DSStoreParser/blob/495485b263adfb56f13bca0c68d640b2e462948b/README.md?plain=1#L35) may help.
+
 ## Features
 
 - Read and write .DS_Store files
