@@ -96,7 +96,7 @@ id menu_drawRectWithoutBottomLine(id self, SEL _cmd, NSRect dirtyRect);
     const char *typeEncoding = method_getTypeEncoding(originalMethod);
     
     // Store the original IMP globally for proper calling from the swizzled method
-    original_drawRect_IMP = (void (*)(id, SEL, NSRect))originalIMP;
+    original_drawRect_IMP = (void (*)(id, SEL, NSRect))(void *)originalIMP;
     
     // Add the original implementation under a new name
     class_addMethod(menuViewClass, originalSelector, originalIMP, typeEncoding);
