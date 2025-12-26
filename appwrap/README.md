@@ -88,12 +88,23 @@ The tool will be installed to `/Local/Library/Tools/appwrap`. Make sure this dir
 `appwrap` searches for application icons in the following locations:
 
 - `/usr/share/icons/hicolor/256x256/apps`
+- `/usr/local/share/icons/hicolor/256x256/apps`
+- `$HOME/.local/share/icons/hicolor/256x256/apps`
 - `/usr/share/icons/hicolor/128x128/apps`
+- `/usr/local/share/icons/hicolor/128x128/apps`
+- `$HOME/.local/share/icons/hicolor/128x128/apps`
 - `/usr/share/icons/hicolor/96x96/apps`
+- `/usr/local/share/icons/hicolor/96x96/apps`
+- `$HOME/.local/share/icons/hicolor/96x96/apps`
 - `/usr/share/icons/hicolor/64x64/apps`
+- `/usr/local/share/icons/hicolor/64x64/apps`
+- `$HOME/.local/share/icons/hicolor/64x64/apps`
 - `/usr/share/icons/hicolor/48x48/apps`
+- `/usr/local/share/icons/hicolor/48x48/apps`
+- `$HOME/.local/share/icons/hicolor/48x48/apps`
 - `/usr/share/pixmaps`
 - `/usr/local/share/pixmaps`
+- `$HOME/.local/share/pixmaps`
 
 Supported icon formats: `.png`, `.svg`, `.xpm`, or no extension.
 

@@ -393,16 +393,37 @@
       return iconName;
     }
 
-  // Common icon search paths
-  NSArray *searchPaths = @[
+  // Build search paths including home directory
+  NSString *homeDir = NSHomeDirectory();
+  NSMutableArray *searchPaths = [NSMutableArray array];
+  
+  // Add standard system paths with their local variants
+  NSArray *standardPaths = @[
     @"/usr/share/icons/hicolor/256x256/apps",
+    @"/usr/local/share/icons/hicolor/256x256/apps",
     @"/usr/share/icons/hicolor/128x128/apps",
+    @"/usr/local/share/icons/hicolor/128x128/apps",
     @"/usr/share/icons/hicolor/96x96/apps",
+    @"/usr/local/share/icons/hicolor/96x96/apps",
     @"/usr/share/icons/hicolor/64x64/apps",
+    @"/usr/local/share/icons/hicolor/64x64/apps",
     @"/usr/share/icons/hicolor/48x48/apps",
+    @"/usr/local/share/icons/hicolor/48x48/apps",
     @"/usr/share/pixmaps",
     @"/usr/local/share/pixmaps"
   ];
+  [searchPaths addObjectsFromArray:standardPaths];
+  
+  // Add user-local paths
+  NSArray *userLocalPaths = @[
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/256x256/apps", homeDir],
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/128x128/apps", homeDir],
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/96x96/apps", homeDir],
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/64x64/apps", homeDir],
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/48x48/apps", homeDir],
+    [NSString stringWithFormat:@"%@/.local/share/pixmaps", homeDir]
+  ];
+  [searchPaths addObjectsFromArray:userLocalPaths];
 
   // Try various extensions
   NSArray *extensions = @[@".png", @".svg", @".xpm", @""];
