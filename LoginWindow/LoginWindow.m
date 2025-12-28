@@ -152,26 +152,17 @@ void signalHandler(int sig) {
     if ([sessions count] == 0) {
         NSLog(@"[DEBUG] No sessions found in .desktop files, adding defaults");
         [sessions addObject:@"Gershwin"];
-        [execs addObject:@"/usr/local/bin/gershwin-x11"];
-        
-        /*
-        // Check if mate-session is available
-        if ([[NSFileManager defaultManager] fileExistsAtPath:@"/usr/local/bin/mate-session"]) {
-            [sessions addObject:@"MATE"];
-            [execs addObject:@"/usr/local/bin/mate-session"];
-            NSLog(@"[DEBUG] Added MATE session");
-        }
-        */
+        [execs addObject:@"/System/Library/Scripts/Gershwin.sh"];
     }
     
     // Check if /System/Library/Scripts/Gershwin-X11 exists and add it if found
-    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/System/Library/Scripts/Gershwin-X11"]) {
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/System/Library/Scripts/Gershwin.sh"]) {
         // Check if "Gershwin" is already in the list to avoid duplicates
         NSUInteger gershwinIndex = [sessions indexOfObject:@"Gershwin"];
         if (gershwinIndex != NSNotFound) {
             // Replace existing Gershwin entry with the /System version
-            [execs replaceObjectAtIndex:gershwinIndex withObject:@"/System/Library/Scripts/Gershwin-X11"];
-            NSLog(@"[DEBUG] Replaced existing Gershwin session with /System/Library/Scripts/Gershwin-X11");
+            [execs replaceObjectAtIndex:gershwinIndex withObject:@"/System/Library/Scripts/Gershwin.sh"];
+            NSLog(@"[DEBUG] Replaced existing Gershwin session with /System/Library/Scripts/Gershwin.sh");
         } else {
             // Add new Gershwin entry
             [sessions addObject:@"Gershwin"];
