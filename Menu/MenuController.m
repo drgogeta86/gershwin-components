@@ -20,7 +20,7 @@
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    [[NSColor yellowColor] set];
+    [[[GSTheme theme] menuItemBackgroundColor] set];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
 }

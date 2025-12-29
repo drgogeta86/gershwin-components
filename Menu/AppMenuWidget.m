@@ -8,6 +8,7 @@
 #import <X11/Xlib.h>
 #import <X11/Xutil.h>
 #import <X11/Xatom.h>
+#import <GNUstepGUI/GSTheme.h>
 
 @interface AppMenuView : NSMenuView
 @end
@@ -16,7 +17,7 @@
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    [[NSColor yellowColor] set];
+    [[[GSTheme theme] menuItemBackgroundColor] set];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
 }
@@ -332,9 +333,8 @@
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    // Fill background with yellow color
-    NSColor *bgColor = [NSColor yellowColor];
-    [bgColor set];
+    // Fill background with theme color
+    [[[GSTheme theme] menuItemBackgroundColor] set];
     NSRectFill([self bounds]);
     
     // Draw application name if we have one
