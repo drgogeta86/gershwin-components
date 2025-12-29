@@ -1,0 +1,9 @@
+{
+    CFBundleIdentifier = "org.gershwin.keyboard.prefpane";
+    NOTE = "Automatically generated";
+    NSExecutable = Keyboard;
+    NSMainNibFile = "";
+    NSPrefPaneIconFile = "Keyboard.png";
+    NSPrefPaneIconLabel = "Keyboard";
+    NSPrincipalClass = KeyboardPane;
+}
