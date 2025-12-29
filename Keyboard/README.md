@@ -5,5 +5,5 @@ This preference pane lets you select an XKB layout and optional variant using tw
 ## Notes
 
 - Layout and variant data are parsed from `/usr/share/X11/xkb/rules/base.lst` or `/usr/local/share/X11/xkb/rules/base.lst` (e.g., for FreeBSD); a small fallback list is used if neither file is found.
-- User-level persistence lives in `~/.local/bin/gershwin-apply-keyboard.sh`.
+- User-level persistence lives in `~/.local/bin/gershwin-apply-keyboard.sh`.F
 - System-wide persistence uses `/etc/default/keyboard` and requires `sudo -E -A`.
