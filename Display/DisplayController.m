@@ -30,6 +30,9 @@
 
 @end
 
+static NSInteger dialogIDCounter = 0;
+static NSMutableDictionary *activeDialogsByID = nil;
+
 @implementation DisplayController
 
 - (id)init
@@ -554,9 +557,7 @@
     
     if (targetDisplay && selectedResolution) {
         // Store the current resolution for potential revert
-        NSString *currentRes = [NSString stringWithFormat:@"%.0fx%.0f", 
-                               [targetDisplay resolution].width, 
-                               [targetDisplay resolution].height];
+        NSString *currentRes = [targetDisplay currentResolutionString];
         
         if ([selectedResolution isEqualToString:currentRes]) {
             NSLog(@"DisplayController: Selected resolution same as current, no change needed");
@@ -636,21 +637,30 @@
     [dialogData setObject:display forKey:@"display"];
     [dialogData setObject:countdownLabel forKey:@"countdownLabel"];
     [dialogData setObject:[NSNumber numberWithInt:15] forKey:@"countdown"];
+    [dialogData setObject:@NO forKey:@"released"];
+    
+    // Assign unique ID and store in global registry
+    if (!activeDialogsByID) {
+        activeDialogsByID = [[NSMutableDictionary alloc] init];
+    }
+    NSInteger dialogID = ++dialogIDCounter;
+    [dialogData setObject:@(dialogID) forKey:@"id"];
+    [activeDialogsByID setObject:dialogData forKey:@(dialogID)];
     
     [revertButton setTarget:self];
     [revertButton setAction:@selector(resolutionRevertClicked:)];
-    [revertButton setTag:(NSInteger)dialogData];
+    [revertButton setTag:dialogID];
     
     [keepButton setTarget:self];
     [keepButton setAction:@selector(resolutionKeepClicked:)];
-    [keepButton setTag:(NSInteger)dialogData];
+    [keepButton setTag:dialogID];
     
     // Create countdown timer - Use NSRunLoop mainRunLoop to ensure it works
-    NSTimer *countdownTimer = [NSTimer timerWithTimeInterval:1.0
-                                                      target:self
-                                                    selector:@selector(resolutionCountdownTimer:)
-                                                    userInfo:dialogData
-                                                     repeats:YES];
+        NSTimer *countdownTimer = [NSTimer timerWithTimeInterval:1.0
+                                                                                                            target:self
+                                                                                                        selector:@selector(resolutionCountdownTimer:)
+                                                                                                        userInfo:@(dialogID) // store ID to avoid retaining dialogData in timer
+                                                                                                         repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:countdownTimer forMode:NSDefaultRunLoopMode];
     [dialogData setObject:countdownTimer forKey:@"timer"];
     
@@ -684,7 +694,10 @@
 
 - (void)resolutionCountdownTimer:(NSTimer *)timer
 {
-    NSMutableDictionary *dialogData = [timer userInfo];
+    NSNumber *dialogIDNum = [timer userInfo];
+    NSMutableDictionary *dialogData = [activeDialogsByID objectForKey:dialogIDNum];
+    if (!dialogData) return;
+
     NSNumber *countdownNum = [dialogData objectForKey:@"countdown"];
     NSTextField *countdownLabel = [dialogData objectForKey:@"countdownLabel"];
     
@@ -695,22 +708,36 @@
     
     if (countdown <= 0) {
         // Time's up - revert
+        if ([[dialogData objectForKey:@"released"] boolValue]) return;
+        [dialogData setObject:@YES forKey:@"released"];
+        
         [timer invalidate];
         NSString *oldRes = [dialogData objectForKey:@"oldResolution"];
         DisplayInfo *display = [dialogData objectForKey:@"display"];
         NSWindow *window = [dialogData objectForKey:@"window"];
         
+        NSNumber *dialogIDNum = [dialogData objectForKey:@"id"];
+        NSTimer *timerFromData = [dialogData objectForKey:@"timer"];
+        [timerFromData invalidate];
+        [dialogData removeObjectForKey:@"timer"]; // release timer retained by dialogData
+        [activeDialogsByID removeObjectForKey:dialogIDNum];
+        
         NSLog(@"DisplayController: Countdown reached 0, auto-reverting resolution");
         [self revertToResolution:oldRes forDisplay:display];
         [window close];
-        [dialogData release];
     }
 }
 
 - (void)resolutionRevertClicked:(id)sender
 {
     NSButton *button = (NSButton *)sender;
-    NSMutableDictionary *dialogData = (NSMutableDictionary *)[button tag];
+    NSInteger dialogID = [button tag];
+    NSMutableDictionary *dialogData = [activeDialogsByID objectForKey:@(dialogID)];
+    
+    if (!dialogData) return;
+    
+    if ([[dialogData objectForKey:@"released"] boolValue]) return;
+    [dialogData setObject:@YES forKey:@"released"];
     
     NSTimer *timer = [dialogData objectForKey:@"timer"];
     NSString *oldRes = [dialogData objectForKey:@"oldResolution"];
@@ -718,24 +745,32 @@
     NSWindow *window = [dialogData objectForKey:@"window"];
     
     [timer invalidate];
+    [dialogData removeObjectForKey:@"timer"]; // release timer retained by dialogData
     NSLog(@"DisplayController: User clicked Revert button");
     [self revertToResolution:oldRes forDisplay:display];
     [window close];
-    [dialogData release];
+    [activeDialogsByID removeObjectForKey:@(dialogID)];
 }
 
 - (void)resolutionKeepClicked:(id)sender
 {
     NSButton *button = (NSButton *)sender;
-    NSMutableDictionary *dialogData = (NSMutableDictionary *)[button tag];
+    NSInteger dialogID = [button tag];
+    NSMutableDictionary *dialogData = [activeDialogsByID objectForKey:@(dialogID)];
+    
+    if (!dialogData) return;
+    
+    if ([[dialogData objectForKey:@"released"] boolValue]) return;
+    [dialogData setObject:@YES forKey:@"released"];
     
     NSTimer *timer = [dialogData objectForKey:@"timer"];
     NSWindow *window = [dialogData objectForKey:@"window"];
     
     [timer invalidate];
+    [dialogData removeObjectForKey:@"timer"]; // release timer retained by dialogData
     NSLog(@"DisplayController: User clicked Keep button - keeping new resolution");
     [window close];
-    [dialogData release];
+    [activeDialogsByID removeObjectForKey:@(dialogID)];
 }
 
 - (void)revertToResolution:(NSString *)resolution forDisplay:(DisplayInfo *)display
