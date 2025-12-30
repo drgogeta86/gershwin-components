@@ -61,7 +61,7 @@ typedef struct DBusConnection DBusConnectionStruct;
     }
     
     self.connected = YES;
-    NSLog(@"DBusConnection: Successfully connected to session bus");
+    // NSLog(@"DBusConnection: Successfully connected to session bus");
     return YES;
 }
 
@@ -122,9 +122,9 @@ typedef struct DBusConnection DBusConnectionStruct;
     }
     
     if (result == DBUS_REQUEST_NAME_REPLY_ALREADY_OWNER) {
-        NSLog(@"DBusConnection: Already owner of service: %@", serviceName);
+        // NSLog(@"DBusConnection: Already owner of service: %@", serviceName);
     } else {
-        NSLog(@"DBusConnection: Successfully registered service: %@", serviceName);
+        // NSLog(@"DBusConnection: Successfully registered service: %@", serviceName);
     }
     return YES;
 }
@@ -141,7 +141,7 @@ typedef struct DBusConnection DBusConnectionStruct;
     NSString *key = [NSString stringWithFormat:@"%@:%@", objectPath, interfaceName];
     [self.messageHandlers setObject:handler forKey:key];
     
-    NSLog(@"DBusConnection: Registered handler for %@ on %@", interfaceName, objectPath);
+    // NSLog(@"DBusConnection: Registered handler for %@ on %@", interfaceName, objectPath);
     return YES;
 }
 
@@ -162,14 +162,9 @@ typedef struct DBusConnection DBusConnectionStruct;
         return nil;
     }
     
-    // Debug arguments array at entry point
-    NSLog(@"DBusConnection: callMethod entry - arguments array: %@", arguments);
-    NSLog(@"DBusConnection: callMethod entry - arguments count: %lu", (unsigned long)[arguments count]);
-    for (NSUInteger i = 0; i < [arguments count]; i++) {
-        id arg = [arguments objectAtIndex:i];
-        NSLog(@"DBusConnection: callMethod entry - arg[%lu]: %@ (class: %@, isNSNull: %@)", 
-              (unsigned long)i, arg, [arg class], [arg isKindOfClass:[NSNull class]] ? @"YES" : @"NO");
-    }
+    // Debug arguments array at entry point (logging removed)
+    // NSLog(@"DBusConnection: callMethod entry - arguments array: %@", arguments);
+    // NSLog(@"DBusConnection: callMethod entry - arguments count: %lu", (unsigned long)[arguments count]);
     
     DBusMessage *message = dbus_message_new_method_call([serviceName UTF8String],
                                                        [objectPath UTF8String],
@@ -187,12 +182,12 @@ typedef struct DBusConnection DBusConnectionStruct;
         
         for (NSUInteger argumentIndex = 0; argumentIndex < [arguments count]; argumentIndex++) {
             id argument = [arguments objectAtIndex:argumentIndex];
-            NSLog(@"DBusConnection: Processing argument[%lu]: %@ (class: %@)", (unsigned long)argumentIndex, argument, [argument class]);
+            // NSLog(@"DBusConnection: Processing argument[%lu]: %@ (class: %@)", (unsigned long)argumentIndex, argument, [argument class]);
             
             if ([argument isKindOfClass:[NSString class]]) {
                 // Check if this is the third argument of an Event method call - should be variant
                 if (argumentIndex == 2 && [method isEqualToString:@"Event"]) {
-                    NSLog(@"DBusConnection: Encoding 3rd argument of Event call as VARIANT containing string");
+                    // NSLog(@"DBusConnection: Encoding 3rd argument of Event call as VARIANT containing string");
                     // Force third argument to be variant for DBus Event calls
                     DBusMessageIter variantIter;
                     dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "s", &variantIter);
@@ -200,12 +195,12 @@ typedef struct DBusConnection DBusConnectionStruct;
                     dbus_message_iter_append_basic(&variantIter, DBUS_TYPE_STRING, &str);
                     dbus_message_iter_close_container(&iter, &variantIter);
                 } else {
-                    NSLog(@"DBusConnection: Encoding as STRING");
+                    // NSLog(@"DBusConnection: Encoding as STRING");
                     const char *str = [argument UTF8String];
                     dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &str);
                 }
             } else if ([argument isKindOfClass:[NSNull class]]) {
-                NSLog(@"DBusConnection: Encoding NSNull as VARIANT containing empty string");
+                // NSLog(@"DBusConnection: Encoding NSNull as VARIANT containing empty string");
                 // Handle NSNull as an empty variant for DBus Event calls
                 DBusMessageIter variantIter;
                 dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "s", &variantIter);
@@ -214,29 +209,29 @@ typedef struct DBusConnection DBusConnectionStruct;
                 dbus_message_iter_close_container(&iter, &variantIter);
             } else if ([argument isKindOfClass:[NSNumber class]]) {
                 const char *objCType = [argument objCType];
-                NSLog(@"DBusConnection: Processing NSNumber with objCType: %s", objCType);
-                NSLog(@"DBusConnection: Comparisons - BOOL: %s, int: %s, long: %s, unsigned int: %s, unsigned long: %s", 
-                      @encode(BOOL), @encode(int), @encode(long), @encode(unsigned int), @encode(unsigned long));
+                // NSLog(@"DBusConnection: Processing NSNumber with objCType: %s", objCType);
+                // NSLog(@"DBusConnection: Comparisons - BOOL: %s, int: %s, long: %s, unsigned int: %s, unsigned long: %s", 
+                //       @encode(BOOL), @encode(int), @encode(long), @encode(unsigned int), @encode(unsigned long));
                 
                 if (strcmp(objCType, @encode(BOOL)) == 0) {
-                    NSLog(@"DBusConnection: Encoding as BOOL");
+                    // NSLog(@"DBusConnection: Encoding as BOOL");
                     dbus_bool_t val = [argument boolValue];
                     dbus_message_iter_append_basic(&iter, DBUS_TYPE_BOOLEAN, &val);
                 } else if (strcmp(objCType, @encode(unsigned int)) == 0 ||
                           strcmp(objCType, @encode(unsigned long)) == 0) {
-                    NSLog(@"DBusConnection: Encoding as UINT32 (objCType matched unsigned)");
+                    // NSLog(@"DBusConnection: Encoding as UINT32 (objCType matched unsigned)");
                     dbus_uint32_t val = [argument unsignedIntValue];
                     dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &val);
                 } else {
                     // Check if this is a timestamp parameter (4th argument in Event call)
                     // DBusMenu Event signature is (isvu) where the last parameter should be uint32
                     if (argumentIndex == 3 && [method isEqualToString:@"Event"]) {  // 4th argument (0-indexed) - timestamp should be uint32
-                        NSLog(@"DBusConnection: Encoding timestamp parameter as UINT32 (4th argument in Event call)");
+                        // NSLog(@"DBusConnection: Encoding timestamp parameter as UINT32 (4th argument in Event call)");
                         dbus_uint32_t val = [argument unsignedIntValue];
                         dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &val);
                     } else {
                         // Default to signed integer for other cases
-                        NSLog(@"DBusConnection: Encoding as INT32 (default for objCType: %s, argIndex: %lu)", objCType, (unsigned long)argumentIndex);
+                        // NSLog(@"DBusConnection: Encoding as INT32 (default for objCType: %s, argIndex: %lu)", objCType, (unsigned long)argumentIndex);
                         dbus_int32_t val = [argument intValue];
                         dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &val);
                     }
@@ -266,8 +261,8 @@ typedef struct DBusConnection DBusConnectionStruct;
                         const char *objCType = [firstItem objCType];
                         
                         // Debug the objCType to understand what we're getting
-                        NSLog(@"DBusConnection: NSNumber objCType: %s (unsigned int: %s, unsigned long: %s)", 
-                              objCType, @encode(unsigned int), @encode(unsigned long));
+                        // NSLog(@"DBusConnection: NSNumber objCType: %s (unsigned int: %s, unsigned long: %s)", 
+                              // objCType, @encode(unsigned int), @encode(unsigned long));
                         
                         // Special case: For GTK Start method, we always want unsigned integers
                         // Check if this looks like a GTK method call by looking at the small positive values
@@ -284,7 +279,7 @@ typedef struct DBusConnection DBusConnectionStruct;
                             strcmp(objCType, @encode(unsigned long)) == 0 ||
                             forceUnsigned) {
                             // Unsigned integer array
-                            NSLog(@"DBusConnection: Creating unsigned integer array (au)");
+                            // NSLog(@"DBusConnection: Creating unsigned integer array (au)");
                             dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "u", &arrayIter);
                             
                             for (id item in array) {
@@ -297,7 +292,7 @@ typedef struct DBusConnection DBusConnectionStruct;
                             dbus_message_iter_close_container(&iter, &arrayIter);
                         } else {
                             // Signed integer array (fallback)
-                            NSLog(@"DBusConnection: Creating signed integer array (ai) as fallback");
+                            // NSLog(@"DBusConnection: Creating signed integer array (ai) as fallback");
                             dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "i", &arrayIter);
                             
                             for (id item in array) {
@@ -402,7 +397,7 @@ typedef struct DBusConnection DBusConnectionStruct;
     
     dbus_message_unref(reply);
     
-    NSLog(@"DBusConnection: Method call %@.%@ completed", interfaceName, method);
+    // NSLog(@"DBusConnection: Method call %@.%@ completed", interfaceName, method);
     return result;
 }
 
@@ -416,7 +411,7 @@ typedef struct DBusConnection DBusConnectionStruct;
         return nil;
     }
     
-    NSLog(@"DBusConnection: Creating GTK Activate method call for action: %@", actionName);
+    // NSLog(@"DBusConnection: Creating GTK Activate method call for action: %@", actionName);
     
     DBusMessage *message = dbus_message_new_method_call([serviceName UTF8String],
                                                        [objectPath UTF8String],
@@ -523,7 +518,7 @@ typedef struct DBusConnection DBusConnectionStruct;
         return nil;
     }
     
-    NSLog(@"DBusConnection: GTK Activate call succeeded for action: %@", actionName);
+    // NSLog(@"DBusConnection: GTK Activate call succeeded for action: %@", actionName);
     dbus_message_unref(reply);
     return @YES;
 }
@@ -548,7 +543,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             dbus_int32_t val;
             dbus_message_iter_get_basic(iter, &val);
             NSNumber *result = [NSNumber numberWithInt:val];
-            NSLog(@"DBusConnection: Parsed int32: %@", result);
+            // NSLog(@"DBusConnection: Parsed int32: %@", result);
             return result;
         }
         
@@ -556,7 +551,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             dbus_uint32_t val;
             dbus_message_iter_get_basic(iter, &val);
             NSNumber *result = [NSNumber numberWithUnsignedInt:val];
-            NSLog(@"DBusConnection: Parsed uint32: %@", result);
+            // NSLog(@"DBusConnection: Parsed uint32: %@", result);
             return result;
         }
         
@@ -564,7 +559,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             dbus_bool_t val;
             dbus_message_iter_get_basic(iter, &val);
             NSNumber *result = [NSNumber numberWithBool:(val == TRUE)];
-            NSLog(@"DBusConnection: Parsed boolean: %@", result);
+            // NSLog(@"DBusConnection: Parsed boolean: %@", result);
             return result;
         }
         
@@ -572,7 +567,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             double val;
             dbus_message_iter_get_basic(iter, &val);
             NSNumber *result = [NSNumber numberWithDouble:val];
-            NSLog(@"DBusConnection: Parsed double: %@", result);
+            // NSLog(@"DBusConnection: Parsed double: %@", result);
             return result;
         }
         
@@ -580,7 +575,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             char *path;
             dbus_message_iter_get_basic(iter, &path);
             NSString *result = [NSString stringWithUTF8String:path ? path : ""];
-            NSLog(@"DBusConnection: Parsed object path: '%@'", result);
+            // NSLog(@"DBusConnection: Parsed object path: '%@'", result);
             return result;
         }
         
@@ -588,12 +583,12 @@ typedef struct DBusConnection DBusConnectionStruct;
             char *sig;
             dbus_message_iter_get_basic(iter, &sig);
             NSString *result = [NSString stringWithUTF8String:sig ? sig : ""];
-            NSLog(@"DBusConnection: Parsed signature: '%@'", result);
+            // NSLog(@"DBusConnection: Parsed signature: '%@'", result);
             return result;
         }
         
         case DBUS_TYPE_ARRAY: {
-            NSLog(@"DBusConnection: Parsing array");
+            // NSLog(@"DBusConnection: Parsing array");
             DBusMessageIter subIter;
             dbus_message_iter_recurse(iter, &subIter);
             
@@ -610,12 +605,12 @@ typedef struct DBusConnection DBusConnectionStruct;
                 }
             } while (dbus_message_iter_next(&subIter));
             
-            NSLog(@"DBusConnection: Parsed array with %lu elements", (unsigned long)[array count]);
+            // NSLog(@"DBusConnection: Parsed array with %lu elements", (unsigned long)[array count]);
             return array;
         }
         
         case DBUS_TYPE_STRUCT: {
-            NSLog(@"DBusConnection: Parsing struct");
+            // NSLog(@"DBusConnection: Parsing struct");
             DBusMessageIter subIter;
             dbus_message_iter_recurse(iter, &subIter);
             
@@ -634,12 +629,12 @@ typedef struct DBusConnection DBusConnectionStruct;
                 }
             } while (dbus_message_iter_next(&subIter));
             
-            NSLog(@"DBusConnection: Parsed struct with %lu elements", (unsigned long)[structArray count]);
+            // NSLog(@"DBusConnection: Parsed struct with %lu elements", (unsigned long)[structArray count]);
             return structArray;
         }
         
         case DBUS_TYPE_DICT_ENTRY: {
-            NSLog(@"DBusConnection: Parsing dict entry");
+            // NSLog(@"DBusConnection: Parsing dict entry");
             DBusMessageIter subIter;
             dbus_message_iter_recurse(iter, &subIter);
             
@@ -658,7 +653,7 @@ typedef struct DBusConnection DBusConnectionStruct;
             
             if (key && value) {
                 NSDictionary *result = [NSDictionary dictionaryWithObject:value forKey:key];
-                NSLog(@"DBusConnection: Parsed dict entry: %@ -> %@", key, value);
+                // NSLog(@"DBusConnection: Parsed dict entry: %@ -> %@", key, value);
                 return result;
             } else {
                 NSLog(@"DBusConnection: Invalid dict entry (missing key or value)");
@@ -667,12 +662,12 @@ typedef struct DBusConnection DBusConnectionStruct;
         }
         
         case DBUS_TYPE_VARIANT: {
-            NSLog(@"DBusConnection: Parsing variant");
+            // NSLog(@"DBusConnection: Parsing variant");
             DBusMessageIter subIter;
             dbus_message_iter_recurse(iter, &subIter);
             
             id value = [self parseDBusMessageIterator:&subIter];
-            NSLog(@"DBusConnection: Parsed variant containing: %@", value);
+            // NSLog(@"DBusConnection: Parsed variant containing: %@", value);
             return value;
         }
         
@@ -725,7 +720,7 @@ typedef struct DBusConnection DBusConnectionStruct;
         // Get the Unix file descriptor from the DBus connection
         int fd = -1;
         if (dbus_connection_get_unix_fd((DBusConnectionStruct *)self.connection, &fd)) {
-            NSLog(@"DBusConnection: Got file descriptor: %d", fd);
+            // NSLog(@"DBusConnection: Got file descriptor: %d", fd);
             // Validate file descriptor
             if (fd < 0) {
                 NSLog(@"DBusConnection: Invalid file descriptor: %d", fd);
@@ -768,7 +763,7 @@ typedef struct DBusConnection DBusConnectionStruct;
     NSString *interfaceStr = [NSString stringWithUTF8String:interface];
     NSString *methodStr = [NSString stringWithUTF8String:method];
     
-    NSLog(@"DBusConnection: Received method call: %@.%@ on %@", interfaceStr, methodStr, pathStr);
+    // NSLog(@"DBusConnection: Received method call: %@.%@ on %@", interfaceStr, methodStr, pathStr);
     
     // Handle introspection requests
     if ([interfaceStr isEqualToString:@"org.freedesktop.DBus.Introspectable"] && 
@@ -807,7 +802,7 @@ typedef struct DBusConnection DBusConnectionStruct;
         dbus_connection_send((DBusConnectionStruct *)self.connection, reply, NULL);
         dbus_message_unref(reply);
         
-        NSLog(@"DBusConnection: Sent introspection XML for path %s", path);
+        // NSLog(@"DBusConnection: Sent introspection XML for path %s", path);
     }
 }
 
