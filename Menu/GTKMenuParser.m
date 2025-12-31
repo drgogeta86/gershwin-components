@@ -184,11 +184,21 @@
                 if (keyEquivalent && [keyEquivalent length] > 0) {
                     [item setKeyEquivalent:keyEquivalent];
                     NSUInteger modifierMask = [self parseKeyboardModifiers:accel];
-                    [item setKeyEquivalentModifierMask:modifierMask];
-                    NSLog(@"GTKMenuParser: Added shortcut '%@' to menu item '%@' (keyEq='%@', modifiers=%lu)", 
-                          accel, displayLabel, keyEquivalent, (unsigned long)modifierMask);
-                    NSLog(@"GTKMenuParser: MenuItem now has keyEquivalent='%@', modifierMask=%lu",
-                          [item keyEquivalent], (unsigned long)[item keyEquivalentModifierMask]);
+                    
+                    // WORKAROUND: GNUstep doesn't display Control shortcuts properly in menus
+                    // For display: Convert NSControlKeyMask to NSCommandKeyMask 
+                    NSUInteger displayModifierMask = modifierMask;
+                    BOOL hasControlKey = (modifierMask & NSControlKeyMask) != 0;
+                    
+                    if (hasControlKey) {
+                        // Display as Command in menu (which GNUstep renders properly)
+                        displayModifierMask = (modifierMask & ~NSControlKeyMask) | NSCommandKeyMask;
+                        NSLog(@"GTKMenuParser: Converting Control to Command for display");
+                    }
+                    
+                    [item setKeyEquivalentModifierMask:displayModifierMask];
+                    NSLog(@"GTKMenuParser: Added shortcut '%@' to menu item '%@' (keyEq='%@', modifiers=%lu, display=%lu)", 
+                          accel, displayLabel, keyEquivalent, (unsigned long)modifierMask, (unsigned long)displayModifierMask);
                 }
             }
             
