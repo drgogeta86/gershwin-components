@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>ApplicationDescription</key>
+    <string>Screenshot application for capturing windows, areas, or full screen</string>
+    <key>ApplicationIcon</key>
+    <string>Screenshot.tiff</string>
+    <key>ApplicationName</key>
+    <string>Screenshot</string>
+    <key>ApplicationRelease</key>
+    <string>1.0</string>
+    <key>Authors</key>
+    <array>
+        <string>GNUstep Developers</string>
+    </array>
+    <key>Copyright</key>
+    <string>Copyright (C) 2024 Free Software Foundation</string>
+    <key>CopyrightDescription</key>
+    <string>Released under GNU General Public License v2.0</string>
+    <key>FullVersionID</key>
+    <string>1.0</string>
+    <key>NSExecutable</key>
+    <string>Screenshot</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSRole</key>
+    <string>Application</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>png</string>
+                <string>jpg</string>
+                <string>jpeg</string>
+                <string>tiff</string>
+                <string>gif</string>
+            </array>
+            <key>CFBundleTypeIconFile</key>
+            <string>Screenshot.tiff</string>
+            <key>CFBundleTypeName</key>
+            <string>Image File</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
+</dict>
+</plist>

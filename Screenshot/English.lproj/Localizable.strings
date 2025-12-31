@@ -1,0 +1,41 @@
+/* Screenshot Application Localizable Strings */
+
+/* Main Window */
+"Screenshot" = "Screenshot";
+"Take Screenshot" = "Take Screenshot";
+"Window" = "Window";
+"Area" = "Area";
+"Full Screen" = "Full Screen";
+"Save" = "Save";
+"Copy to Clipboard" = "Copy to Clipboard";
+"File Name:" = "File Name:";
+"Delay (seconds):" = "Delay (seconds):";
+
+/* Status Messages */
+"Ready to take screenshot" = "Ready to take screenshot";
+"Taking screenshot..." = "Taking screenshot...";
+"Screenshot captured successfully" = "Screenshot captured successfully";
+"Failed to capture screenshot" = "Failed to capture screenshot";
+"Screenshot copied to clipboard" = "Screenshot copied to clipboard";
+"Screenshot saved to %@" = "Screenshot saved to %@";
+
+/* Alert Messages */
+"Screenshot Error" = "Screenshot Error";
+"Failed to initialize screenshot system. Make sure X11 is running." = "Failed to initialize screenshot system. Make sure X11 is running.";
+"Screenshot Failed" = "Screenshot Failed";
+"Unable to capture screenshot. Please try again." = "Unable to capture screenshot. Please try again.";
+"No Screenshot" = "No Screenshot";
+"Please take a screenshot first." = "Please take a screenshot first.";
+"Save Failed" = "Save Failed";
+"Unable to save screenshot to the specified location." = "Unable to save screenshot to the specified location.";
+
+/* Menu Items */
+"About Screenshot" = "About Screenshot";
+"Quit Screenshot" = "Quit Screenshot";
+"File" = "File";
+"Edit" = "Edit";
+"Window" = "Window";
+"Services" = "Services";
+"Hide Screenshot" = "Hide Screenshot";
+"Hide Others" = "Hide Others";
+"Show All" = "Show All";
