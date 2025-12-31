@@ -86,13 +86,16 @@ void signalHandler(int sig) {
 
 - (void)setX11BackgroundMidGrey
 {
-    NSLog(@"[DEBUG] Setting X11 background to mid grey");
+    NSLog(@"[DEBUG] Setting X11 background to mid grey with persistent pixmap and cursor");
     
     Display *display = XOpenDisplay(NULL);
     if (!display) {
         NSLog(@"[WARNING] Could not open X display");
         return;
     }
+
+    // Set close down mode to RetainPermanent so resources persist after disconnect
+    XSetCloseDownMode(display, RetainPermanent);
     
     int screen_count = ScreenCount(display);
     NSLog(@"[DEBUG] Found %d X11 screen(s)", screen_count);
@@ -116,18 +119,38 @@ void signalHandler(int sig) {
         
         NSLog(@"[DEBUG] Allocated color pixel: 0x%lx on screen %d", color.pixel, i);
         
-        // Set root window background to the allocated color
-        XSetWindowBackground(display, root, color.pixel);
+        // Create a 1x1 pixmap with the mid-grey color
+        unsigned int depth = DefaultDepth(display, screen);
+        Pixmap pixmap = XCreatePixmap(display, root, 1, 1, depth);
+        
+        if (!pixmap) {
+            NSLog(@"[WARNING] Could not create pixmap on screen %d", i);
+            continue;
+        }
+        
+        NSLog(@"[DEBUG] Created pixmap 0x%lx on screen %d", pixmap, i);
+        
+        // Fill the pixmap with the mid-grey color
+        GC gc = XCreateGC(display, pixmap, 0, NULL);
+        XSetForeground(display, gc, color.pixel);
+        XFillRectangle(display, pixmap, gc, 0, 0, 1, 1);
+        XFreeGC(display, gc);
+        
+        // Set the root window's background to use this pixmap
+        XSetWindowBackgroundPixmap(display, root, pixmap);
         XClearWindow(display, root);
         
-        NSLog(@"[DEBUG] Screen %d root window background set", i);
+        // Free the pixmap (it will persist due to RetainPermanent mode)
+        XFreePixmap(display, pixmap);
+        
+        NSLog(@"[DEBUG] Screen %d root window background set with persistent pixmap", i);
     }
     
     XFlush(display);
     XSync(display, False);
     XCloseDisplay(display);
     
-    NSLog(@"[DEBUG] X11 background set to mid grey");
+    NSLog(@"[DEBUG] X11 background set to mid grey with persistent pixmap");
 }
 
 - (void)dealloc
