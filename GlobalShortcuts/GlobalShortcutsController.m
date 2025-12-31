@@ -36,6 +36,11 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     return [NSArray arrayWithObject:keyCombo];
 }
 
+// Forward declaration
+@class ShortcutEditController;
+
+// Will define ShortcutEditWindow after ShortcutEditController interface
+
 @interface ShortcutEditController : NSObject
 {
     NSWindow *editWindow;
@@ -43,15 +48,52 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     NSTextField *commandField;
     NSButton *okButton;
     NSButton *cancelButton;
+    NSButton *setButton;
     NSMutableDictionary *currentShortcut;
     GlobalShortcutsController *parentController;
     BOOL isEditing;
+    BOOL isCapturingKeyCombo;
+    NSMutableArray *capturedModifiers;
 }
 
 - (id)initWithParent:(GlobalShortcutsController *)parent;
 - (void)showSheetForShortcut:(NSMutableDictionary *)shortcut isEditing:(BOOL)editing parentWindow:(NSWindow *)parentWindow;
 - (void)okClicked:(id)sender;
 - (void)cancelClicked:(id)sender;
+- (void)setKeyComboClicked:(id)sender;
+- (void)startCapturingKeyCombo;
+- (void)stopCapturingKeyCombo;
+- (void)handleKeyEvent:(NSEvent *)event;
+- (BOOL)isCapturingKeyCombo;
+- (NSString *)getModifierKeysFromEvent:(NSEvent *)event;
+- (NSString *)getKeyNameFromEvent:(NSEvent *)event;
+- (NSString *)convertKeyCodeToName:(unsigned short)keyCode;
+
+@end
+
+// Now define ShortcutEditWindow after we know ShortcutEditController's interface
+@interface ShortcutEditWindow : NSWindow
+{
+    ShortcutEditController *editController;
+}
+- (void)setEditController:(ShortcutEditController *)controller;
+@end
+
+@implementation ShortcutEditWindow
+
+- (void)setEditController:(ShortcutEditController *)controller
+{
+    editController = controller;
+}
+
+- (void)keyDown:(NSEvent *)event
+{
+    if (editController && [editController isCapturingKeyCombo]) {
+        [editController handleKeyEvent:event];
+    } else {
+        [super keyDown:event];
+    }
+}
 
 @end
 
@@ -362,7 +404,7 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
 {
     ShortcutEditController *editController = [[ShortcutEditController alloc] initWithParent:self];
     [editController showSheetForShortcut:shortcut isEditing:editing parentWindow:[mainView window]];
-    [editController release];
+    // Note: editController will release itself when the sheet ends
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification
@@ -449,20 +491,61 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     self = [super init];
     if (self) {
         parentController = parent;
+        isCapturingKeyCombo = NO;
+        capturedModifiers = nil;
     }
     return self;
 }
 
+- (void)dealloc
+{
+    if (isCapturingKeyCombo) {
+        [self stopCapturingKeyCombo];
+    }
+    if (capturedModifiers) {
+        [capturedModifiers release];
+    }
+    if (editWindow) {
+        [editWindow release];
+    }
+    if (keyComboField) {
+        [keyComboField release];
+    }
+    if (commandField) {
+        [commandField release];
+    }
+    if (okButton) {
+        [okButton release];
+    }
+    if (cancelButton) {
+        [cancelButton release];
+    }
+    if (setButton) {
+        [setButton release];
+    }
+    if (currentShortcut) {
+        [currentShortcut release];
+    }
+    [super dealloc];
+}
+
 - (void)showSheetForShortcut:(NSMutableDictionary *)shortcut isEditing:(BOOL)editing parentWindow:(NSWindow *)parentWindow
 {
+    // Retain self while sheet is open - will be released when sheet ends
+    [self retain];
+    
     currentShortcut = [shortcut retain];
     isEditing = editing;
+    isCapturingKeyCombo = NO;
+    capturedModifiers = [[NSMutableArray alloc] init];
     
-    // Create edit window
-    editWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 150)
+    // Create edit window using custom window class
+    editWindow = [[ShortcutEditWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 150)
                                              styleMask:NSTitledWindowMask
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
+    
+    [(ShortcutEditWindow *)editWindow setEditController:self];
     
     [editWindow setTitle:editing ? @"Edit Shortcut" : @"Add Shortcut"];
     
@@ -478,9 +561,17 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     [contentView addSubview:keyLabel];
     [keyLabel release];
     
-    keyComboField = [[NSTextField alloc] initWithFrame:NSMakeRect(150, 100, 220, 22)];
+    keyComboField = [[NSTextField alloc] initWithFrame:NSMakeRect(150, 100, 180, 22)];
     [keyComboField setStringValue:[currentShortcut objectForKey:@"keyCombo"]];
     [contentView addSubview:keyComboField];
+    
+    setButton = [[NSButton alloc] init];
+    [setButton setTitle:@"Set"];
+    [setButton setTarget:self];
+    [setButton setAction:@selector(setKeyComboClicked:)];
+    [setButton sizeToFit];
+    [setButton setFrame:NSMakeRect(340, 100, 60, setButton.frame.size.height)];
+    [contentView addSubview:setButton];
     
     // Command label and field
     NSTextField *commandLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 70, 120, 20)];
@@ -492,7 +583,7 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     [contentView addSubview:commandLabel];
     [commandLabel release];
     
-    commandField = [[NSTextField alloc] initWithFrame:NSMakeRect(150, 70, 220, 22)];
+    commandField = [[NSTextField alloc] initWithFrame:NSMakeRect(150, 70, 250, 22)];
     [commandField setStringValue:[currentShortcut objectForKey:@"command"]];
     [contentView addSubview:commandField];
     
@@ -502,7 +593,7 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     [cancelButton setTarget:self];
     [cancelButton setAction:@selector(cancelClicked:)];
     [cancelButton sizeToFit];
-    [cancelButton setFrame:NSMakeRect(220, 20, 80, cancelButton.frame.size.height)];
+    [cancelButton setFrame:NSMakeRect(270, 20, 80, cancelButton.frame.size.height)];
     [contentView addSubview:cancelButton];
     
     okButton = [[NSButton alloc] init];
@@ -511,14 +602,213 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     [okButton setAction:@selector(okClicked:)];
     [okButton setKeyEquivalent:@"\r"];
     [okButton sizeToFit];
-    [okButton setFrame:NSMakeRect(310, 20, 80, okButton.frame.size.height)];
+    [okButton setFrame:NSMakeRect(360, 20, 80, okButton.frame.size.height)];
     [contentView addSubview:okButton];
     
     [NSApp beginSheet:editWindow modalForWindow:parentWindow modalDelegate:nil didEndSelector:nil contextInfo:nil];
 }
 
+- (void)setKeyComboClicked:(id)sender
+{
+    if (isCapturingKeyCombo) {
+        [self stopCapturingKeyCombo];
+    } else {
+        [self startCapturingKeyCombo];
+    }
+}
+
+- (void)startCapturingKeyCombo
+{
+    isCapturingKeyCombo = YES;
+    [setButton setTitle:@"Press keys..."];
+    [setButton setEnabled:NO];
+    [keyComboField setStringValue:@""];
+    [capturedModifiers removeAllObjects];
+    
+    // Make the window the key window and first responder
+    [editWindow makeKeyAndOrderFront:nil];
+    [editWindow makeFirstResponder:editWindow];
+}
+
+- (BOOL)isCapturingKeyCombo
+{
+    return isCapturingKeyCombo;
+}
+
+- (void)stopCapturingKeyCombo
+{
+    isCapturingKeyCombo = NO;
+    [setButton setTitle:@"Set"];
+    [setButton setEnabled:YES];
+}
+
+- (void)handleKeyEvent:(NSEvent *)event
+{
+    // Get modifier keys
+    NSString *modifiers = [self getModifierKeysFromEvent:event];
+    NSString *keyName = [self getKeyNameFromEvent:event];
+    
+    // Build the key combo string
+    NSString *keyCombo = @"";
+    if ([modifiers length] > 0) {
+        keyCombo = [NSString stringWithFormat:@"%@+%@", modifiers, keyName];
+    } else {
+        keyCombo = keyName;
+    }
+    
+    [keyComboField setStringValue:keyCombo];
+    [self stopCapturingKeyCombo];
+}
+
+- (NSString *)getModifierKeysFromEvent:(NSEvent *)event
+{
+    NSMutableArray *mods = [NSMutableArray array];
+    NSUInteger modifiers = [event modifierFlags];
+    
+    if (modifiers & NSControlKeyMask) {
+        [mods addObject:@"ctrl"];
+    }
+    if (modifiers & NSShiftKeyMask) {
+        [mods addObject:@"shift"];
+    }
+    if (modifiers & NSAlternateKeyMask) {
+        [mods addObject:@"alt"];
+    }
+    if (modifiers & NSCommandKeyMask) {
+        [mods addObject:@"cmd"];
+    }
+    
+    return [mods componentsJoinedByString:@"+"];
+}
+
+- (NSString *)getKeyNameFromEvent:(NSEvent *)event
+{
+    unsigned short keyCode = [event keyCode];
+    NSString *characters = [event charactersIgnoringModifiers];
+    
+    // First check if this is a number key (key codes typically 10-19 for 1-9,0)
+    // These are X11 key codes, map them to their number values
+    if (keyCode >= 10 && keyCode <= 19) {
+        // Key codes 10-19 map to 1-9, 0
+        if (keyCode == 10) return @"1";
+        if (keyCode == 11) return @"2";
+        if (keyCode == 12) return @"3";
+        if (keyCode == 13) return @"4";
+        if (keyCode == 14) return @"5";
+        if (keyCode == 15) return @"6";
+        if (keyCode == 16) return @"7";
+        if (keyCode == 17) return @"8";
+        if (keyCode == 18) return @"9";
+        if (keyCode == 19) return @"0";
+    }
+    
+    if ([characters length] > 0) {
+        unichar charCode = [characters characterAtIndex:0];
+        
+        // Handle special keys by checking the actual character codes
+        if (charCode == NSUpArrowFunctionKey) {
+            return @"Up";
+        }
+        if (charCode == NSDownArrowFunctionKey) {
+            return @"Down";
+        }
+        if (charCode == NSLeftArrowFunctionKey) {
+            return @"Left";
+        }
+        if (charCode == NSRightArrowFunctionKey) {
+            return @"Right";
+        }
+        if (charCode == NSDeleteCharacter) {
+            return @"BackSpace";
+        }
+        if (charCode == NSTabCharacter) {
+            return @"Tab";
+        }
+        if (charCode == NSNewlineCharacter || charCode == NSCarriageReturnCharacter) {
+            return @"Return";
+        }
+        if (charCode == 27) { // Escape
+            return @"Escape";
+        }
+        if (charCode == 32) { // Space
+            return @"space";
+        }
+        
+        // For regular printable characters, use them directly
+        if ((charCode >= 32 && charCode < 127) || charCode > 160) {
+            // Convert to lowercase for consistency with Linux conventions
+            NSString *result = [NSString stringWithFormat:@"%c", tolower(charCode)];
+            return result;
+        }
+    }
+    
+    // Fall back to key code lookup for function keys and special keys
+    return [self convertKeyCodeToName:keyCode];
+}
+
+- (NSString *)convertKeyCodeToName:(unsigned short)keyCode
+{
+    // These mappings are for X11/Linux key codes
+    // which are different from macOS key codes
+    switch (keyCode) {
+        // Function keys (X11 key codes)
+        case 67: return @"F1";   // XK_F1
+        case 68: return @"F2";   // XK_F2
+        case 69: return @"F3";   // XK_F3
+        case 70: return @"F4";   // XK_F4
+        case 71: return @"F5";   // XK_F5
+        case 72: return @"F6";   // XK_F6
+        case 73: return @"F7";   // XK_F7
+        case 74: return @"F8";   // XK_F8
+        case 75: return @"F9";   // XK_F9
+        case 76: return @"F10";  // XK_F10
+        case 95: return @"F11";  // XK_F11
+        case 96: return @"F12";  // XK_F12
+        
+        // Navigation keys
+        case 110: return @"Home";      // XK_Home
+        case 115: return @"End";       // XK_End
+        case 112: return @"Page_Up";   // XK_Page_Up
+        case 117: return @"Page_Down"; // XK_Page_Down
+        
+        // Special keys
+        case 9: return @"Escape";      // XK_Escape
+        case 23: return @"Tab";        // XK_Tab
+        case 36: return @"Return";     // XK_Return
+        case 50: return @"Shift_L";    // XK_Shift_L
+        case 62: return @"Shift_R";    // XK_Shift_R
+        case 37: return @"Control_L";  // XK_Control_L
+        case 105: return @"Control_R"; // XK_Control_R
+        case 108: return @"Alt_R";     // XK_Alt_R
+        case 64: return @"Alt_L";      // XK_Alt_L
+        
+        // Keypad
+        case 79: return @"KP_7";
+        case 80: return @"KP_8";
+        case 81: return @"KP_9";
+        case 83: return @"KP_4";
+        case 84: return @"KP_5";
+        case 85: return @"KP_6";
+        case 87: return @"KP_1";
+        case 88: return @"KP_2";
+        case 89: return @"KP_3";
+        case 90: return @"KP_0";
+        case 91: return @"KP_Decimal";
+        case 77: return @"KP_Divide";
+        case 63: return @"KP_Multiply";
+        case 86: return @"KP_Subtract";
+        case 92: return @"KP_Add";
+        case 104: return @"KP_Enter";
+        
+        default:
+            // For unknown key codes, return the code itself
+            return [NSString stringWithFormat:@"0x%x", keyCode];
+    }
+}
+
 - (void)okClicked:(id)sender
 {
+    [self stopCapturingKeyCombo];
     NSString *keyCombo = [[keyComboField stringValue] stringByTrimmingCharactersInSet:
         [NSCharacterSet whitespaceCharacterSet]];
     NSString *command = [[commandField stringValue] stringByTrimmingCharactersInSet:
@@ -566,16 +856,19 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
     
     [NSApp endSheet:editWindow];
     [editWindow orderOut:nil];
-    [editWindow release];
-    [currentShortcut release];
+    editWindow = nil;
+    
+    [self release];  // Release the extra retain from showSheetForShortcut
 }
 
 - (void)cancelClicked:(id)sender
 {
+    [self stopCapturingKeyCombo];
     [NSApp endSheet:editWindow];
     [editWindow orderOut:nil];
-    [editWindow release];
-    [currentShortcut release];
+    editWindow = nil;
+    
+    [self release];  // Release the extra retain from showSheetForShortcut
 }
 
 @end
