@@ -20,27 +20,29 @@ Screenshot.app/Screenshot [options] [output-file]
 ```
 
 Options:
-- `-h, --help`         Show help message
-- `-s, --select`       Select area to screenshot (interactive - drag to select)
-- `-w, --window`       Select window to screenshot (interactive - click on window)
-- `-d, --delay SEC`    Wait SEC seconds before taking screenshot
-- `-o, --output FILE`  Save screenshot to FILE
+- `-h, --help`           Show help message
+- `-a, --area`           Select an area to screenshot (interactive - click and drag)
+- `-w, --window`         Select a window to screenshot (interactive - click on a window)
+- `-s, --screen`         Capture the whole screen where the cursor is
+- `-d, --delay SEC`      Wait SEC seconds before taking the screenshot
+- `-o, --output FILE`    Save screenshot to FILE
 
 Examples:
 ```bash
-# Full screen screenshot
+# Full screen screenshot (default)
 Screenshot.app/Screenshot screenshot.png
 
 # Window selection - you'll be prompted to click on a window
 Screenshot.app/Screenshot -w window.png
 
-# Interactive area selection - you'll drag to select the area
-Screenshot.app/Screenshot --select area.png
+# Interactive area selection - click and drag to select the area
+Screenshot.app/Screenshot -a area.png
+# or
+Screenshot.app/Screenshot --area area.png
+
+# Capture the screen where the cursor is
+Screenshot.app/Screenshot -s screen.png
 
 # Full screen with 5 second delay
 Screenshot.app/Screenshot -d 5 delayed.png
 ```
-
-**Note**: For window (-w) and area (-s) modes, the program waits for your interaction:
-- **Window mode**: Click on any window to capture it
-- **Area mode**: Click and drag to select a rectangular area

@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2025 Simon Peter
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+
 #import "ScreenshotController.h"
 #import "ScreenshotCapture.h"
 #import <AppKit/NSApplication.h>
@@ -60,8 +67,8 @@
     [[NSApplication sharedApplication] setMainMenu:mainMenu];
     [mainMenu release];
     
-    // Create main window
-    NSRect windowFrame = NSMakeRect(100, 100, 500, 350);
+    // Create main window (compact layout)
+    NSRect windowFrame = NSMakeRect(100, 100, 420, 260);
     mainWindow = [[NSWindow alloc] initWithContentRect:windowFrame
                                              styleMask:NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask
                                                backing:NSBackingStoreBuffered
@@ -71,20 +78,8 @@
     
     NSView *contentView = [mainWindow contentView];
     
-    // Create title label
-    NSRect titleFrame = NSMakeRect(20, 310, 460, 24);
-    NSTextField *titleLabel = [[NSTextField alloc] initWithFrame:titleFrame];
-    [titleLabel setStringValue:@"Screenshot Tool"];
-    [titleLabel setEditable:NO];
-    [titleLabel setSelectable:NO];
-    [titleLabel setBezeled:NO];
-    [titleLabel setDrawsBackground:NO];
-    [titleLabel setFont:[NSFont boldSystemFontOfSize:18]];
-    [contentView addSubview:titleLabel];
-    [titleLabel release];
-    
     // Create status label
-    NSRect statusFrame = NSMakeRect(20, 280, 460, 20);
+    NSRect statusFrame = NSMakeRect(15, 225, 390, 16);
     statusLabel = [[NSTextField alloc] initWithFrame:statusFrame];
     [statusLabel setStringValue:@"Ready to take screenshot"];
     [statusLabel setEditable:NO];
@@ -94,27 +89,33 @@
     [contentView addSubview:statusLabel];
     
     // Create mode selection label
-    NSRect modeLabelFrame = NSMakeRect(20, 240, 460, 20);
+    NSRect modeLabelFrame = NSMakeRect(15, 197, 390, 14);
     NSTextField *modeLabel = [[NSTextField alloc] initWithFrame:modeLabelFrame];
     [modeLabel setStringValue:@"Select capture mode:"];
     [modeLabel setEditable:NO];
     [modeLabel setSelectable:NO];
     [modeLabel setBezeled:NO];
     [modeLabel setDrawsBackground:NO];
-    [modeLabel setFont:[NSFont boldSystemFontOfSize:12]];
     [contentView addSubview:modeLabel];
     [modeLabel release];
     
-    // Create buttons for screenshot mode
-    NSRect windowBtnFrame = NSMakeRect(40, 210, 120, 20);
+    // Create buttons for screenshot mode (evenly spaced)
+    CGFloat btnY = 152;
+    CGFloat btnHeight = 22;
+    CGFloat btnWidth = 125;
+    CGFloat spacing = 13;
+    CGFloat startX = 15;
+    
+    NSRect windowBtnFrame = NSMakeRect(startX, btnY, btnWidth, btnHeight);
     windowButton = [[NSButton alloc] initWithFrame:windowBtnFrame];
     [windowButton setTitle:@"Window"];
     [windowButton setButtonType:NSMomentaryLight];
     [windowButton setTarget:self];
     [windowButton setAction:@selector(takeWindowScreenshot:)];
+    [windowButton setEnabled:NO];
     [contentView addSubview:windowButton];
     
-    NSRect areaBtnFrame = NSMakeRect(170, 210, 120, 20);
+    NSRect areaBtnFrame = NSMakeRect(startX + btnWidth + spacing, btnY, btnWidth, btnHeight);
     areaButton = [[NSButton alloc] initWithFrame:areaBtnFrame];
     [areaButton setTitle:@"Area"];
     [areaButton setButtonType:NSMomentaryLight];
@@ -122,7 +123,7 @@
     [areaButton setAction:@selector(takeAreaScreenshot:)];
     [contentView addSubview:areaButton];
     
-    NSRect fullScreenBtnFrame = NSMakeRect(300, 210, 120, 20);
+    NSRect fullScreenBtnFrame = NSMakeRect(startX + 2 * (btnWidth + spacing), btnY, btnWidth, btnHeight);
     fullScreenButton = [[NSButton alloc] initWithFrame:fullScreenBtnFrame];
     [fullScreenButton setTitle:@"Full Screen"];
     [fullScreenButton setButtonType:NSMomentaryLight];
@@ -131,7 +132,7 @@
     [contentView addSubview:fullScreenButton];
     
     // Create delay field label and input
-    NSRect delayLabelFrame = NSMakeRect(20, 170, 120, 20);
+    NSRect delayLabelFrame = NSMakeRect(15, 120, 110, 16);
     NSTextField *delayLabel = [[NSTextField alloc] initWithFrame:delayLabelFrame];
     [delayLabel setStringValue:@"Delay (seconds):"];
     [delayLabel setEditable:NO];
@@ -141,13 +142,20 @@
     [contentView addSubview:delayLabel];
     [delayLabel release];
     
-    NSRect delayFieldFrame = NSMakeRect(150, 170, 60, 20);
+    NSRect delayFieldFrame = NSMakeRect(125, 120, 50, 20);
     delayField = [[NSTextField alloc] initWithFrame:delayFieldFrame];
     [delayField setIntValue:0];
     [contentView addSubview:delayField];
     
-    // Create save button
-    NSRect saveBtnFrame = NSMakeRect(20, 50, 150, 30);
+    // Create save and copy buttons (bottom, equally sized)
+    CGFloat actionBtnY = 20;
+    CGFloat actionBtnHeight = 22;
+    CGFloat actionBtnWidth = 200;
+    CGFloat btnSpacing = 10;
+    CGFloat totalBtnWidth = 2 * actionBtnWidth + btnSpacing;
+    CGFloat btnStartX = (420 - totalBtnWidth) / 2;
+    
+    NSRect saveBtnFrame = NSMakeRect(btnStartX, actionBtnY, actionBtnWidth, actionBtnHeight);
     saveButton = [[NSButton alloc] initWithFrame:saveBtnFrame];
     [saveButton setTitle:@"Save Screenshot"];
     [saveButton setButtonType:NSMomentaryLight];
@@ -156,8 +164,7 @@
     [saveButton setEnabled:NO];
     [contentView addSubview:saveButton];
     
-    // Create copy button
-    NSRect copyBtnFrame = NSMakeRect(180, 50, 150, 30);
+    NSRect copyBtnFrame = NSMakeRect(btnStartX + actionBtnWidth + btnSpacing, actionBtnY, actionBtnWidth, actionBtnHeight);
     copyButton = [[NSButton alloc] initWithFrame:copyBtnFrame];
     [copyButton setTitle:@"Copy to Clipboard"];
     [copyButton setButtonType:NSMomentaryLight];
@@ -167,7 +174,7 @@
     [contentView addSubview:copyButton];
     
     // Create progress indicator
-    NSRect progressFrame = NSMakeRect(220, 255, 20, 20);
+    NSRect progressFrame = NSMakeRect(400, 180, 16, 16);
     progressIndicator = [[NSProgressIndicator alloc] initWithFrame:progressFrame];
     [progressIndicator setStyle:NSProgressIndicatorSpinningStyle];
     [progressIndicator setHidden:YES];
@@ -248,7 +255,21 @@
     
     // Get selection rectangle for window/area modes
     if (mode == ScreenshotModeWindow) {
+        // Hide the main window while the user selects a window so it doesn't get captured
+        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
+        if (windowWasVisible) {
+            [mainWindow orderOut:self];
+            // Give the window manager a brief moment to update
+            usleep(100000); // 100ms
+        }
+
         rect = [ScreenshotCapture selectWindow];
+
+        // Restore the main window after selection
+        if (windowWasVisible) {
+            [mainWindow makeKeyAndOrderFront:self];
+        }
+
         [self showProgressIndicator:NO];
         if (rect.width == 0 || rect.height == 0) {
             [self updateStatus:@"Window selection cancelled or failed"];
@@ -261,7 +282,20 @@
             return;
         }
     } else if (mode == ScreenshotModeArea) {
+        // Hide the main window while the user selects an area so it doesn't get captured
+        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
+        if (windowWasVisible) {
+            [mainWindow orderOut:self];
+            usleep(100000); // 100ms
+        }
+
         rect = [ScreenshotCapture selectArea];
+
+        // Restore the main window after selection
+        if (windowWasVisible) {
+            [mainWindow makeKeyAndOrderFront:self];
+        }
+
         [self showProgressIndicator:NO];
         if (rect.width == 0 || rect.height == 0) {
             [self updateStatus:@"Area selection cancelled or failed"];
@@ -583,8 +617,10 @@
         if ([arg isEqualToString:@"-h"] || [arg isEqualToString:@"--help"]) {
             showHelp = YES;
             break;
-        } else if ([arg isEqualToString:@"-s"] || [arg isEqualToString:@"--select"]) {
+        } else if ([arg isEqualToString:@"-a"] || [arg isEqualToString:@"--area"]) {
             mode = ScreenshotModeArea;
+        } else if ([arg isEqualToString:@"-s"] || [arg isEqualToString:@"--screen"]) {
+            mode = ScreenshotModeScreen;
         } else if ([arg isEqualToString:@"-w"] || [arg isEqualToString:@"--window"]) {
             mode = ScreenshotModeWindow;
         } else if ([arg isEqualToString:@"-d"] || [arg isEqualToString:@"--delay"]) {
@@ -644,6 +680,9 @@
                 exit(1);
             }
             break;
+        case ScreenshotModeScreen:
+            captureMode = CaptureFullScreen;
+            break;
         case ScreenshotModeFullScreen:
         default:
             captureMode = CaptureFullScreen;
@@ -669,8 +708,9 @@
     printf("Usage: Screenshot [options] [output-file]\n\n");
     printf("Options:\n");
     printf("  -h, --help         Show this help message\n");
-    printf("  -s, --select       Select area to screenshot\n");
+    printf("  -a, --area         Select area to screenshot (alias: --select)\n");
     printf("  -w, --window       Select window to screenshot\n");
+    printf("  -s, --screen       Capture the whole screen where cursor is\n");
     printf("  -d, --delay SEC    Wait SEC seconds before taking screenshot\n");
     printf("  -o, --output FILE  Save screenshot to FILE\n");
     printf("\n");

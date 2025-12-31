@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2025 Simon Peter
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+
 #ifndef ScreenshotController_h
 #define ScreenshotController_h
 
@@ -6,7 +13,8 @@
 typedef enum {
     ScreenshotModeWindow,
     ScreenshotModeArea,
-    ScreenshotModeFullScreen
+    ScreenshotModeFullScreen,
+    ScreenshotModeScreen
 } ScreenshotMode;
 
 @interface ScreenshotController : NSObject
