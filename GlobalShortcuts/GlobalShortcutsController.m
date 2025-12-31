@@ -5,6 +5,14 @@
  */
 
 #import "GlobalShortcutsController.h"
+#include <dirent.h>
+#include <ctype.h>
+#include <string.h>
+#include <sys/sysctl.h>
+#if !defined(__linux__)
+#include <sys/param.h>
+#include <sys/user.h>
+#endif
 
 // Helper function to parse key combinations with both + and - separators
 NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
@@ -226,17 +234,94 @@ NSArray *parseKeyComboInPrefPane(NSString *keyCombo) {
 
 - (BOOL)isDaemonRunningCheck
 {
-    // Check if globalshortcutsd is running
-    FILE *pipe = popen("pgrep -x globalshortcutsd", "r");
-    if (!pipe) {
-        return NO;
+    // Check if globalshortcutsd is running using native code
+    return [self findProcessByName:@"globalshortcutsd"] > 0;
+}
+
+- (pid_t)findProcessByName:(NSString *)processName
+{
+#if defined(__linux__)
+    // Linux implementation using /proc filesystem
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        return -1;
     }
     
-    char buffer[128];
-    BOOL found = (fgets(buffer, sizeof(buffer), pipe) != NULL);
-    pclose(pipe);
+    struct dirent *entry;
+    pid_t result = -1;
     
-    return found;
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Skip non-numeric entries
+        if (!isdigit(entry->d_name[0])) {
+            continue;
+        }
+        
+        pid_t pid = atoi(entry->d_name);
+        
+        // Skip kernel processes and init
+        if (pid <= 1) {
+            continue;
+        }
+        
+        // Read /proc/PID/stat to get command name
+        char stat_path[256];
+        snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
+        
+        FILE *stat_file = fopen(stat_path, "r");
+        if (!stat_file) {
+            continue;
+        }
+        
+        char comm[256];
+        int parsed_pid;
+        
+        // Parse: pid (comm) ...
+        if (fscanf(stat_file, "%d (%255[^)])", &parsed_pid, comm) == 2) {
+            if (strcmp(comm, [processName UTF8String]) == 0) {
+                result = pid;
+                fclose(stat_file);
+                break;
+            }
+        }
+        
+        fclose(stat_file);
+    }
+    
+    closedir(proc_dir);
+    return result;
+    
+#else
+    // BSD implementation using sysctl
+    int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    size_t size = 0;
+    
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
+        return -1;
+    }
+    
+    struct kinfo_proc *procs = malloc(size);
+    if (!procs) {
+        return -1;
+    }
+    
+    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
+        free(procs);
+        return -1;
+    }
+    
+    int numProcs = size / sizeof(struct kinfo_proc);
+    pid_t result = -1;
+    
+    for (int i = 0; i < numProcs; i++) {
+        if (strcmp(procs[i].ki_comm, [processName UTF8String]) == 0) {
+            result = procs[i].ki_pid;
+            break;
+        }
+    }
+    
+    free(procs);
+    return result;
+#endif
 }
 
 - (void)updateDaemonStatus

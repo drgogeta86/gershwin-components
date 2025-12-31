@@ -18,9 +18,103 @@
 #include <time.h>
 #include <errno.h>
 #include <string.h>
+#include <dirent.h>
+#include <ctype.h>
+#include <sys/sysctl.h>
+#if !defined(__linux__)
+#include <sys/param.h>
+#include <sys/user.h>
+#endif
 
 // Forward declarations
 @class globalshortcutsd;
+
+// Helper function to find a process by name, excluding a specific PID
+static pid_t findProcessByNameExcludingSelf(const char *processName, pid_t excludePid)
+{
+#if defined(__linux__)
+    // Linux implementation using /proc filesystem
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        return -1;
+    }
+    
+    struct dirent *entry;
+    pid_t result = -1;
+    
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Skip non-numeric entries
+        if (!isdigit(entry->d_name[0])) {
+            continue;
+        }
+        
+        pid_t pid = atoi(entry->d_name);
+        
+        // Skip kernel processes, init, and the excluded PID
+        if (pid <= 1 || pid == excludePid) {
+            continue;
+        }
+        
+        // Read /proc/PID/stat to get command name
+        char stat_path[256];
+        snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
+        
+        FILE *stat_file = fopen(stat_path, "r");
+        if (!stat_file) {
+            continue;
+        }
+        
+        char comm[256];
+        int parsed_pid;
+        
+        // Parse: pid (comm) ...
+        if (fscanf(stat_file, "%d (%255[^)])", &parsed_pid, comm) == 2) {
+            if (strcmp(comm, processName) == 0) {
+                result = pid;
+                fclose(stat_file);
+                break;
+            }
+        }
+        
+        fclose(stat_file);
+    }
+    
+    closedir(proc_dir);
+    return result;
+    
+#else
+    // BSD implementation using sysctl
+    int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    size_t size = 0;
+    
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
+        return -1;
+    }
+    
+    struct kinfo_proc *procs = malloc(size);
+    if (!procs) {
+        return -1;
+    }
+    
+    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
+        free(procs);
+        return -1;
+    }
+    
+    int numProcs = size / sizeof(struct kinfo_proc);
+    pid_t result = -1;
+    
+    for (int i = 0; i < numProcs; i++) {
+        if (procs[i].ki_pid != excludePid && strcmp(procs[i].ki_comm, processName) == 0) {
+            result = procs[i].ki_pid;
+            break;
+        }
+    }
+    
+    free(procs);
+    return result;
+#endif
+}
 
 // Helper function to parse key combinations with both + and - separators
 NSArray *parseKeyCombo(NSString *keyCombo) {
@@ -999,21 +1093,13 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Check if already running using pgrep (excluding self)
+    // Check if already running using native code (excluding self)
     pid_t mypid = getpid();
-    FILE *pf = popen("pgrep -x globalshortcutsd", "r");
-    if (pf) {
-        char buf[32];
-        while (fgets(buf, sizeof(buf), pf)) {
-            pid_t pid = (pid_t)atoi(buf);
-            if (pid > 0 && pid != mypid) {
-                fprintf(stderr, "Error: globalshortcutsd is already running (pid %d)\n", pid);
-                pclose(pf);
-                [pool release];
-                return 1;
-            }
-        }
-        pclose(pf);
+    pid_t other_pid = findProcessByNameExcludingSelf("globalshortcutsd", mypid);
+    if (other_pid > 0) {
+        fprintf(stderr, "Error: globalshortcutsd is already running (pid %d)\n", other_pid);
+        [pool release];
+        return 1;
     }
 
     // Initialize GNUstep

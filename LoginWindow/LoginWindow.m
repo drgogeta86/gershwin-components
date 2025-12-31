@@ -2231,14 +2231,187 @@ void signalHandler(int sig) {
     unlink("/tmp/.X0-lock");
     unlink("/tmp/.X11-unix/X0");
     
-    // Kill any existing X server processes on display :0
-    system("pkill -f 'X.*:0' || true");
-    system("pkill -f 'Xorg.*:0' || true");
+    // Kill any existing X server processes on display :0 using native code
+    [self killProcessesMatchingPattern:@"X" displayNumber:@":0"];
+    [self killProcessesMatchingPattern:@"Xorg" displayNumber:@":0"];
     
     // Wait a moment for cleanup
     usleep(500000); // 0.5 seconds
     
     NSLog(@"[DEBUG] X server cleanup complete");
+}
+
+- (void)killProcessesMatchingPattern:(NSString *)pattern displayNumber:(NSString *)displayNum
+{
+    NSLog(@"[DEBUG] Looking for processes matching pattern: %@", pattern);
+    
+#if defined(__linux__)
+    // Linux implementation using /proc filesystem
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        NSLog(@"[DEBUG] Failed to open /proc directory: %s", strerror(errno));
+        return;
+    }
+    
+    struct dirent *entry;
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Skip non-numeric entries
+        if (!isdigit(entry->d_name[0])) {
+            continue;
+        }
+        
+        pid_t pid = atoi(entry->d_name);
+        
+        // Skip kernel processes, init, and our own process
+        if (pid <= 1 || pid == getpid()) {
+            continue;
+        }
+        
+        // Read /proc/PID/cmdline to get process command line
+        char cmdline_path[256];
+        snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", pid);
+        
+        FILE *cmdline_file = fopen(cmdline_path, "r");
+        if (!cmdline_file) {
+            continue; // Process might have disappeared
+        }
+        
+        // Read the command line (null-separated arguments)
+        char cmdline[512] = {0};
+        size_t bytes_read = fread(cmdline, 1, sizeof(cmdline) - 1, cmdline_file);
+        fclose(cmdline_file);
+        
+        // Replace null separators with spaces for searching
+        for (size_t i = 0; i < bytes_read; i++) {
+            if (cmdline[i] == '\0') {
+                cmdline[i] = ' ';
+            }
+        }
+        cmdline[bytes_read] = '\0';
+        
+        // Check if command line matches pattern and display number
+        NSString *cmdlineStr = [NSString stringWithUTF8String:cmdline];
+        NSString *displayPattern = [NSString stringWithFormat:@"%@.*%@", pattern, displayNum];
+        
+        // Simple pattern matching: check if pattern exists and display number exists in cmdline
+        if ([cmdlineStr rangeOfString:pattern].location != NSNotFound &&
+            [cmdlineStr rangeOfString:displayNum].location != NSNotFound) {
+            
+            NSLog(@"[DEBUG] Found X server process: PID=%d, Command=%s", pid, cmdline);
+            
+            // Try SIGTERM first, then SIGKILL
+            if (kill(pid, SIGTERM) != 0) {
+                if (errno != ESRCH) {
+                    NSLog(@"[DEBUG] SIGTERM failed for PID %d, trying SIGKILL: %s", pid, strerror(errno));
+                    kill(pid, SIGKILL);
+                }
+            } else {
+                // Give process time to terminate gracefully
+                usleep(200000); // 200ms
+                // If still alive, force kill
+                if (kill(pid, 0) == 0) {
+                    kill(pid, SIGKILL);
+                }
+            }
+        }
+    }
+    
+    closedir(proc_dir);
+    
+#else
+    // BSD implementation using sysctl
+    int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    size_t size = 0;
+    
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
+        NSLog(@"[DEBUG] Failed to get process list size: %s", strerror(errno));
+        return;
+    }
+    
+    struct kinfo_proc *procs = malloc(size);
+    if (!procs) {
+        NSLog(@"[DEBUG] Failed to allocate memory for process list");
+        return;
+    }
+    
+    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
+        NSLog(@"[DEBUG] Failed to get process list: %s", strerror(errno));
+        free(procs);
+        return;
+    }
+    
+    int numProcs = size / sizeof(struct kinfo_proc);
+    NSLog(@"[DEBUG] Checking %d processes for X server cleanup", numProcs);
+    
+    for (int i = 0; i < numProcs; i++) {
+        pid_t pid = procs[i].ki_pid;
+        
+        // Skip kernel processes, init, and our own process
+        if (pid <= 1 || pid == getpid()) {
+            continue;
+        }
+        
+        // Get command arguments for this process
+        int mib_args[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ARGS, pid};
+        size_t args_size = 0;
+        
+        if (sysctl(mib_args, 4, NULL, &args_size, NULL, 0) != 0) {
+            continue; // Process might have disappeared
+        }
+        
+        char *args = malloc(args_size);
+        if (!args) {
+            continue;
+        }
+        
+        if (sysctl(mib_args, 4, args, &args_size, NULL, 0) != 0) {
+            free(args);
+            continue;
+        }
+        
+        // Build a searchable string from arguments
+        NSMutableString *cmdlineStr = [NSMutableString string];
+        char *p = args;
+        char *end = args + args_size;
+        
+        while (p < end) {
+            size_t len = strlen(p);
+            if (len == 0) break;
+            
+            if ([cmdlineStr length] > 0) {
+                [cmdlineStr appendString:@" "];
+            }
+            [cmdlineStr appendString:[NSString stringWithUTF8String:p]];
+            p += len + 1;
+        }
+        
+        free(args);
+        
+        // Check if command line matches pattern and display number
+        if ([cmdlineStr rangeOfString:pattern].location != NSNotFound &&
+            [cmdlineStr rangeOfString:displayNum].location != NSNotFound) {
+            
+            NSLog(@"[DEBUG] Found X server process: PID=%d, Command=%@", pid, cmdlineStr);
+            
+            // Try SIGTERM first, then SIGKILL
+            if (kill(pid, SIGTERM) != 0) {
+                if (errno != ESRCH) {
+                    NSLog(@"[DEBUG] SIGTERM failed for PID %d, trying SIGKILL: %s", pid, strerror(errno));
+                    kill(pid, SIGKILL);
+                }
+            } else {
+                // Give process time to terminate gracefully
+                usleep(200000); // 200ms
+                // If still alive, force kill
+                if (kill(pid, 0) == 0) {
+                    kill(pid, SIGKILL);
+                }
+            }
+        }
+    }
+    
+    free(procs);
+#endif
 }
  
 - (void)shakeWindow

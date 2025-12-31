@@ -33,11 +33,106 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <dirent.h>
+#include <ctype.h>
+#include <string.h>
+#include <sys/sysctl.h>
+#if !defined(__linux__)
+#include <sys/param.h>
+#include <sys/user.h>
+#endif
 
 // Forward declarations of functions from this file
 BOOL isXServerRunning(void);
 BOOL waitForXServer(void);
 BOOL startXServer(void);
+
+// Helper function to check if a process is running by name
+static BOOL isProcessRunningByName(const char *processName)
+{
+#if defined(__linux__)
+    // Linux implementation using /proc filesystem
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        return NO;
+    }
+    
+    struct dirent *entry;
+    BOOL found = NO;
+    
+    while ((entry = readdir(proc_dir)) != NULL) {
+        // Skip non-numeric entries
+        if (!isdigit(entry->d_name[0])) {
+            continue;
+        }
+        
+        pid_t pid = atoi(entry->d_name);
+        
+        // Skip kernel processes and init
+        if (pid <= 1) {
+            continue;
+        }
+        
+        // Read /proc/PID/stat to get command name
+        char stat_path[256];
+        snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
+        
+        FILE *stat_file = fopen(stat_path, "r");
+        if (!stat_file) {
+            continue;
+        }
+        
+        char comm[256];
+        int parsed_pid;
+        
+        // Parse: pid (comm) ...
+        if (fscanf(stat_file, "%d (%255[^)])", &parsed_pid, comm) == 2) {
+            if (strcmp(comm, processName) == 0) {
+                found = YES;
+                fclose(stat_file);
+                break;
+            }
+        }
+        
+        fclose(stat_file);
+    }
+    
+    closedir(proc_dir);
+    return found;
+    
+#else
+    // BSD implementation using sysctl
+    int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+    size_t size = 0;
+    
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0) {
+        return NO;
+    }
+    
+    struct kinfo_proc *procs = malloc(size);
+    if (!procs) {
+        return NO;
+    }
+    
+    if (sysctl(mib, 3, procs, &size, NULL, 0) != 0) {
+        free(procs);
+        return NO;
+    }
+    
+    int numProcs = size / sizeof(struct kinfo_proc);
+    BOOL found = NO;
+    
+    for (int i = 0; i < numProcs; i++) {
+        if (strcmp(procs[i].ki_comm, processName) == 0) {
+            found = YES;
+            break;
+        }
+    }
+    
+    free(procs);
+    return found;
+#endif
+}
 
 BOOL isXServerRunning(void)
 {
@@ -218,11 +313,8 @@ BOOL startXorgLikeShellScript(void)
 {
     NSLog(@"[DEBUG] Starting Xorg using shell script logic");
     
-    // Check if Xorg is already running (equivalent to pgrep -q Xorg)
-    FILE *pipe = popen("pgrep -q Xorg", "r");
-    int pgrep_result = pclose(pipe);
-    
-    if (pgrep_result == 0) {
+    // Check if Xorg is already running using native code
+    if (isProcessRunningByName("Xorg")) {
         NSLog(@"[DEBUG] Xorg already running, not starting our own instance");
         global_we_started_xorg = NO;
         return YES;
