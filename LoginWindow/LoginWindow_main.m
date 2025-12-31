@@ -36,10 +36,10 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <string.h>
-#include <sys/sysctl.h>
 #if !defined(__linux__)
 #include <sys/param.h>
 #include <sys/user.h>
+#include <sys/sysctl.h>
 #endif
 
 // Forward declarations of functions from this file

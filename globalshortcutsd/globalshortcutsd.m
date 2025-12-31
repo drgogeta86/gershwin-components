@@ -20,10 +20,10 @@
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
-#include <sys/sysctl.h>
 #if !defined(__linux__)
 #include <sys/param.h>
 #include <sys/user.h>
+#include <sys/sysctl.h>
 #endif
 
 // Forward declarations
