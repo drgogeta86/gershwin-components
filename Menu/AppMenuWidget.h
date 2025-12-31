@@ -49,4 +49,8 @@
 - (void)finishAntiFlickerTransition;
 - (void)antiFlickerTimeoutExpired:(NSTimer *)timer;
 
+// Window validation methods
++ (BOOL)isWindowStillValid:(Window)windowId;
++ (BOOL)safelyCheckWindow:(Window)windowId withDisplay:(Display *)display;
+
 @end

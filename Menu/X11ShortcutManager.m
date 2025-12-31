@@ -776,66 +776,85 @@ static int handleX11GrabError(Display *display, XErrorEvent *event)
         NSLog(@"X11ShortcutManager: Event monitoring thread started");
         
         while (!_shouldStopEventMonitoring && _display) {
-            // Process all pending X11 events
-            int eventCount = 0;
-            while (XPending(_display) && !_shouldStopEventMonitoring) {
-                XEvent event;
-                XNextEvent(_display, &event);
-                eventCount++;
-                
-                if (event.type == KeyPress) {
-                    XKeyEvent *keyEvent = &event.xkey;
-                    
-                    // Filter out lock key masks like globalshortcutsd does
-                    unsigned int filteredState = keyEvent->state;
-                    filteredState &= ~(_numlock_mask | _capslock_mask | _scrolllock_mask);
-                    
-                    NSLog(@"X11ShortcutManager: KeyPress event - keycode=%d, state=%u (filtered from %u), window=%lu", 
-                          keyEvent->keycode, filteredState, keyEvent->state, keyEvent->window);
-                    
-                    // Create key for lookup using the filtered state (no swapping needed)
-                    NSString *keycodeModifierKey = [NSString stringWithFormat:@"%d_%u", 
-                                                  keyEvent->keycode, filteredState];
-                    
-                    // Find the menu item for this shortcut
-                    NSString *menuItemKey = [_grabbedKeys objectForKey:keycodeModifierKey];
-                    if (menuItemKey) {
-                        NSLog(@"X11ShortcutManager: Found matching shortcut for key: %@", keycodeModifierKey);
-                        // Trigger the menu action on the main thread
-                        [self performSelectorOnMainThread:@selector(triggerMenuActionForKey:)
-                                               withObject:menuItemKey
-                                            waitUntilDone:NO];
-                    } else {
-                        NSLog(@"X11ShortcutManager: No matching shortcut found for key: %@", keycodeModifierKey);
+            @try {
+                // Process all pending X11 events
+                int eventCount = 0;
+                while (XPending(_display) && !_shouldStopEventMonitoring) {
+                    @try {
+                        XEvent event;
+                        XNextEvent(_display, &event);
+                        eventCount++;
                         
-                        // Debug: Log all registered shortcuts
-                        NSLog(@"X11ShortcutManager: Currently have %lu registered shortcuts:", (unsigned long)[_grabbedKeys count]);
-                        for (NSString *key in [_grabbedKeys allKeys]) {
-                            NSLog(@"X11ShortcutManager:   %@ -> %@", key, [_grabbedKeys objectForKey:key]);
+                        if (event.type == KeyPress) {
+                            XKeyEvent *keyEvent = &event.xkey;
+                            
+                            // Filter out lock key masks like globalshortcutsd does
+                            unsigned int filteredState = keyEvent->state;
+                            filteredState &= ~(_numlock_mask | _capslock_mask | _scrolllock_mask);
+                            
+                            NSLog(@"X11ShortcutManager: KeyPress event - keycode=%d, state=%u (filtered from %u), window=%lu", 
+                                  keyEvent->keycode, filteredState, keyEvent->state, keyEvent->window);
+                            
+                            // Create key for lookup using the filtered state (no swapping needed)
+                            NSString *keycodeModifierKey = [NSString stringWithFormat:@"%d_%u", 
+                                                          keyEvent->keycode, filteredState];
+                            
+                                    // Find the menu item for this shortcut
+                            NSString *menuItemKey = [_grabbedKeys objectForKey:keycodeModifierKey];
+                            if (menuItemKey) {
+                                NSLog(@"X11ShortcutManager: Found matching shortcut for key: %@", keycodeModifierKey);
+                                // Trigger the menu action on the main thread
+                                [self performSelectorOnMainThread:@selector(triggerMenuActionForKey:)
+                                                       withObject:menuItemKey
+                                                    waitUntilDone:NO];
+                            } else {
+                                NSLog(@"X11ShortcutManager: No matching shortcut found for key: %@", keycodeModifierKey);
+                                
+                                // Debug: Log all registered shortcuts
+                                NSLog(@"X11ShortcutManager: Currently have %lu registered shortcuts:", (unsigned long)[_grabbedKeys count]);
+                                for (NSString *key in [_grabbedKeys allKeys]) {
+                                    NSLog(@"X11ShortcutManager:   %@ -> %@", key, [_grabbedKeys objectForKey:key]);
+                                }
+                            }
+                        } else {
+                            // Log other event types occasionally for debugging
+                            static int otherEventCounter = 0;
+                            if (++otherEventCounter % 100 == 0) {
+                                NSLog(@"X11ShortcutManager: Received non-KeyPress event type: %d (count: %d)", event.type, otherEventCounter);
+                            }
                         }
                     }
-                } else {
-                    // Log other event types occasionally for debugging
-                    static int otherEventCounter = 0;
-                    if (++otherEventCounter % 100 == 0) {
-                        NSLog(@"X11ShortcutManager: Received non-KeyPress event type: %d (count: %d)", event.type, otherEventCounter);
+                    @catch (NSException *exception) {
+                        NSLog(@"X11ShortcutManager: Exception processing X11 event: %@", exception);
+                        // Continue processing other events
+                        eventCount++; // Still count this as a processed event
                     }
                 }
-            }
-            
-            // Only log thread activity when there are events or occasionally for debug
-            static int debugCounter = 0;
-            if (eventCount > 0 || ++debugCounter % 1000 == 0) { // Log every 10 seconds (1000 * 0.01s) or when events occur
-                if (eventCount > 0) {
-                    NSLog(@"X11ShortcutManager: Processed %d events this cycle", eventCount);
-                } else {
-                    NSLog(@"X11ShortcutManager: Event thread running (%d iterations, %lu grabbed keys, no events)", 
-                          debugCounter, (unsigned long)[_grabbedKeys count]);
+                
+                // Only log thread activity when there are events or occasionally for debug
+                static int debugCounter = 0;
+                if (eventCount > 0 || ++debugCounter % 1000 == 0) { // Log every 10 seconds (1000 * 0.01s) or when events occur
+                    if (eventCount > 0) {
+                        NSLog(@"X11ShortcutManager: Processed %d events this cycle", eventCount);
+                    } else {
+                        NSLog(@"X11ShortcutManager: Event thread running (%d iterations, %lu grabbed keys, no events)", 
+                              debugCounter, (unsigned long)[_grabbedKeys count]);
+                    }
                 }
+                
+                // Small sleep to prevent busy waiting and allow other threads to run
+                usleep(10000); // 10ms, similar to globalshortcutsd
             }
-            
-            // Small sleep to prevent busy waiting and allow other threads to run
-            usleep(10000); // 10ms, similar to globalshortcutsd
+            @catch (NSException *exception) {
+                NSLog(@"X11ShortcutManager: Critical exception in event monitoring thread: %@", exception);
+                NSLog(@"X11ShortcutManager: Thread will continue monitoring but display may be invalid");
+                // Sleep longer on critical errors to prevent rapid error loops
+                usleep(100000); // 100ms
+            }
+            @catch (...) {
+                NSLog(@"X11ShortcutManager: Unknown exception in event monitoring thread");
+                usleep(100000); // 100ms
+            }
         }
     }
     

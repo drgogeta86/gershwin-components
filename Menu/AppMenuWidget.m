@@ -17,6 +17,51 @@
 #import <X11/Xatom.h>
 #import <GNUstepGUI/GSTheme.h>
 
+// Global X11 error handling for BadWindow and other errors
+static BOOL x11_error_occurred = NO;
+static int x11_error_code = 0;
+
+// X11 error handler to prevent crashes
+static int handleX11Error(Display *display, XErrorEvent *event)
+{
+    (void)display;  // Suppress unused parameter warning
+    
+    x11_error_occurred = YES;
+    x11_error_code = event->error_code;
+    
+    if (event->error_code == BadWindow) {
+        NSLog(@"AppMenuWidget: X11 BadWindow error (window disappeared) - error_code=%d, request_code=%d", 
+              event->error_code, event->request_code);
+    } else if (event->error_code == BadDrawable) {
+        NSLog(@"AppMenuWidget: X11 BadDrawable error - error_code=%d, request_code=%d", 
+              event->error_code, event->request_code);
+    } else {
+        NSLog(@"AppMenuWidget: X11 error - error_code=%d, request_code=%d", 
+              event->error_code, event->request_code);
+    }
+    
+    // Don't call the default error handler which would terminate the program
+    return 0;
+}
+
+// Macro to safely wrap X11 calls with error handling
+#define SAFE_X11_CALL(display, call, cleanup_code) do { \
+    x11_error_occurred = NO; \
+    x11_error_code = 0; \
+    int (*oldHandler)(Display *, XErrorEvent *) = XSetErrorHandler(handleX11Error); \
+    XSync(display, False); \
+    \
+    call; \
+    \
+    XSync(display, False); \
+    XSetErrorHandler(oldHandler); \
+    \
+    if (x11_error_occurred) { \
+        NSLog(@"AppMenuWidget: X11 error occurred during call, executing cleanup"); \
+        cleanup_code; \
+    } \
+} while(0)
+
 @interface AppMenuView : NSMenuView
 @end
 
@@ -73,13 +118,22 @@
     
     // Get _NET_ACTIVE_WINDOW property
     Atom activeWindowAtom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
-    if (XGetWindowProperty(display, root, activeWindowAtom,
-                          0, 1, False, AnyPropertyType,
-                          &actualType, &actualFormat, &nitems, &bytesAfter,
-                          &prop) == Success && prop) {
-        activeWindow = *(Window*)prop;
-        XFree(prop);
-    }
+    SAFE_X11_CALL(display, {
+        if (XGetWindowProperty(display, root, activeWindowAtom,
+                              0, 1, False, AnyPropertyType,
+                              &actualType, &actualFormat, &nitems, &bytesAfter,
+                              &prop) == Success && prop) {
+            activeWindow = *(Window*)prop;
+            XFree(prop);
+        }
+    }, {
+        // Cleanup on error
+        if (prop) {
+            XFree(prop);
+            prop = NULL;
+        }
+        NSLog(@"AppMenuWidget: Failed to get active window due to X11 error");
+    });
     
     XCloseDisplay(display);
     
@@ -449,13 +503,22 @@
     
     // Get _NET_ACTIVE_WINDOW property
     Atom activeWindowAtom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
-    if (XGetWindowProperty(display, root, activeWindowAtom,
-                          0, 1, False, AnyPropertyType,
-                          &actualType, &actualFormat, &nitems, &bytesAfter,
-                          &prop) == Success && prop) {
-        activeWindow = *(Window*)prop;
-        XFree(prop);
-    }
+    SAFE_X11_CALL(display, {
+        if (XGetWindowProperty(display, root, activeWindowAtom,
+                              0, 1, False, AnyPropertyType,
+                              &actualType, &actualFormat, &nitems, &bytesAfter,
+                              &prop) == Success && prop) {
+            activeWindow = *(Window*)prop;
+            XFree(prop);
+        }
+    }, {
+        // Cleanup on error
+        if (prop) {
+            XFree(prop);
+            prop = NULL;
+        }
+        NSLog(@"AppMenuWidget: Failed to get active window for newly registered window check due to X11 error");
+    });
     
     XCloseDisplay(display);
     
@@ -857,14 +920,15 @@
     unsigned long numWindows, bytesAfter;
     Window *windows = NULL;
     
-    if (XGetWindowProperty(display, root, clientListAtom, 0, 1024, False, XA_WINDOW,
-                          &actualType, &actualFormat, &numWindows, &bytesAfter,
-                          (unsigned char**)&windows) == Success && windows) {
-        
-        NSUInteger warmedCount = 0;
-        MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-        
-        for (unsigned long i = 0; i < numWindows && warmedCount < 3; i++) {
+    SAFE_X11_CALL(display, {
+        if (XGetWindowProperty(display, root, clientListAtom, 0, 1024, False, XA_WINDOW,
+                              &actualType, &actualFormat, &numWindows, &bytesAfter,
+                              (unsigned char**)&windows) == Success && windows) {
+            
+            NSUInteger warmedCount = 0;
+            MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
+            
+            for (unsigned long i = 0; i < numWindows && warmedCount < 3; i++) {
             Window window = windows[i];
             
             // Skip current window (already loaded)
@@ -904,7 +968,15 @@
         XFree(windows);
         NSLog(@"AppMenuWidget: Pre-warmed cache for %lu windows of application %@", 
               (unsigned long)warmedCount, applicationName);
-    }
+        }
+    }, {
+        // Cleanup on error
+        if (windows) {
+            XFree(windows);
+            windows = NULL;
+        }
+        NSLog(@"AppMenuWidget: Failed to get client list for cache pre-warming due to X11 error");
+    });
     
     XCloseDisplay(display);
 }
@@ -986,13 +1058,22 @@
     
     // Get _NET_ACTIVE_WINDOW property
     Atom activeWindowAtom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
-    if (XGetWindowProperty(display, root, activeWindowAtom,
-                          0, 1, False, AnyPropertyType,
-                          &actualType, &actualFormat, &nitems, &bytesAfter,
-                          &prop) == Success && prop) {
-        activeWindow = *(Window*)prop;
-        XFree(prop);
-    }
+    SAFE_X11_CALL(display, {
+        if (XGetWindowProperty(display, root, activeWindowAtom,
+                              0, 1, False, AnyPropertyType,
+                              &actualType, &actualFormat, &nitems, &bytesAfter,
+                              &prop) == Success && prop) {
+            activeWindow = *(Window*)prop;
+            XFree(prop);
+        }
+    }, {
+        // Cleanup on error
+        if (prop) {
+            XFree(prop);
+            prop = NULL;
+        }
+        NSLog(@"AppMenuWidget: Failed to get active window for close operation due to X11 error");
+    });
     
     XCloseDisplay(display);
     
@@ -1050,22 +1131,37 @@
         self.antiFlickerTimer = nil;
     }
     
-    // Clean up any previous old menu view
+    // Clean up any previous old menu view with exception handling
     if (self.oldMenuView) {
         NSLog(@"AppMenuWidget: Removing previous oldMenuView");
-        [self.oldMenuView removeFromSuperview];
-        self.oldMenuView = nil;
+        @try {
+            [self.oldMenuView removeFromSuperview];
+            self.oldMenuView = nil;
+        }
+        @catch (NSException *exception) {
+            NSLog(@"AppMenuWidget: Exception removing previous oldMenuView: %@", exception);
+            self.oldMenuView = nil; // Force cleanup
+        }
     }
     
     // Move current menu view to old menu view (keep it visible)
     if (self.menuView) {
         NSLog(@"AppMenuWidget: Preserving current menuView for anti-flicker");
-        // IMPORTANT: Clear the menu reference from the old view to prevent crashes
-        // when the view tries to redraw after the menu is freed
-        [self.menuView setMenu:nil];
-        self.oldMenuView = self.menuView;  // Transfer ownership
-        self.menuView = nil;
-        NSLog(@"AppMenuWidget: Preserved old menu view to prevent flicker");
+        
+        @try {
+            // IMPORTANT: Clear the menu reference from the old view to prevent crashes
+            // when the view tries to redraw after the menu is freed
+            [self.menuView setMenu:nil];
+            self.oldMenuView = self.menuView;  // Transfer ownership
+            self.menuView = nil;
+            NSLog(@"AppMenuWidget: Preserved old menu view to prevent flicker");
+        }
+        @catch (NSException *exception) {
+            NSLog(@"AppMenuWidget: Exception preserving menu view: %@", exception);
+            // Clean up on error
+            self.menuView = nil;
+            self.oldMenuView = nil;
+        }
     }
     
     // Start 2-second timeout timer
@@ -1104,13 +1200,85 @@
         self.antiFlickerTimer = nil;
     }
     
-    // Remove the old menu view even if no new menu was loaded
-    if (self.oldMenuView) {
-        [self.oldMenuView removeFromSuperview];
-        self.oldMenuView = nil;
-        [self setNeedsDisplay:YES];
-        NSLog(@"AppMenuWidget: Forced removal of old menu view due to timeout");
+    // Check if the current window is still valid before doing cleanup
+    // This prevents crashes when windows disappear during the timeout period
+    if (self.currentWindowId != 0) {
+        BOOL windowStillExists = [AppMenuWidget isWindowStillValid:self.currentWindowId];
+        if (!windowStillExists) {
+            NSLog(@"AppMenuWidget: Current window %lu no longer exists, clearing state", self.currentWindowId);
+            self.currentWindowId = 0;
+            self.currentApplicationName = nil;
+            self.currentMenu = nil;
+        }
     }
+    
+    // Remove the old menu view even if no new menu was loaded
+    // Use @try/@catch to prevent crashes during view cleanup
+    if (self.oldMenuView) {
+        @try {
+            [self.oldMenuView removeFromSuperview];
+            self.oldMenuView = nil;
+            [self setNeedsDisplay:YES];
+            NSLog(@"AppMenuWidget: Forced removal of old menu view due to timeout");
+        }
+        @catch (NSException *exception) {
+            NSLog(@"AppMenuWidget: Exception during anti-flicker timeout cleanup: %@", exception);
+            // Force cleanup even if exception occurred
+            self.oldMenuView = nil;
+        }
+    }
+}
+
+#pragma mark - Window Validity Checks
+
++ (BOOL)isWindowStillValid:(Window)windowId
+{
+    if (windowId == 0) {
+        return NO;
+    }
+    
+    Display *display = XOpenDisplay(NULL);
+    if (!display) {
+        NSLog(@"AppMenuWidget: Cannot open X11 display for window validation");
+        return NO;
+    }
+    
+    BOOL isValid = NO;
+    
+    // Try to get window attributes to check if window still exists
+    SAFE_X11_CALL(display, {
+        XWindowAttributes attrs;
+        if (XGetWindowAttributes(display, windowId, &attrs) != BadWindow) {
+            isValid = YES;
+        }
+    }, {
+        // Error occurred - window is invalid
+        isValid = NO;
+    });
+    
+    XCloseDisplay(display);
+    return isValid;
+}
+
++ (BOOL)safelyCheckWindow:(Window)windowId withDisplay:(Display *)display
+{
+    if (windowId == 0 || !display) {
+        return NO;
+    }
+    
+    BOOL isValid = NO;
+    
+    SAFE_X11_CALL(display, {
+        XWindowAttributes attrs;
+        if (XGetWindowAttributes(display, windowId, &attrs) != BadWindow) {
+            isValid = YES;
+        }
+    }, {
+        // Error occurred - window is invalid
+        isValid = NO;
+    });
+    
+    return isValid;
 }
 
 @end
