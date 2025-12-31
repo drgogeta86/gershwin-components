@@ -9,6 +9,7 @@
 #import "ScreenshotCapture.h"
 #import <AppKit/NSApplication.h>
 #import <AppKit/NSWindow.h>
+#import <AppKit/NSPanel.h>
 #import <AppKit/NSButton.h>
 #import <AppKit/NSTextField.h>
 #import <AppKit/NSProgressIndicator.h>
@@ -67,14 +68,16 @@
     [[NSApplication sharedApplication] setMainMenu:mainMenu];
     [mainMenu release];
     
-    // Create main window (compact layout)
+    // Create main window as a utility panel (dialog-style)
     NSRect windowFrame = NSMakeRect(100, 100, 420, 260);
-    mainWindow = [[NSWindow alloc] initWithContentRect:windowFrame
-                                             styleMask:NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask
+    mainWindow = [[NSPanel alloc] initWithContentRect:windowFrame
+                                             styleMask:NSTitledWindowMask | NSClosableWindowMask | NSUtilityWindowMask
                                                backing:NSBackingStoreBuffered
                                                  defer:NO];
     [mainWindow setTitle:@"Screenshot"];
     [mainWindow setDelegate:self];
+    [(NSPanel *)mainWindow setFloatingPanel:NO];
+    [(NSPanel *)mainWindow setBecomesKeyOnlyIfNeeded:NO];
     
     NSView *contentView = [mainWindow contentView];
     
@@ -146,32 +149,6 @@
     delayField = [[NSTextField alloc] initWithFrame:delayFieldFrame];
     [delayField setIntValue:0];
     [contentView addSubview:delayField];
-    
-    // Create save and copy buttons (bottom, equally sized)
-    CGFloat actionBtnY = 20;
-    CGFloat actionBtnHeight = 22;
-    CGFloat actionBtnWidth = 200;
-    CGFloat btnSpacing = 10;
-    CGFloat totalBtnWidth = 2 * actionBtnWidth + btnSpacing;
-    CGFloat btnStartX = (420 - totalBtnWidth) / 2;
-    
-    NSRect saveBtnFrame = NSMakeRect(btnStartX, actionBtnY, actionBtnWidth, actionBtnHeight);
-    saveButton = [[NSButton alloc] initWithFrame:saveBtnFrame];
-    [saveButton setTitle:@"Save Screenshot"];
-    [saveButton setButtonType:NSMomentaryLight];
-    [saveButton setTarget:self];
-    [saveButton setAction:@selector(saveScreenshot:)];
-    [saveButton setEnabled:NO];
-    [contentView addSubview:saveButton];
-    
-    NSRect copyBtnFrame = NSMakeRect(btnStartX + actionBtnWidth + btnSpacing, actionBtnY, actionBtnWidth, actionBtnHeight);
-    copyButton = [[NSButton alloc] initWithFrame:copyBtnFrame];
-    [copyButton setTitle:@"Copy to Clipboard"];
-    [copyButton setButtonType:NSMomentaryLight];
-    [copyButton setTarget:self];
-    [copyButton setAction:@selector(copyToClipboard:)];
-    [copyButton setEnabled:NO];
-    [contentView addSubview:copyButton];
     
     // Create progress indicator
     NSRect progressFrame = NSMakeRect(400, 180, 16, 16);
@@ -265,10 +242,7 @@
 
         rect = [ScreenshotCapture selectWindow];
 
-        // Restore the main window after selection
-        if (windowWasVisible) {
-            [mainWindow makeKeyAndOrderFront:self];
-        }
+        // Don't restore the window - it will be hidden until dialog is shown
 
         [self showProgressIndicator:NO];
         if (rect.width == 0 || rect.height == 0) {
@@ -279,6 +253,7 @@
             [alert setAlertStyle:NSWarningAlertStyle];
             [alert runModal];
             [alert release];
+            [[NSApplication sharedApplication] terminate:self];
             return;
         }
     } else if (mode == ScreenshotModeArea) {
@@ -292,10 +267,7 @@
 
         rect = [ScreenshotCapture selectArea];
 
-        // Restore the main window after selection
-        if (windowWasVisible) {
-            [mainWindow makeKeyAndOrderFront:self];
-        }
+        // Don't restore the window - it will be hidden until dialog is shown
 
         [self showProgressIndicator:NO];
         if (rect.width == 0 || rect.height == 0) {
@@ -306,6 +278,7 @@
             [alert setAlertStyle:NSWarningAlertStyle];
             [alert runModal];
             [alert release];
+            [[NSApplication sharedApplication] terminate:self];
             return;
         }
     }
@@ -339,8 +312,9 @@
         [capturedImage release];
         capturedImage = [image retain];
         [self updateStatus:@"Screenshot captured successfully"];
-        [saveButton setEnabled:YES];
-        [copyButton setEnabled:YES];
+        
+        // Show alert with save/copy options
+        [self showPostCaptureDialog];
     } else {
         [self updateStatus:@"Failed to capture screenshot"];
         NSAlert *alert = [[NSAlert alloc] init];
@@ -349,6 +323,31 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
+    }
+}
+
+- (void)showPostCaptureDialog {
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Screenshot Captured"];
+    [alert setInformativeText:@"What would you like to do with the screenshot?"];
+    [alert addButtonWithTitle:@"Save to File"];
+    [alert addButtonWithTitle:@"Copy to Clipboard"];
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert setAlertStyle:NSInformationalAlertStyle];
+    
+    NSInteger response = [alert runModal];
+    [alert release];
+    
+    if (response == NSAlertFirstButtonReturn) {
+        // Save to file
+        [self showSavePanel];
+    } else if (response == NSAlertSecondButtonReturn) {
+        // Copy to clipboard
+        [self copyToClipboardAndQuit];
+    } else {
+        // Cancel - just quit
+        [[NSApplication sharedApplication] terminate:self];
     }
 }
 
@@ -360,13 +359,24 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     
     [self showSavePanel];
 }
 
+- (void)copyToClipboardAndQuit {
+    [self performCopyToClipboard];
+    // Quit after copy operation
+    [[NSApplication sharedApplication] terminate:self];
+}
+
 - (IBAction)copyToClipboard:(id)sender {
+    [self performCopyToClipboard];
+}
+
+- (void)performCopyToClipboard {
     NSLog(@"=== Copy to Clipboard Started ===");
     
     if (!capturedImage) {
@@ -377,6 +387,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     
@@ -390,6 +401,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     NSLog(@"TIFF data size: %lu bytes", (unsigned long)[tiffData length]);
@@ -404,6 +416,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     NSLog(@"Bitmap created: %ldx%ld, %ld bps, %ld spp", 
@@ -420,6 +433,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     NSLog(@"PNG data size: %lu bytes", (unsigned long)[pngData length]);
@@ -433,6 +447,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     
@@ -452,6 +467,7 @@
     NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
     if (!pasteboard) {
         NSLog(@"ERROR: Failed to get pasteboard");
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     NSLog(@"Got pasteboard: %@", pasteboard);
@@ -466,6 +482,7 @@
         NSLog(@"declareTypes completed");
     } @catch (NSException *exception) {
         NSLog(@"EXCEPTION in declareTypes: %@", exception);
+        [[NSApplication sharedApplication] terminate:self];
         return;
     }
     
@@ -477,6 +494,7 @@
         if (pngSuccess) {
             NSLog(@"=== Copy to Clipboard Completed Successfully ===");
             [self updateStatus:@"Screenshot copied to clipboard"];
+            return;  // Success
         } else {
             NSLog(@"ERROR: Failed to set PNG data on pasteboard");
             NSAlert *alert = [[NSAlert alloc] init];
@@ -485,6 +503,7 @@
             [alert setAlertStyle:NSWarningAlertStyle];
             [alert runModal];
             [alert release];
+            [[NSApplication sharedApplication] terminate:self];
         }
     } @catch (NSException *exception) {
         NSLog(@"EXCEPTION in setData: %@", exception);
@@ -494,6 +513,7 @@
         [alert setAlertStyle:NSWarningAlertStyle];
         [alert runModal];
         [alert release];
+        [[NSApplication sharedApplication] terminate:self];
     }
 }
 
@@ -590,6 +610,9 @@
             lastSavedPath = [filepath retain];
             [self updateStatus:[NSString stringWithFormat:@"Saved to: %@", filepath]];
             [self updateStatus:[NSString stringWithFormat:@"Screenshot saved to %@", [filepath lastPathComponent]]];
+            
+            // Quit after successful save
+            [[NSApplication sharedApplication] terminate:self];
         } else {
             NSAlert *alert = [[NSAlert alloc] init];
             [alert setMessageText:@"Save Failed"];
@@ -597,7 +620,13 @@
             [alert setAlertStyle:NSWarningAlertStyle];
             [alert runModal];
             [alert release];
+            
+            // Quit even after save failure
+            [[NSApplication sharedApplication] terminate:self];
         }
+    } else {
+        // User cancelled save dialog - quit
+        [[NSApplication sharedApplication] terminate:self];
     }
 }
 
