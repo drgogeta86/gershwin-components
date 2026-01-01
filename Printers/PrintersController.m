@@ -8,6 +8,9 @@
 #include <cups/cups.h>
 #include <cups/adminutil.h>
 #include <cups/ppd.h>
+#include <unistd.h>
+#include <grp.h>
+#include <pwd.h>
 
 #pragma mark - PrinterInfo Implementation
 
@@ -181,6 +184,10 @@ static void deviceCallback(const char *device_class,
         // Check if CUPS is available
         cupsAvailable = [self isCupsAvailable];
         NSLog(@"[Printers] Controller initialized, CUPS available: %@", cupsAvailable ? @"YES" : @"NO");
+        
+        // Check if user is in lpadmin group
+        userInLpadminGroup = [self isUserInLpadminGroup];
+        NSLog(@"[Printers] User in lpadmin group: %@", userInLpadminGroup ? @"YES" : @"NO");
     }
     return self;
 }
@@ -203,6 +210,7 @@ static void deviceCallback(const char *device_class,
     [pauseJobButton release];
     [statusLabel release];
     [printerInfoLabel release];
+    [privilegeWarningLabel release];
     [addPrinterPanel release];
     [deviceTable release];
     [deviceScroll release];
@@ -224,6 +232,72 @@ static void deviceCallback(const char *device_class,
         return YES;
     }
     return NO;
+}
+
+- (BOOL)isUserInLpadminGroup
+{
+    // Get current user's UID
+    uid_t uid = getuid();
+    
+    // Get user info
+    struct passwd *pwd = getpwuid(uid);
+    if (!pwd) {
+        NSLog(@"[Printers] Warning: Could not get user info for UID %d", uid);
+        return NO;
+    }
+    
+    // Get lpadmin group info
+    struct group *grp = getgrnam("lpadmin");
+    if (!grp) {
+        NSLog(@"[Printers] Warning: lpadmin group not found on system");
+        return NO;
+    }
+    
+    // Get all groups for current user
+    int ngroups = 0;
+    gid_t *groups = NULL;
+    
+    if (getgroups(0, NULL) > 0) {
+        ngroups = getgroups(0, NULL);
+        groups = malloc(ngroups * sizeof(gid_t));
+        getgroups(ngroups, groups);
+    }
+    
+    // Check if lpadmin group is in user's groups
+    BOOL found = NO;
+    gid_t lpadmin_gid = grp->gr_gid;
+    
+    for (int i = 0; i < ngroups; i++) {
+        if (groups[i] == lpadmin_gid) {
+            found = YES;
+            break;
+        }
+    }
+    
+    if (groups) {
+        free(groups);
+    }
+    
+    return found;
+}
+
+- (void)showPrivilegeWarningIfNeeded
+{
+    if (!userInLpadminGroup && cupsAvailable) {
+        NSString *username = [NSString stringWithUTF8String:getenv("USER") ?: "current user"];
+        
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Insufficient Privileges"];
+        [alert setInformativeText:[NSString stringWithFormat:
+            @"You are not a member of the 'lpadmin' group.\n\n"
+            @"To manage printers, run this command and then log out and back in:\n\n"
+            @"sudo usermod -a -G lpadmin %@",
+            username]];
+        [alert addButtonWithTitle:@"OK"];
+        [alert setAlertStyle:NSWarningAlertStyle];
+        [alert runModal];
+        [alert release];
+    }
 }
 
 - (NSView *)createMainView
@@ -250,6 +324,25 @@ static void deviceCallback(const char *device_class,
         [errorLabel release];
         
         return mainView;
+    }
+    
+    // Add privilege warning banner if user is not in lpadmin group
+    if (!userInLpadminGroup) {
+        // Create a simple separator line instead
+        NSBox *warningBox = [[NSBox alloc] initWithFrame:NSMakeRect(0, 345, 560, 1)];
+        [warningBox setBoxType:NSBoxSeparator];
+        [mainView addSubview:warningBox];
+        [warningBox release];
+        
+        privilegeWarningLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 350, 520, 25)];
+        [privilegeWarningLabel setStringValue:@"⚠️  You are not in the 'lpadmin' group. Printer management functions are disabled."];
+        [privilegeWarningLabel setBezeled:NO];
+        [privilegeWarningLabel setDrawsBackground:NO];
+        [privilegeWarningLabel setEditable:NO];
+        [privilegeWarningLabel setSelectable:NO];
+        [privilegeWarningLabel setFont:[NSFont systemFontOfSize:11]];
+        [privilegeWarningLabel setTextColor:[NSColor darkGrayColor]];
+        [mainView addSubview:privilegeWarningLabel];
     }
     
     // Printers label
@@ -308,14 +401,14 @@ static void deviceCallback(const char *device_class,
     [printerScroll setDocumentView:printerTable];
     
     // Printer buttons (right side)
-    addButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 310, 80, 28)];
+    addButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 310, 80, 24)];
     [addButton setTitle:@"Add..."];
     [addButton setBezelStyle:NSRoundedBezelStyle];
     [addButton setTarget:self];
     [addButton setAction:@selector(addPrinter:)];
     [mainView addSubview:addButton];
     
-    removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(460, 310, 80, 28)];
+    removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(460, 310, 80, 24)];
     [removeButton setTitle:@"Remove"];
     [removeButton setBezelStyle:NSRoundedBezelStyle];
     [removeButton setTarget:self];
@@ -323,7 +416,7 @@ static void deviceCallback(const char *device_class,
     [removeButton setEnabled:NO];
     [mainView addSubview:removeButton];
     
-    defaultButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 275, 170, 28)];
+    defaultButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 277, 170, 24)];
     [defaultButton setTitle:@"Set as Default"];
     [defaultButton setBezelStyle:NSRoundedBezelStyle];
     [defaultButton setTarget:self];
@@ -331,7 +424,7 @@ static void deviceCallback(const char *device_class,
     [defaultButton setEnabled:NO];
     [mainView addSubview:defaultButton];
     
-    optionsButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 240, 170, 28)];
+    optionsButton = [[NSButton alloc] initWithFrame:NSMakeRect(370, 244, 170, 24)];
     [optionsButton setTitle:@"Options..."];
     [optionsButton setBezelStyle:NSRoundedBezelStyle];
     [optionsButton setTarget:self];
@@ -406,7 +499,7 @@ static void deviceCallback(const char *device_class,
     [jobScroll setDocumentView:jobTable];
     
     // Job control buttons
-    cancelJobButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, 130, 90, 28)];
+    cancelJobButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, 130, 90, 24)];
     [cancelJobButton setTitle:@"Cancel Job"];
     [cancelJobButton setBezelStyle:NSRoundedBezelStyle];
     [cancelJobButton setTarget:self];
@@ -414,7 +507,7 @@ static void deviceCallback(const char *device_class,
     [cancelJobButton setEnabled:NO];
     [mainView addSubview:cancelJobButton];
     
-    pauseJobButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, 95, 90, 28)];
+    pauseJobButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, 99, 90, 24)];
     [pauseJobButton setTitle:@"Hold Job"];
     [pauseJobButton setBezelStyle:NSRoundedBezelStyle];
     [pauseJobButton setTarget:self];
@@ -432,6 +525,14 @@ static void deviceCallback(const char *device_class,
     [statusLabel setFont:[NSFont systemFontOfSize:10]];
     [statusLabel setTextColor:[NSColor darkGrayColor]];
     [mainView addSubview:statusLabel];
+    
+    // Disable admin buttons if user is not in lpadmin group
+    if (!userInLpadminGroup) {
+        [addButton setEnabled:NO];
+        [removeButton setEnabled:NO];
+        [defaultButton setEnabled:NO];
+        [optionsButton setEnabled:NO];
+    }
     
     return mainView;
 }
@@ -525,12 +626,17 @@ static void deviceCallback(const char *device_class,
         for (NSUInteger i = 0; i < [printers count]; i++) {
             PrinterInfo *p = [printers objectAtIndex:i];
             if ([[p name] isEqualToString:selectedName]) {
+                // Select the row - this will trigger tableViewSelectionDidChange
                 [printerTable selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
+                // Also set directly in case delegate isn't called
                 selectedPrinter = p;
                 break;
             }
         }
         [selectedName release];
+    } else {
+        // Clear selection if nothing was previously selected
+        selectedPrinter = nil;
     }
     
     // Update button states
@@ -1029,7 +1135,7 @@ static void deviceCallback(const char *device_class,
         [instructLabel release];
         
         // Discover button and progress
-        discoverButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 325, 100, 28)];
+        discoverButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 325, 100, 24)];
         [discoverButton setTitle:@"Discover"];
         [discoverButton setBezelStyle:NSRoundedBezelStyle];
         [discoverButton setTarget:self];
@@ -1119,7 +1225,7 @@ static void deviceCallback(const char *device_class,
         [self populateDriverPopup];
         
         // Buttons
-        NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(310, 10, 80, 28)];
+        NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(310, 10, 80, 24)];
         [cancelButton setTitle:@"Cancel"];
         [cancelButton setBezelStyle:NSRoundedBezelStyle];
         [cancelButton setTarget:self];
@@ -1127,7 +1233,7 @@ static void deviceCallback(const char *device_class,
         [content addSubview:cancelButton];
         [cancelButton release];
         
-        NSButton *addBtn = [[NSButton alloc] initWithFrame:NSMakeRect(400, 10, 80, 28)];
+        NSButton *addBtn = [[NSButton alloc] initWithFrame:NSMakeRect(400, 10, 80, 24)];
         [addBtn setTitle:@"Add"];
         [addBtn setBezelStyle:NSRoundedBezelStyle];
         [addBtn setTarget:self];
@@ -1431,7 +1537,7 @@ static void deviceCallback(const char *device_class,
     [sharedCheckbox release];
     
     // Enable/Disable button
-    NSButton *enableButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 60, 120, 28)];
+    NSButton *enableButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 60, 120, 24)];
     if ([[selectedPrinter state] isEqualToString:@"Stopped"]) {
         [enableButton setTitle:@"Enable"];
         [enableButton setTarget:self];
@@ -1446,7 +1552,7 @@ static void deviceCallback(const char *device_class,
     [enableButton release];
     
     // Close button
-    NSButton *closeButton = [[NSButton alloc] initWithFrame:NSMakeRect(300, 10, 80, 28)];
+    NSButton *closeButton = [[NSButton alloc] initWithFrame:NSMakeRect(300, 10, 80, 24)];
     [closeButton setTitle:@"Close"];
     [closeButton setBezelStyle:NSRoundedBezelStyle];
     [closeButton setTarget:optionsPanel];

@@ -62,6 +62,7 @@
 - (void)mainViewDidLoad
 {
     [controller refreshPrinters:nil];
+    [controller showPrivilegeWarningIfNeeded];
     [self setInitialKeyView:nil];
 }
 

@@ -117,11 +117,15 @@ typedef struct cups_job_s cups_job_t;
     
     BOOL cupsAvailable;
     BOOL isDiscovering;
+    BOOL userInLpadminGroup;
+    NSTextField *privilegeWarningLabel;
 }
 
 - (NSView *)createMainView;
 - (void)refreshPrinters:(NSTimer *)timer;
 - (void)refreshJobs;
+- (BOOL)isUserInLpadminGroup;
+- (void)showPrivilegeWarningIfNeeded;
 
 // Printer actions
 - (IBAction)addPrinter:(id)sender;
