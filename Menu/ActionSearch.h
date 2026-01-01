@@ -19,7 +19,6 @@
 @property (nonatomic, strong) NSString *keyEquivalent;   // Keyboard shortcut string
 @property (nonatomic, assign) NSUInteger modifierMask;   // Modifier keys
 @property (nonatomic, strong) NSMenuItem *menuItem;      // Reference to actual menu item
-@property (nonatomic, assign) NSInteger menuIndex;       // Index in parent menu
 
 - (id)initWithMenuItem:(NSMenuItem *)item path:(NSString *)path;
 
@@ -27,44 +26,17 @@
 
 
 /**
- * ActionSearchWindow - Popup window styled like a dropdown menu
- */
-@interface ActionSearchWindow : NSWindow
-
-- (id)initWithContentRect:(NSRect)contentRect;
-
-@end
-
-
-/**
- * ActionSearchResultView - A single result row in the search results
- */
-@interface ActionSearchResultView : NSView
-
-@property (nonatomic, strong) ActionSearchResult *result;
-@property (nonatomic, assign) BOOL isHighlighted;
-@property (nonatomic, weak) id target;
-@property (nonatomic, assign) SEL action;
-
-- (id)initWithFrame:(NSRect)frameRect result:(ActionSearchResult *)result;
-
-@end
-
-
-/**
- * ActionSearchController - Manages the search popup window and results
+ * ActionSearchController - Manages the search popup and results menu
  */
 @interface ActionSearchController : NSObject <NSTextFieldDelegate>
 
-@property (nonatomic, strong) ActionSearchWindow *searchWindow;
+@property (nonatomic, strong) NSPanel *searchPanel;
 @property (nonatomic, strong) NSTextField *searchField;
-@property (nonatomic, strong) NSScrollView *resultsScrollView;
-@property (nonatomic, strong) NSView *resultsContainer;
+@property (nonatomic, strong) NSMenu *resultsMenu;
 @property (nonatomic, strong) NSMutableArray *allMenuItems;
 @property (nonatomic, strong) NSMutableArray *filteredResults;
-@property (nonatomic, strong) NSMutableArray *resultViews;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
-@property (nonatomic, assign) NSInteger selectedIndex;
+@property (nonatomic, assign) NSPoint popupLocation;
 
 + (instancetype)sharedController;
 

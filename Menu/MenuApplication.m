@@ -330,13 +330,13 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
         NSLog(@"MenuApplication: KeyDown event, key window: %@, characters: %@", 
               keyWin, [event characters]);
         
-        // If no key window, check if action search window is visible and route to it
+        // If no key window, check if action search panel is visible and route to it
         if (!keyWin) {
-            // Find the ActionSearchWindow if visible
+            // Find the ActionSearchPanel if visible
             for (NSWindow *window in [self windows]) {
                 if ([window isVisible] && 
-                    [[window className] isEqualToString:@"ActionSearchWindow"]) {
-                    NSLog(@"MenuApplication: Routing KeyDown to ActionSearchWindow");
+                    [[window className] isEqualToString:@"ActionSearchPanel"]) {
+                    NSLog(@"MenuApplication: Routing KeyDown to ActionSearchPanel");
                     [window sendEvent:event];
                     return;
                 }

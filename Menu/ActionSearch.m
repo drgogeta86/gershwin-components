@@ -15,65 +15,20 @@
 static ActionSearchController *_sharedController = nil;
 static pthread_mutex_t _singletonMutex = PTHREAD_MUTEX_INITIALIZER;
 
-static const CGFloat kSearchWindowWidth = 300;
-static const CGFloat kSearchFieldHeight = 24;
-static const CGFloat kResultRowHeight = 22;
-static const CGFloat kMaxResultsShown = 12;
-static const CGFloat kWindowPadding = 8;
+static const CGFloat kSearchFieldWidth = 200;
+static const CGFloat kSearchFieldHeight = 22;
+static const CGFloat kMaxResultsShown = 15;
 
-#pragma mark - ActionSearchResult
 
-@implementation ActionSearchResult
+#pragma mark - ActionSearchPanel (custom panel that accepts keyboard)
 
-- (id)initWithMenuItem:(NSMenuItem *)item path:(NSString *)path
-{
-    self = [super init];
-    if (self) {
-        self.menuItem = item;
-        self.title = [item title];
-        self.path = path;
-        self.keyEquivalent = [item keyEquivalent];
-        self.modifierMask = [item keyEquivalentModifierMask];
-    }
-    return self;
-}
-
-- (NSString *)description
-{
-    return [NSString stringWithFormat:@"ActionSearchResult: %@ (%@)", self.title, self.path];
-}
-
+@interface ActionSearchPanel : NSPanel
 @end
 
-
-#pragma mark - ActionSearchWindow
-
-@implementation ActionSearchWindow
-
-- (id)initWithContentRect:(NSRect)contentRect
-{
-    // Use titled window to ensure proper keyboard handling
-    // We'll hide the title with minimal height later if needed
-    self = [super initWithContentRect:contentRect
-                            styleMask:NSTitledWindowMask
-                              backing:NSBackingStoreBuffered
-                                defer:NO];
-    if (self) {
-        [self setLevel:NSPopUpMenuWindowLevel];
-        [self setHasShadow:YES];
-        [self setOpaque:YES];
-        [self setBackgroundColor:[[GSTheme theme] menuBackgroundColor]];
-        [self setMovableByWindowBackground:NO];
-        [self setReleasedWhenClosed:NO];
-        [self setTitle:@""];  // Empty title
-        [self setAcceptsMouseMovedEvents:YES];
-    }
-    return self;
-}
+@implementation ActionSearchPanel
 
 - (BOOL)canBecomeKeyWindow
 {
-    // Required to receive keyboard events
     return YES;
 }
 
@@ -87,171 +42,29 @@ static const CGFloat kWindowPadding = 8;
     return YES;
 }
 
-- (void)keyDown:(NSEvent *)event
-{
-    NSLog(@"ActionSearchWindow: keyDown received: %@", [event characters]);
-    [super keyDown:event];
-}
-
-- (void)sendEvent:(NSEvent *)event
-{
-    NSEventType eventType = [event type];
-    
-    // Log keyboard-related events for debugging
-    // NSKeyDown=10, NSKeyUp=11, NSFlagsChanged=12
-    // Type 22 seems to be some kind of text input event in GNUstep
-    if (eventType == 10 || eventType == 11 || eventType == 12 || eventType == 22) {
-        NSLog(@"ActionSearchWindow: sendEvent type %lu, firstResponder: %@", 
-              (unsigned long)eventType, [self firstResponder]);
-    }
-    
-    // For key events (type 10 = NSKeyDown), try to route to first responder
-    if (eventType == 10) {
-        id firstResponder = [self firstResponder];
-        NSLog(@"ActionSearchWindow: KeyDown event, forwarding to %@", firstResponder);
-    }
-    
-    [super sendEvent:event];
-}
-
 @end
 
 
-#pragma mark - ActionSearchContentView
+#pragma mark - ActionSearchResult
 
-@interface ActionSearchContentView : NSView
-@end
+@implementation ActionSearchResult
 
-@implementation ActionSearchContentView
-
-- (void)drawRect:(NSRect)dirtyRect
+- (id)initWithMenuItem:(NSMenuItem *)item path:(NSString *)path
 {
-    (void)dirtyRect;
-    
-    // Draw menu-like background with rounded corners
-    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:4 yRadius:4];
-    
-    // Fill with menu background color
-    [[[GSTheme theme] menuBackgroundColor] set];
-    [path fill];
-    
-    // Draw subtle border
-    [[NSColor lightGrayColor] set];
-    [path stroke];
-}
-
-- (BOOL)isFlipped
-{
-    return NO;
-}
-
-@end
-
-
-#pragma mark - ActionSearchResultView
-
-@implementation ActionSearchResultView
-
-- (id)initWithFrame:(NSRect)frameRect result:(ActionSearchResult *)result
-{
-    self = [super initWithFrame:frameRect];
+    self = [super init];
     if (self) {
-        self.result = result;
-        self.isHighlighted = NO;
+        self.menuItem = item;
+        self.title = [item title];
+        self.path = path;
+        self.keyEquivalent = [item keyEquivalent] ?: @"";
+        self.modifierMask = [item keyEquivalentModifierMask];
     }
     return self;
 }
 
-- (void)drawRect:(NSRect)dirtyRect
+- (NSString *)description
 {
-    if (self.isHighlighted) {
-        [[NSColor selectedMenuItemColor] set];
-        NSRectFill(self.bounds);
-    }
-    
-    // Draw the path text
-    NSDictionary *attrs;
-    if (self.isHighlighted) {
-        attrs = @{
-            NSFontAttributeName: [NSFont menuFontOfSize:12],
-            NSForegroundColorAttributeName: [NSColor selectedMenuItemTextColor]
-        };
-    } else {
-        attrs = @{
-            NSFontAttributeName: [NSFont menuFontOfSize:12],
-            NSForegroundColorAttributeName: [NSColor textColor]
-        };
-    }
-    
-    NSString *displayText = [self.result path];
-    NSRect textRect = NSInsetRect(self.bounds, 8, 2);
-    
-    // If there's a shortcut, show it on the right
-    if ([[self.result keyEquivalent] length] > 0) {
-        NSString *shortcut = [self shortcutString];
-        NSDictionary *shortcutAttrs;
-        if (self.isHighlighted) {
-            shortcutAttrs = @{
-                NSFontAttributeName: [NSFont menuFontOfSize:11],
-                NSForegroundColorAttributeName: [[NSColor selectedMenuItemTextColor] colorWithAlphaComponent:0.8]
-            };
-        } else {
-            shortcutAttrs = @{
-                NSFontAttributeName: [NSFont menuFontOfSize:11],
-                NSForegroundColorAttributeName: [NSColor darkGrayColor]
-            };
-        }
-        
-        NSSize shortcutSize = [shortcut sizeWithAttributes:shortcutAttrs];
-        NSRect shortcutRect = NSMakeRect(NSMaxX(textRect) - shortcutSize.width, 
-                                         textRect.origin.y + (textRect.size.height - shortcutSize.height) / 2,
-                                         shortcutSize.width, shortcutSize.height);
-        [shortcut drawInRect:shortcutRect withAttributes:shortcutAttrs];
-        
-        // Adjust text rect to not overlap with shortcut
-        textRect.size.width -= shortcutSize.width + 10;
-    }
-    
-    [displayText drawInRect:textRect withAttributes:attrs];
-}
-
-- (NSString *)shortcutString
-{
-    NSMutableString *shortcut = [NSMutableString string];
-    NSUInteger mask = [self.result modifierMask];
-    
-    if (mask & NSCommandKeyMask) {
-        [shortcut appendString:@"⌘"];
-    }
-    if (mask & NSShiftKeyMask) {
-        [shortcut appendString:@"⇧"];
-    }
-    if (mask & NSAlternateKeyMask) {
-        [shortcut appendString:@"⌥"];
-    }
-    if (mask & NSControlKeyMask) {
-        [shortcut appendString:@"⌃"];
-    }
-    
-    NSString *key = [[self.result keyEquivalent] uppercaseString];
-    [shortcut appendString:key];
-    
-    return shortcut;
-}
-
-- (void)mouseDown:(NSEvent *)event
-{
-    (void)event;
-    if (self.target && self.action) {
-        [self.target performSelector:self.action withObject:self];
-    }
-}
-
-// Use mouseMoved for hover effects since NSTrackingArea is not available in GNUstep
-- (BOOL)acceptsFirstMouse:(NSEvent *)event
-{
-    (void)event;
-    return YES;
+    return [NSString stringWithFormat:@"ActionSearchResult: %@ (%@)", self.title, self.path];
 }
 
 @end
@@ -277,39 +90,33 @@ static const CGFloat kWindowPadding = 8;
     if (self) {
         self.allMenuItems = [NSMutableArray array];
         self.filteredResults = [NSMutableArray array];
-        self.resultViews = [NSMutableArray array];
-        self.selectedIndex = -1;
         
-        [self createSearchWindow];
+        [self createSearchPanel];
+        [self createResultsMenu];
     }
     return self;
 }
 
-- (void)createSearchWindow
+- (void)createSearchPanel
 {
-    // Create window with sufficient content height
-    CGFloat contentHeight = kSearchFieldHeight + kWindowPadding * 2;
-    NSRect contentRect = NSMakeRect(0, 0, kSearchWindowWidth, contentHeight);
+    // Create a small panel just for the search field
+    // Use borderless style - keyboard routing is handled in MenuApplication.sendEvent:
+    NSRect panelRect = NSMakeRect(0, 0, kSearchFieldWidth + 16, kSearchFieldHeight + 12);
     
-    self.searchWindow = [[ActionSearchWindow alloc] initWithContentRect:contentRect];
+    self.searchPanel = [[ActionSearchPanel alloc] initWithContentRect:panelRect
+                                                  styleMask:NSBorderlessWindowMask
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
+    [self.searchPanel setLevel:NSPopUpMenuWindowLevel];
+    [self.searchPanel setHasShadow:YES];
+    [self.searchPanel setOpaque:YES];
+    [self.searchPanel setBackgroundColor:[[GSTheme theme] menuBackgroundColor]];
+    [self.searchPanel setBecomesKeyOnlyIfNeeded:NO];
+    [self.searchPanel setReleasedWhenClosed:NO];
     
-    // Use the system-created content view and add a background view to it
-    NSView *contentView = [self.searchWindow contentView];
-    [contentView setAutoresizesSubviews:YES];
-    
-    NSLog(@"ActionSearchController: Window content view frame: %.0f,%.0f %.0fx%.0f",
-          contentView.frame.origin.x, contentView.frame.origin.y, 
-          contentView.frame.size.width, contentView.frame.size.height);
-    
-    // Add a background view that draws menu-like appearance
-    ActionSearchContentView *bgView = [[ActionSearchContentView alloc] initWithFrame:contentView.bounds];
-    [bgView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [contentView addSubview:bgView];
-    
-    // Create search field at the top of content area - add to contentView so it's on top of bgView
-    CGFloat fieldY = contentView.frame.size.height - kSearchFieldHeight - kWindowPadding;
+    // Create search field
     self.searchField = [[NSTextField alloc] initWithFrame:
-        NSMakeRect(kWindowPadding, fieldY, kSearchWindowWidth - kWindowPadding * 2, kSearchFieldHeight)];
+        NSMakeRect(8, 6, kSearchFieldWidth, kSearchFieldHeight)];
     [self.searchField setDelegate:self];
     [self.searchField setBordered:YES];
     [self.searchField setBezeled:YES];
@@ -317,44 +124,28 @@ static const CGFloat kWindowPadding = 8;
     [self.searchField setEditable:YES];
     [self.searchField setSelectable:YES];
     [self.searchField setEnabled:YES];
-    [self.searchField setFont:[NSFont systemFontOfSize:13]];
-    [self.searchField setRefusesFirstResponder:NO];
-    [[self.searchField cell] setSendsActionOnEndEditing:NO];
-    [[self.searchField cell] setScrollable:YES];
-    [[self.searchField cell] setWraps:NO];
+    [self.searchField setFont:[NSFont systemFontOfSize:12]];
     
-    // Make the text field focusable
-    [self.searchField setNextKeyView:self.searchField];
-    
-    // Placeholder text
+    // Placeholder
     NSAttributedString *placeholder = [[NSAttributedString alloc] 
         initWithString:@"Search menus..."
         attributes:@{
             NSForegroundColorAttributeName: [NSColor grayColor],
-            NSFontAttributeName: [NSFont systemFontOfSize:13]
+            NSFontAttributeName: [NSFont systemFontOfSize:12]
         }];
     [[self.searchField cell] setPlaceholderAttributedString:placeholder];
     
-    // Add search field directly to contentView (after bgView, so it's on top)
-    [contentView addSubview:self.searchField];
+    [[self.searchPanel contentView] addSubview:self.searchField];
     
-    // Create scroll view for results (initially hidden)
-    self.resultsScrollView = [[NSScrollView alloc] initWithFrame:
-        NSMakeRect(kWindowPadding, kWindowPadding, 
-                   kSearchWindowWidth - kWindowPadding * 2, 0)];
-    [self.resultsScrollView setHasVerticalScroller:YES];
-    [self.resultsScrollView setHasHorizontalScroller:NO];
-    [self.resultsScrollView setBorderType:NSNoBorder];
-    [self.resultsScrollView setAutohidesScrollers:YES];
-    [self.resultsScrollView setDrawsBackground:NO];
+    NSLog(@"ActionSearchController: Created search panel");
+}
+
+- (void)createResultsMenu
+{
+    self.resultsMenu = [[NSMenu alloc] initWithTitle:@"Search Results"];
+    [self.resultsMenu setAutoenablesItems:NO];
     
-    self.resultsContainer = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 
-        kSearchWindowWidth - kWindowPadding * 2, 0)];
-    [self.resultsScrollView setDocumentView:self.resultsContainer];
-    
-    [contentView addSubview:self.resultsScrollView];
-    
-    NSLog(@"ActionSearchController: Created search window");
+    NSLog(@"ActionSearchController: Created results menu");
 }
 
 - (void)setAppMenuWidget:(AppMenuWidget *)widget
@@ -364,128 +155,66 @@ static const CGFloat kWindowPadding = 8;
 
 - (void)showSearchPopupAtPoint:(NSPoint)point
 {
-    // CRITICAL: Suspend global key grabs so keyboard input reaches this window
+    // Suspend global key grabs
     [[X11ShortcutManager sharedManager] suspendKeyGrabs];
     
-    // Collect menu items first
+    // Collect menu items
     [self collectMenuItems];
     
     // Reset state
     [self.searchField setStringValue:@""];
     [self.filteredResults removeAllObjects];
-    self.selectedIndex = -1;
-    [self updateResultsDisplay];
     
-    // Position window below the click point
-    CGFloat windowHeight = kSearchFieldHeight + kWindowPadding * 2;
-    NSRect windowFrame = NSMakeRect(point.x - kSearchWindowWidth / 2, 
-                                    point.y - windowHeight,
-                                    kSearchWindowWidth, 
-                                    windowHeight);
+    // Store location for showing results menu
+    self.popupLocation = point;
     
-    // Make sure window stays on screen
+    // Position panel below click point
+    NSRect panelFrame = [self.searchPanel frame];
+    panelFrame.origin.x = point.x - panelFrame.size.width / 2;
+    panelFrame.origin.y = point.y - panelFrame.size.height;
+    
+    // Keep on screen
     NSRect screenFrame = [[NSScreen mainScreen] frame];
-    if (NSMaxX(windowFrame) > NSMaxX(screenFrame)) {
-        windowFrame.origin.x = NSMaxX(screenFrame) - kSearchWindowWidth - 10;
+    if (NSMaxX(panelFrame) > NSMaxX(screenFrame)) {
+        panelFrame.origin.x = NSMaxX(screenFrame) - panelFrame.size.width - 10;
     }
-    if (windowFrame.origin.x < screenFrame.origin.x) {
-        windowFrame.origin.x = screenFrame.origin.x + 10;
+    if (panelFrame.origin.x < screenFrame.origin.x) {
+        panelFrame.origin.x = screenFrame.origin.x + 10;
     }
     
-    [self.searchWindow setFrame:windowFrame display:YES];
-    [self.searchWindow orderFront:nil];
+    [self.searchPanel setFrame:panelFrame display:YES];
+    [self.searchPanel makeKeyAndOrderFront:nil];
     
-    // Force the window to become key and focus the search field
-    [NSApp activateIgnoringOtherApps:YES];
-    [self.searchWindow makeKeyAndOrderFront:nil];
-    
-    // Use a slight delay to ensure the window is ready for first responder
-    [self performSelector:@selector(focusSearchField) withObject:nil afterDelay:0.05];
+    // Focus the search field
+    [self.searchPanel makeFirstResponder:self.searchField];
     
     NSLog(@"ActionSearchController: Showing search popup at %.0f, %.0f", point.x, point.y);
 }
 
 - (void)hideSearchPopup
 {
-    [self.searchWindow orderOut:nil];
-    
-    // Resume global key grabs now that the popup is closed
+    [self.searchPanel orderOut:nil];
     [[X11ShortcutManager sharedManager] resumeKeyGrabs];
-    
     NSLog(@"ActionSearchController: Hiding search popup");
-}
-
-- (void)focusSearchField
-{
-    NSLog(@"ActionSearchController: focusSearchField called");
-    
-    // Debug: Check the text field's state
-    NSLog(@"ActionSearchController: searchField isEditable: %@", [self.searchField isEditable] ? @"YES" : @"NO");
-    NSLog(@"ActionSearchController: searchField isSelectable: %@", [self.searchField isSelectable] ? @"YES" : @"NO");
-    NSLog(@"ActionSearchController: searchField isEnabled: %@", [self.searchField isEnabled] ? @"YES" : @"NO");
-    NSLog(@"ActionSearchController: searchField superview: %@", [self.searchField superview]);
-    NSLog(@"ActionSearchController: searchField window: %@", [self.searchField window]);
-    NSLog(@"ActionSearchController: searchWindow: %@", self.searchWindow);
-    
-    // Activate the application first
-    [NSApp activateIgnoringOtherApps:YES];
-    
-    // Make window key
-    [self.searchWindow makeKeyAndOrderFront:nil];
-    NSLog(@"ActionSearchController: Window is key: %@", [self.searchWindow isKeyWindow] ? @"YES" : @"NO");
-    NSLog(@"ActionSearchController: Window is visible: %@", [self.searchWindow isVisible] ? @"YES" : @"NO");
-    
-    // Check if field is in window
-    if ([self.searchField window] != self.searchWindow) {
-        NSLog(@"ActionSearchController: ERROR - searchField is not in searchWindow!");
-    }
-    
-    // Try making the text field first responder
-    BOOL success = [self.searchWindow makeFirstResponder:self.searchField];
-    NSLog(@"ActionSearchController: makeFirstResponder result: %@", success ? @"YES" : @"NO");
-    
-    if (!success) {
-        // Try clicking on the text field programmatically
-        NSLog(@"ActionSearchController: Trying selectText approach");
-        [self.searchField selectText:self];
-        
-        // Try using the field editor directly
-        NSText *fieldEditor = [self.searchWindow fieldEditor:YES forObject:self.searchField];
-        if (fieldEditor) {
-            NSLog(@"ActionSearchController: Got field editor: %@, trying to focus it", fieldEditor);
-            success = [self.searchWindow makeFirstResponder:fieldEditor];
-            NSLog(@"ActionSearchController: makeFirstResponder on fieldEditor result: %@", success ? @"YES" : @"NO");
-            
-            // Ensure the field editor is ready
-            [fieldEditor setSelectedRange:NSMakeRange(0, 0)];
-            NSLog(@"ActionSearchController: Field editor first responder: %@", 
-                  [[self.searchWindow firstResponder] isEqual:fieldEditor] ? @"YES" : @"NO");
-        } else {
-            NSLog(@"ActionSearchController: Could not get field editor");
-        }
-    }
-    
-    // Log the current first responder
-    NSLog(@"ActionSearchController: Current first responder: %@", [self.searchWindow firstResponder]);
 }
 
 - (void)toggleSearchPopupAtPoint:(NSPoint)point
 {
-    if ([self.searchWindow isVisible]) {
+    if ([self.searchPanel isVisible]) {
         [self hideSearchPopup];
     } else {
         [self showSearchPopupAtPoint:point];
     }
 }
 
-#pragma mark - Menu Item Collection
+#pragma mark - Menu Collection
 
 - (void)collectMenuItems
 {
     [self.allMenuItems removeAllObjects];
     
     if (!self.appMenuWidget) {
-        NSLog(@"ActionSearchController: No appMenuWidget set, cannot collect menu items");
+        NSLog(@"ActionSearchController: No appMenuWidget set");
         return;
     }
     
@@ -495,11 +224,8 @@ static const CGFloat kWindowPadding = 8;
         return;
     }
     
-    NSLog(@"ActionSearchController: Collecting menu items from menu: %@", [currentMenu title]);
-    
-    // Recursively collect all menu items
+    NSLog(@"ActionSearchController: Collecting items from: %@", [currentMenu title]);
     [self collectItemsFromMenu:currentMenu withPath:@""];
-    
     NSLog(@"ActionSearchController: Collected %lu menu items", (unsigned long)[self.allMenuItems count]);
 }
 
@@ -507,14 +233,9 @@ static const CGFloat kWindowPadding = 8;
 {
     if (!menu) return;
     
-    NSArray *items = [menu itemArray];
-    for (NSMenuItem *item in items) {
-        // Skip separator items
-        if ([item isSeparatorItem]) {
-            continue;
-        }
+    for (NSMenuItem *item in [menu itemArray]) {
+        if ([item isSeparatorItem]) continue;
         
-        // Build the path for this item
         NSString *itemPath;
         NSString *itemTitle = [item title];
         
@@ -524,11 +245,9 @@ static const CGFloat kWindowPadding = 8;
             itemPath = itemTitle;
         }
         
-        // If it has a submenu, recurse into it
         if ([item hasSubmenu]) {
             [self collectItemsFromMenu:[item submenu] withPath:itemPath];
         } else if ([item isEnabled] && [item action] != nil) {
-            // Only add items that are enabled and have an action
             ActionSearchResult *result = [[ActionSearchResult alloc] initWithMenuItem:item path:itemPath];
             [self.allMenuItems addObject:result];
         }
@@ -542,7 +261,6 @@ static const CGFloat kWindowPadding = 8;
     [self.filteredResults removeAllObjects];
     
     if ([searchString length] == 0) {
-        [self updateResultsDisplay];
         return;
     }
     
@@ -556,136 +274,88 @@ static const CGFloat kWindowPadding = 8;
             [lowercasePath rangeOfString:lowercaseSearch].location != NSNotFound) {
             [self.filteredResults addObject:result];
         }
+        
+        if ([self.filteredResults count] >= kMaxResultsShown) {
+            break;
+        }
     }
     
     NSLog(@"ActionSearchController: Search '%@' found %lu results", 
           searchString, (unsigned long)[self.filteredResults count]);
     
-    self.selectedIndex = ([self.filteredResults count] > 0) ? 0 : -1;
-    [self updateResultsDisplay];
+    [self showResultsMenu];
 }
 
-- (void)updateResultsDisplay
+- (void)showResultsMenu
 {
-    // Remove old result views
-    for (ActionSearchResultView *view in self.resultViews) {
-        [view removeFromSuperview];
-    }
-    [self.resultViews removeAllObjects];
+    // Clear old items
+    [self.resultsMenu removeAllItems];
     
-    NSUInteger count = MIN([self.filteredResults count], (NSUInteger)kMaxResultsShown);
-    CGFloat resultsHeight = count * kResultRowHeight;
-    
-    // Resize the results container
-    NSRect containerFrame = NSMakeRect(0, 0, 
-                                       kSearchWindowWidth - kWindowPadding * 2, 
-                                       [self.filteredResults count] * kResultRowHeight);
-    [self.resultsContainer setFrame:containerFrame];
-    
-    // Add result views (from top to bottom in the flipped coordinate system)
-    for (NSUInteger i = 0; i < [self.filteredResults count]; i++) {
-        ActionSearchResult *result = [self.filteredResults objectAtIndex:i];
-        
-        // Position from top of container
-        CGFloat y = containerFrame.size.height - (i + 1) * kResultRowHeight;
-        NSRect rowFrame = NSMakeRect(0, y, containerFrame.size.width, kResultRowHeight);
-        
-        ActionSearchResultView *resultView = [[ActionSearchResultView alloc] 
-            initWithFrame:rowFrame result:result];
-        resultView.target = self;
-        resultView.action = @selector(resultClicked:);
-        resultView.isHighlighted = (i == (NSUInteger)self.selectedIndex);
-        
-        [self.resultsContainer addSubview:resultView];
-        [self.resultViews addObject:resultView];
+    if ([self.filteredResults count] == 0) {
+        return;
     }
     
-    // Resize window to fit results - use setContentSize instead of setFrame
-    CGFloat contentHeight = kSearchFieldHeight + kWindowPadding * 2;
-    if (count > 0) {
-        contentHeight += resultsHeight + kWindowPadding;
+    // Add result items
+    for (ActionSearchResult *result in self.filteredResults) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[result path]
+                                                      action:@selector(resultMenuItemClicked:)
+                                               keyEquivalent:@""];
+        [item setTarget:self];
+        [item setRepresentedObject:result];
+        [item setEnabled:YES];
+        
+        // Show keyboard shortcut if available
+        if ([[result keyEquivalent] length] > 0) {
+            [item setKeyEquivalent:[result keyEquivalent]];
+            [item setKeyEquivalentModifierMask:[result modifierMask]];
+        }
+        
+        [self.resultsMenu addItem:item];
     }
     
-    // Get current position and resize from top
-    NSRect windowFrame = [self.searchWindow frame];
-    NSRect oldContentRect = [[self.searchWindow contentView] frame];
-    CGFloat heightDiff = contentHeight - oldContentRect.size.height;
-    windowFrame.origin.y -= heightDiff;
-    windowFrame.size.height += heightDiff;
-    [self.searchWindow setFrame:windowFrame display:YES];
+    // Position menu below the search panel
+    NSRect panelFrame = [self.searchPanel frame];
+    NSPoint menuLocation = NSMakePoint(panelFrame.origin.x, panelFrame.origin.y);
     
-    // Get the new content view frame
-    NSRect contentViewFrame = [[self.searchWindow contentView] frame];
-    
-    // Update scroll view frame
-    CGFloat scrollHeight = resultsHeight;
-    CGFloat scrollY = kWindowPadding;
-    [self.resultsScrollView setFrame:NSMakeRect(kWindowPadding, scrollY, 
-                                                kSearchWindowWidth - kWindowPadding * 2, 
-                                                scrollHeight)];
-    
-    // Update search field position (at top of content view)
-    CGFloat fieldY = contentViewFrame.size.height - kSearchFieldHeight - kWindowPadding;
-    NSRect fieldFrame = [self.searchField frame];
-    fieldFrame.origin.y = fieldY;
-    [self.searchField setFrame:fieldFrame];
-    
-    NSLog(@"ActionSearchController: Updated layout - contentView: %.0fx%.0f, searchField at y=%.0f",
-          contentViewFrame.size.width, contentViewFrame.size.height, fieldY);
-    
-    // Redraw content view
-    [[self.searchWindow contentView] setNeedsDisplay:YES];
+    // Pop up the menu
+    [self.resultsMenu popUpMenuPositioningItem:nil 
+                                    atLocation:menuLocation 
+                                        inView:nil];
 }
 
-- (void)updateHighlight
+- (void)resultMenuItemClicked:(NSMenuItem *)sender
 {
-    for (NSUInteger i = 0; i < [self.resultViews count]; i++) {
-        ActionSearchResultView *view = [self.resultViews objectAtIndex:i];
-        view.isHighlighted = (i == (NSUInteger)self.selectedIndex);
-        [view setNeedsDisplay:YES];
+    ActionSearchResult *result = [sender representedObject];
+    if (result) {
+        NSLog(@"ActionSearchController: Selected: %@", [result path]);
+        [self hideSearchPopup];
+        [self executeActionForResult:result];
     }
 }
 
-#pragma mark - Actions
-
-- (void)resultClicked:(ActionSearchResultView *)sender
-{
-    [self executeActionForResult:sender.result];
-}
+#pragma mark - Action Execution
 
 - (void)executeActionForResult:(ActionSearchResult *)result
 {
     if (!result || !result.menuItem) {
-        NSLog(@"ActionSearchController: Cannot execute action - no valid result");
+        NSLog(@"ActionSearchController: Cannot execute - no result or menu item");
         return;
     }
     
-    NSLog(@"ActionSearchController: Executing action: %@", [result path]);
-    
-    // Hide the popup first
-    [self hideSearchPopup];
-    
-    // Get the original menu item
     NSMenuItem *originalItem = result.menuItem;
     
-    // Try to invoke the action
+    NSLog(@"ActionSearchController: Executing action for: %@", [result path]);
+    
+    // Try to invoke the menu item's action
     if ([originalItem target] && [originalItem action]) {
         @try {
             [[originalItem target] performSelector:[originalItem action] withObject:originalItem];
-        }
-        @catch (NSException *e) {
-            NSLog(@"ActionSearchController: Exception executing action: %@", e);
+        } @catch (NSException *exception) {
+            NSLog(@"ActionSearchController: Exception executing action: %@", exception);
         }
     } else if ([originalItem action]) {
-        NSMenu *menu = [originalItem menu];
-        if (menu) {
-            @try {
-                [menu performActionForItemAtIndex:[menu indexOfItem:originalItem]];
-            }
-            @catch (NSException *e) {
-                NSLog(@"ActionSearchController: Exception performing menu action: %@", e);
-            }
-        }
+        // No target - try first responder chain
+        [NSApp sendAction:[originalItem action] to:nil from:originalItem];
     }
 }
 
@@ -703,27 +373,8 @@ static const CGFloat kWindowPadding = 8;
     (void)control;
     (void)textView;
     
-    if (commandSelector == @selector(moveUp:)) {
-        if (self.selectedIndex > 0) {
-            self.selectedIndex--;
-            [self updateHighlight];
-        }
-        return YES;
-    } else if (commandSelector == @selector(moveDown:)) {
-        if (self.selectedIndex < (NSInteger)[self.filteredResults count] - 1) {
-            self.selectedIndex++;
-            [self updateHighlight];
-        }
-        return YES;
-    } else if (commandSelector == @selector(insertNewline:)) {
-        // Enter key - execute selected action
-        if (self.selectedIndex >= 0 && self.selectedIndex < (NSInteger)[self.filteredResults count]) {
-            ActionSearchResult *result = [self.filteredResults objectAtIndex:self.selectedIndex];
-            [self executeActionForResult:result];
-        }
-        return YES;
-    } else if (commandSelector == @selector(cancelOperation:)) {
-        // Escape key - close popup
+    if (commandSelector == @selector(cancelOperation:)) {
+        // Escape key - hide popup
         [self hideSearchPopup];
         return YES;
     }
@@ -742,31 +393,9 @@ static const CGFloat kWindowPadding = 8;
 {
     self = [super initWithFrame:frameRect];
     if (self) {
-        NSLog(@"ActionSearchMenuView: Initialized with frame %.0f,%.0f %.0fx%.0f",
-              frameRect.origin.x, frameRect.origin.y, frameRect.size.width, frameRect.size.height);
+        // Nothing special needed
     }
     return self;
-}
-
-- (void)drawRect:(NSRect)dirtyRect
-{
-    (void)dirtyRect;
-    
-    // Draw background matching menu bar
-    [[[GSTheme theme] menuItemBackgroundColor] set];
-    NSRectFill(self.bounds);
-    
-    // Draw the search icon/text
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont menuFontOfSize:13],
-        NSForegroundColorAttributeName: [NSColor textColor]
-    };
-    
-    NSString *label = @"🔍";
-    NSSize labelSize = [label sizeWithAttributes:attrs];
-    CGFloat x = (self.bounds.size.width - labelSize.width) / 2;
-    CGFloat y = (self.bounds.size.height - labelSize.height) / 2;
-    [label drawAtPoint:NSMakePoint(x, y) withAttributes:attrs];
 }
 
 - (void)setAppMenuWidget:(AppMenuWidget *)widget
@@ -775,25 +404,33 @@ static const CGFloat kWindowPadding = 8;
     [[ActionSearchController sharedController] setAppMenuWidget:widget];
 }
 
+- (void)drawRect:(NSRect)dirtyRect
+{
+    (void)dirtyRect;
+    
+    // Draw search icon (magnifying glass)
+    NSString *searchIcon = @"🔍";
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [NSColor darkGrayColor]
+    };
+    
+    NSSize iconSize = [searchIcon sizeWithAttributes:attrs];
+    NSPoint iconPoint = NSMakePoint((self.bounds.size.width - iconSize.width) / 2,
+                                    (self.bounds.size.height - iconSize.height) / 2);
+    [searchIcon drawAtPoint:iconPoint withAttributes:attrs];
+}
+
 - (void)mouseDown:(NSEvent *)event
 {
     (void)event;
     
-    NSLog(@"ActionSearchMenuView: mouseDown triggered");
+    // Get click location in screen coordinates
+    NSPoint locationInView = [self convertPoint:[event locationInWindow] fromView:nil];
+    NSPoint screenLocation = [[self window] convertBaseToScreen:
+        [self convertPoint:locationInView toView:nil]];
     
-    // Get position below this view
-    NSRect frame = [self frame];
-    NSPoint point = NSMakePoint(NSMidX(frame), frame.origin.y);
-    
-    // Convert to screen coordinates
-    point = [self convertPoint:point toView:nil];
-    NSRect windowFrame = [[self window] frame];
-    point.x += windowFrame.origin.x;
-    point.y += windowFrame.origin.y;
-    
-    NSLog(@"ActionSearchMenuView: Triggering popup at screen point %.0f, %.0f", point.x, point.y);
-    
-    [[ActionSearchController sharedController] toggleSearchPopupAtPoint:point];
+    [[ActionSearchController sharedController] toggleSearchPopupAtPoint:screenLocation];
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event
