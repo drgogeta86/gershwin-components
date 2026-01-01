@@ -1,0 +1,93 @@
+/*
+ * Copyright (c) 2026 Simon Peter
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#import "PrintersPane.h"
+#import "PrintersController.h"
+
+@implementation PrintersPane
+
+- (id)initWithBundle:(NSBundle *)bundle
+{
+    self = [super initWithBundle:bundle];
+    if (self) {
+        controller = [[PrintersController alloc] init];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [self stopRefreshTimer];
+    [controller release];
+    [super dealloc];
+}
+
+- (void)startRefreshTimer
+{
+    if (!refreshTimer) {
+        refreshTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                        target:controller
+                                                      selector:@selector(refreshPrinters:)
+                                                      userInfo:nil
+                                                       repeats:YES];
+        [refreshTimer retain];
+    }
+}
+
+- (void)stopRefreshTimer
+{
+    if (refreshTimer) {
+        [refreshTimer invalidate];
+        [refreshTimer release];
+        refreshTimer = nil;
+    }
+}
+
+- (NSView *)loadMainView
+{
+    if (_mainView == nil) {
+        _mainView = [[controller createMainView] retain];
+    }
+    return _mainView;
+}
+
+- (NSString *)mainNibName
+{
+    return nil;
+}
+
+- (void)mainViewDidLoad
+{
+    [controller refreshPrinters:nil];
+    [self setInitialKeyView:nil];
+}
+
+- (void)didSelect
+{
+    [super didSelect];
+    [controller refreshPrinters:nil];
+    [self setInitialKeyView:nil];
+}
+
+- (void)willUnselect
+{
+    NSLog(@"PrintersPane: willUnselect called");
+}
+
+- (void)didUnselect
+{
+    [super didUnselect];
+    [self stopRefreshTimer];
+    NSLog(@"PrintersPane: didUnselect called");
+}
+
+- (NSPreferencePaneUnselectReply)shouldUnselect
+{
+    NSLog(@"PrintersPane: shouldUnselect called, allowing unselect");
+    return NSUnselectNow;
+}
+
+@end

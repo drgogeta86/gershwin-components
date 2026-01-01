@@ -1,0 +1,9 @@
+{
+    CFBundleIdentifier = "org.gershwin.printers.prefpane";
+    NOTE = "Automatically generated";
+    NSExecutable = Printers;
+    NSMainNibFile = "";
+    NSPrefPaneIconFile = "Printers.png";
+    NSPrefPaneIconLabel = "Printers";
+    NSPrincipalClass = PrintersPane;
+}
