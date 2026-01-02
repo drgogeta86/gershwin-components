@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Simon Peter
+ * Copyright (c) 2026 Simon Peter
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -32,6 +32,7 @@ typedef enum {
     ScreenshotMode currentMode;
     NSString *lastSavedPath;
     NSImage *capturedImage;
+    NSData *capturedImagePNG;
     
     NSTimer *countdownTimer;
     int delayCountdown;
@@ -62,20 +63,20 @@ typedef enum {
 - (IBAction)takeAreaScreenshot:(id)sender;
 - (IBAction)takeFullScreenScreenshot:(id)sender;
 - (IBAction)saveScreenshot:(id)sender;
-- (IBAction)copyToClipboard:(id)sender;
 
 // Utility methods
 - (void)updateStatus:(NSString *)status;
 - (void)showProgressIndicator:(BOOL)show;
 - (void)setScreenshotMode:(ScreenshotMode)mode;
 - (NSString *)generateDefaultFileName;
+- (void)generatePNGData;
 - (BOOL)saveImageToFile:(NSString *)filepath;
 - (void)showSavePanel;
 
 // Timer and delay handling
-- (void)startDelayTimerBeforeSelection:(int)delay mode:(ScreenshotMode)mode;
+- (void)performDelayedSelection:(int)delay mode:(ScreenshotMode)mode;
 - (void)updateCountdownDisplay;
-- (void)performSelectionAfterDelay;
+- (void)performSelectionOnLiveScreen;
 
 // Command line handling
 - (void)handleCommandLineArguments;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Simon Peter
+ * Copyright (c) 2026 Simon Peter
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,33 +13,10 @@
 #import "ScreenshotCapture.h"
 
 int main(int argc, const char *argv[]) {
-   // Check if we have command-line arguments that indicate CLI mode
-   // (more than just the program name, and not just opening a file)
-   BOOL isCommandLineMode = NO;
+   // Always run as GUI app (even with command-line args)
+   // Set flag in controller if command-line args are present
+   BOOL hasCommandLineArgs = (argc > 1);
    
-   for (int i = 1; i < argc; i++) {
-       const char *arg = argv[i];
-       // Check for option flags
-       if (arg[0] == '-' || (i == 1 && argc > 1)) {
-           isCommandLineMode = YES;
-           break;
-       }
-   }
-   
-   if (isCommandLineMode && argc > 1) {
-       // Create autorelease pool for command-line mode
-       NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-       
-       // Create controller and handle command line directly
-       ScreenshotController *controller = [[ScreenshotController alloc] init];
-       [controller handleCommandLineArguments];
-       [controller release];
-       
-       [pool release];
-       return 0;
-   }
-   
-   // GUI mode - set up application and controller
    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
    
    // Create the application
@@ -64,10 +41,14 @@ int main(int argc, const char *argv[]) {
    [[NSApplication sharedApplication] setDelegate:controller];
    [controller createUI];
    
+   // If command-line args provided, hide window and process them
+   if (hasCommandLineArgs) {
+       [controller handleCommandLineArguments];
+   }
+   
    [pool release];
    
-   // Run the application - window will be shown by applicationDidFinishLaunching or we can show it here
+   // Run the application
    [[NSApplication sharedApplication] run];
-   return 0;
    return 0;
 }
