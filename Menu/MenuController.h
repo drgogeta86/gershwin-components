@@ -26,7 +26,6 @@
 @property (nonatomic, strong) AppMenuWidget *appMenuWidget;
 @property (nonatomic, strong) MenuProtocolManager *protocolManager;
 @property (nonatomic, strong) RoundedCornersView *roundedCornersView;
-@property (nonatomic, strong) ActionSearchMenuView *actionSearchView;
 @property (nonatomic, strong) NSMenuView *timeMenuView;
 @property (nonatomic, strong) NSMenu *timeMenu;
 @property (nonatomic, strong) NSMenuItem *timeMenuItem;

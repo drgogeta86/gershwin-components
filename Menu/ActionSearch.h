@@ -27,19 +27,30 @@
 
 
 /**
- * ActionSearchController - Manages the search popup and results menu
+ * ActionSearchSubmenu - Shows a search field when Search menu is clicked
+ * 
+ * When "Search" in the menu bar is clicked:
+ * 1. A small window appears below containing just a search field (sized like a menu item)
+ * 2. As user types, matching results appear in a regular NSMenu positioned below the search field
+ * 3. This makes the search field + results look like one continuous dropdown menu
  */
-@interface ActionSearchController : NSObject <NSTextFieldDelegate>
+@interface ActionSearchSubmenu : NSObject <NSTextFieldDelegate>
 
-@property (nonatomic, strong) NSPanel *searchPanel;
-@property (nonatomic, strong) NSTextField *searchField;
-@property (nonatomic, strong) NSMenu *resultsMenu;
+@property (nonatomic, strong) NSSearchField *searchField;
+@property (nonatomic, strong) NSPanel *searchFieldPanel;      // Small panel for search field
+@property (nonatomic, strong) NSMenu *resultsMenu;            // Regular menu for results
 @property (nonatomic, strong) NSMutableArray *allMenuItems;
 @property (nonatomic, strong) NSMutableArray *filteredResults;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
-@property (nonatomic, assign) NSPoint popupLocation;
+@property (nonatomic, assign) BOOL isSearching;
+@property (nonatomic, assign) CGFloat searchItemX;  // X coordinate of Search menu item
 
-+ (instancetype)sharedController;
++ (instancetype)sharedSubmenu;
+
+/**
+ * Create a "Search" menu item (no submenu - clicking opens search panel)
+ */
+- (NSMenuItem *)createSearchMenuItem;
 
 /**
  * Set the app menu widget reference to access current menus
@@ -47,19 +58,9 @@
 - (void)setAppMenuWidget:(AppMenuWidget *)widget;
 
 /**
- * Show the search popup at the given screen location
+ * Set the X coordinate of the Search menu item for positioning
  */
-- (void)showSearchPopupAtPoint:(NSPoint)point;
-
-/**
- * Hide the search popup
- */
-- (void)hideSearchPopup;
-
-/**
- * Toggle the search popup
- */
-- (void)toggleSearchPopupAtPoint:(NSPoint)point;
+- (void)setSearchItemX:(CGFloat)xCoord;
 
 /**
  * Collect all menu items from the current application menu
@@ -71,17 +72,48 @@
  */
 - (void)executeActionForResult:(ActionSearchResult *)result;
 
+/**
+ * Show the search panel below the Search menu item
+ */
+- (void)showSearchPanel;
+
+/**
+ * Show the search panel at specified X coordinate
+ */
+- (void)showSearchPanelAtX:(NSNumber *)xCoord;
+
+/**
+ * Hide search and cleanup
+ */
+- (void)hideSearch;
+
+/**
+ * Update results based on current search text
+ */
+- (void)updateSearchResults:(NSString *)searchText;
+
 @end
 
 
 /**
- * ActionSearchMenuView - Menu bar item that triggers the search popup
+ * ActionSearchController - Legacy support wrapper around ActionSearchSubmenu
  */
-@interface ActionSearchMenuView : NSView
+@interface ActionSearchController : NSObject <NSTextFieldDelegate>
 
+@property (nonatomic, strong) NSMutableArray *allMenuItems;
+@property (nonatomic, strong) NSMutableArray *filteredResults;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
 
-- (id)initWithFrame:(NSRect)frameRect;
++ (instancetype)sharedController;
+
 - (void)setAppMenuWidget:(AppMenuWidget *)widget;
+- (void)hideSearchPopup;
+- (void)toggleSearchPopupAtPoint:(NSPoint)point;
+- (void)collectMenuItems;
+- (void)executeActionForResult:(ActionSearchResult *)result;
+- (void)searchMenuItemClicked:(id)sender;
+- (void)searchMenuItemClicked:(id)sender atPoint:(NSPoint)point;
+- (void)checkIfClickIsOutside:(NSEvent *)event;
 
 @end
+

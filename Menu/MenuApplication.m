@@ -11,6 +11,7 @@
 #import "DBusMenuParser.h"
 #import "DBusConnection.h"
 #import "MenuCacheManager.h"
+#import "ActionSearch.h"
 #import <signal.h>
 #import <unistd.h>
 #import <objc/runtime.h>
@@ -346,6 +347,9 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
             [keyWin sendEvent:event];
             return;
         }
+    } else if (eventType == NSLeftMouseDown || eventType == NSRightMouseDown || eventType == NSOtherMouseDown) {
+        // Check if ActionSearch menu should close when clicking outside
+        [[ActionSearchController sharedController] checkIfClickIsOutside:event];
     } else if (eventType == NSMouseMoved) {
         // Suppress frequent event logging
     } else {

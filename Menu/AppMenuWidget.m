@@ -12,6 +12,7 @@
 #import "GTKActionHandler.h"
 #import "DBusMenuActionHandler.h"
 #import "MenuCacheManager.h"
+#import "ActionSearch.h"
 #import <X11/Xlib.h>
 #import <X11/Xutil.h>
 #import <X11/Xatom.h>
@@ -72,6 +73,63 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     [[[GSTheme theme] menuItemBackgroundColor] set];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
+}
+
+- (void)mouseDown:(NSEvent *)event
+{
+    NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
+    NSMenu *menu = [self menu];
+    
+    if (menu) {
+        NSLog(@"\n*** USER ACTION: CLICKED ON MENU BAR AT (%.0f, %.0f) ***", loc.x, loc.y);
+        
+        // Find which menu item was clicked using the actual item rects
+        NSInteger clickedIndex = [self indexOfItemAtPoint:loc];
+        
+        if (clickedIndex >= 0 && clickedIndex < (NSInteger)[[menu itemArray] count]) {
+            NSMenuItem *clickedItem = [[menu itemArray] objectAtIndex:clickedIndex];
+            
+            // Check if this is the Search menu item
+            if ([[clickedItem title] isEqual:@"Search"]) {
+                NSLog(@"AppMenuView: *** CLICKED ON SEARCH ITEM at index %ld ***", (long)clickedIndex);
+                
+                // Get the rect of the Search item for positioning
+                NSRect itemRect = [self rectOfItemAtIndex:clickedIndex];
+                NSWindow *menuWindow = [self window];
+                CGFloat searchItemScreenX = 0;
+                
+                NSLog(@"AppMenuView: itemRect = {%.0f, %.0f, %.0f, %.0f}", itemRect.origin.x, itemRect.origin.y, itemRect.size.width, itemRect.size.height);
+                
+                if (menuWindow) {
+                    NSPoint itemOriginInWindow = [self convertPoint:itemRect.origin toView:nil];
+                    NSRect windowFrame = [menuWindow frame];
+                    searchItemScreenX = windowFrame.origin.x + itemOriginInWindow.x;
+                    
+                    NSLog(@"AppMenuView: itemOriginInWindow = {%.0f, %.0f}", itemOriginInWindow.x, itemOriginInWindow.y);
+                    NSLog(@"AppMenuView: windowFrame = {%.0f, %.0f, %.0f, %.0f}", windowFrame.origin.x, windowFrame.origin.y, windowFrame.size.width, windowFrame.size.height);
+                    NSLog(@"AppMenuView: Computed searchItemScreenX = %.0f", searchItemScreenX);
+                }
+                
+                // Store X coordinate and invoke the action directly
+                id target = [clickedItem target];
+                
+                if (target && [target respondsToSelector:@selector(setSearchItemX:)]) {
+                    [target setSearchItemX:searchItemScreenX];
+                    
+                    // Call the action directly
+                    SEL action = [clickedItem action];
+                    if (action && [target respondsToSelector:action]) {
+                        [target performSelector:action];
+                    }
+                    return;  // Don't call super - we handled this click
+                }
+            }
+        }
+    }
+    
+    NSLog(@"AppMenuView: Click delegated to super for menu handling\n");
+    // Use default menu view behavior for non-Search items
+    [super mouseDown:event];
 }
 
 @end
@@ -389,8 +447,33 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     [self.menuView setHorizontal:YES];
     [self.menuView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
-    // Set the menu for the menu view
+    // Remove any existing Search items to prevent duplicates
+    NSInteger itemCount = [menu numberOfItems];
+    for (NSInteger i = itemCount - 1; i >= 0; i--) {
+        NSMenuItem *item = [menu itemAtIndex:i];
+        if ([[item title] isEqual:@"Search"]) {
+            [menu removeItemAtIndex:i];
+            NSLog(@"AppMenuWidget: Removed duplicate Search menu item");
+            break; // Only remove one to be safe
+        }
+    }
+    
+    // Create Search menu item with integrated submenu containing search field
+    // Use the new ActionSearchSubmenu for proper menu integration
+    ActionSearchSubmenu *searchSubmenu = [ActionSearchSubmenu sharedSubmenu];
+    [searchSubmenu setAppMenuWidget:self];
+    NSMenuItem *searchItem = [searchSubmenu createSearchMenuItem];
+    
+    [menu addItem:searchItem];
+    NSLog(@"AppMenuWidget: Added Search menu item with submenu to menu");
+    
+    // Set the menu for the menu view AFTER adding the Search item
     [self.menuView setMenu:menu];
+    
+    // Set the app menu widget for both action search implementations
+    [[ActionSearchController sharedController] setAppMenuWidget:self];
+    
+    NSLog(@"AppMenuWidget: Set menu view menu after adding Search item");
     
     // Set ourselves as the delegate of the main menu to catch AboutToShow events
     [menu setDelegate:self];
@@ -402,6 +485,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSMenuItem *item = [items objectAtIndex:i];
         NSLog(@"AppMenuWidget: Setting up item %lu: '%@' (submenu: %@)", 
               i, [item title], [item hasSubmenu] ? @"YES" : @"NO");
+        
+        // Skip the Search item - it has its own action to show the search panel
+        if ([[item title] isEqual:@"Search"]) {
+            NSLog(@"AppMenuWidget: Skipping Search item - it has ActionSearchSubmenu target");
+            continue;
+        }
         
         // Set target and action for logging purposes
         if (![item hasSubmenu]) {
@@ -697,14 +786,8 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 
 - (void)mouseUp:(NSEvent *)theEvent
 {
-    NSLog(@"AppMenuWidget: ===== MOUSE UP IN MENU =====");
-    NSLog(@"AppMenuWidget: Mouse up at: %@", NSStringFromPoint([theEvent locationInWindow]));
-    
-    if (self.menuView) {
-        [self.menuView mouseUp:theEvent];
-        NSLog(@"AppMenuWidget: Forwarded mouse up to menu view");
-    }
-    
+    // Don't forward mouseUp to menuView - it can cause infinite loops
+    // The menu view doesn't need to handle mouseUp for our purposes
 }
 
 // MARK: - Debug Methods
@@ -1279,6 +1362,23 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     });
     
     return isValid;
+}
+
+- (void)searchMenuItemClicked:(id)sender
+{
+    NSLog(@"AppMenuWidget: Search menu item clicked! Forwarding to ActionSearchController");
+    
+    // Calculate position just below the menu bar
+    NSScreen *mainScreen = [NSScreen mainScreen];
+    NSRect screenFrame = [mainScreen frame];
+    
+    // Position at screen center horizontally, just below the menu bar
+    // Menu bar is 28 pixels tall, so place panel at Y = height - 28 - (panel height + some offset)
+    NSPoint panelPosition = NSMakePoint(NSMidX(screenFrame), NSMaxY(screenFrame) - 28 - 50);
+    
+    NSLog(@"AppMenuWidget: Showing search panel below menu bar at: %.0f, %.0f", panelPosition.x, panelPosition.y);
+    
+    [[ActionSearchController sharedController] searchMenuItemClicked:sender atPoint:panelPosition];
 }
 
 @end
