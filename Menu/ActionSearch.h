@@ -19,6 +19,7 @@
 @property (nonatomic, strong) NSString *keyEquivalent;   // Keyboard shortcut string
 @property (nonatomic, assign) NSUInteger modifierMask;   // Modifier keys
 @property (nonatomic, strong) NSMenuItem *menuItem;      // Reference to actual menu item
+@property (nonatomic, assign) BOOL enabled;              // Whether item is enabled in original menu
 
 - (id)initWithMenuItem:(NSMenuItem *)item path:(NSString *)path;
 

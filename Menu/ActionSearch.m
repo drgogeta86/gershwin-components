@@ -58,6 +58,7 @@ static const CGFloat kMaxResultsShown = 15;
         self.path = path;
         self.keyEquivalent = [item keyEquivalent] ?: @"";
         self.modifierMask = [item keyEquivalentModifierMask];
+        self.enabled = [item isEnabled];
     }
     return self;
 }
@@ -239,15 +240,21 @@ static const CGFloat kMaxResultsShown = 15;
         NSString *itemPath;
         NSString *itemTitle = [item title];
         
+        // Append submenu indicator if this item has a submenu
+        if ([item hasSubmenu]) {
+            itemTitle = [NSString stringWithFormat:@"%@ ▷", itemTitle];
+        }
+        
         if ([path length] > 0) {
-            itemPath = [NSString stringWithFormat:@"%@ ▸ %@", path, itemTitle];
+            itemPath = [NSString stringWithFormat:@"%@ %@", path, itemTitle];
         } else {
             itemPath = itemTitle;
         }
         
         if ([item hasSubmenu]) {
             [self collectItemsFromMenu:[item submenu] withPath:itemPath];
-        } else if ([item isEnabled] && [item action] != nil) {
+        } else if ([item action] != nil) {
+            // Include both enabled and disabled items, but track enabled state
             ActionSearchResult *result = [[ActionSearchResult alloc] initWithMenuItem:item path:itemPath];
             [self.allMenuItems addObject:result];
         }
@@ -295,14 +302,32 @@ static const CGFloat kMaxResultsShown = 15;
         return;
     }
     
-    // Add result items
-    for (ActionSearchResult *result in self.filteredResults) {
+    // Add result items, with separators between different top-level menus
+    NSString *previousTopLevelMenu = @"";
+    for (NSUInteger i = 0; i < [self.filteredResults count]; i++) {
+        ActionSearchResult *result = [self.filteredResults objectAtIndex:i];
+        
+        // Extract top-level menu (first component of the path)
+        NSString *topLevelMenu = result.path;
+        NSRange firstSpace = [topLevelMenu rangeOfString:@" "];
+        if (firstSpace.location != NSNotFound) {
+            topLevelMenu = [topLevelMenu substringToIndex:firstSpace.location];
+        }
+        // Remove submenu indicator if present
+        topLevelMenu = [topLevelMenu stringByReplacingOccurrencesOfString:@" ▷" withString:@""];
+        
+        // Add separator if top-level menu changed (but not before the first item)
+        if (i > 0 && ![topLevelMenu isEqual:previousTopLevelMenu]) {
+            [self.resultsMenu addItem:[NSMenuItem separatorItem]];
+        }
+        
         NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[result path]
                                                       action:@selector(resultMenuItemClicked:)
                                                keyEquivalent:@""];
         [item setTarget:self];
         [item setRepresentedObject:result];
-        [item setEnabled:YES];
+        // Respect the enabled state from the original menu item
+        [item setEnabled:[result enabled]];
         
         // Show keyboard shortcut if available
         if ([[result keyEquivalent] length] > 0) {
@@ -311,6 +336,7 @@ static const CGFloat kMaxResultsShown = 15;
         }
         
         [self.resultsMenu addItem:item];
+        previousTopLevelMenu = topLevelMenu;
     }
     
     // Position menu below the search panel
@@ -349,7 +375,10 @@ static const CGFloat kMaxResultsShown = 15;
     // Try to invoke the menu item's action
     if ([originalItem target] && [originalItem action]) {
         @try {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             [[originalItem target] performSelector:[originalItem action] withObject:originalItem];
+            #pragma clang diagnostic pop
         } @catch (NSException *exception) {
             NSLog(@"ActionSearchController: Exception executing action: %@", exception);
         }
