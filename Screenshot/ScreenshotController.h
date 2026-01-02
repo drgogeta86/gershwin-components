@@ -32,6 +32,9 @@ typedef enum {
     ScreenshotMode currentMode;
     NSString *lastSavedPath;
     NSImage *capturedImage;
+    
+    NSTimer *countdownTimer;
+    int delayCountdown;
 }
 
 // UI Properties
@@ -68,6 +71,11 @@ typedef enum {
 - (NSString *)generateDefaultFileName;
 - (BOOL)saveImageToFile:(NSString *)filepath;
 - (void)showSavePanel;
+
+// Timer and delay handling
+- (void)startDelayTimerBeforeSelection:(int)delay mode:(ScreenshotMode)mode;
+- (void)updateCountdownDisplay;
+- (void)performSelectionAfterDelay;
 
 // Command line handling
 - (void)handleCommandLineArguments;

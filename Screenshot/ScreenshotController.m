@@ -39,6 +39,8 @@
         currentMode = ScreenshotModeFullScreen;
         lastSavedPath = nil;
         capturedImage = nil;
+        countdownTimer = nil;
+        delayCountdown = 0;
     }
     return self;
 }
@@ -46,6 +48,10 @@
 - (void)dealloc {
     [lastSavedPath release];
     [capturedImage release];
+    if (countdownTimer) {
+        [countdownTimer invalidate];
+        [countdownTimer release];
+    }
     [ScreenshotCapture cleanupX11];
     [super dealloc];
 }
@@ -224,66 +230,19 @@
 }
 
 - (void)performScreenshotWithMode:(ScreenshotMode)mode {
+    int delay = [delayField intValue];
+    
+    // For window and area selection modes, delay must happen BEFORE selection
+    if (mode == ScreenshotModeWindow || mode == ScreenshotModeArea) {
+        [self startDelayTimerBeforeSelection:delay mode:mode];
+        return;
+    }
+    
+    // For fullscreen mode, proceed directly with capture
     [self updateStatus:@"Taking screenshot..."];
     [self showProgressIndicator:YES];
     
-    int delay = [delayField intValue];
     CaptureRect rect = {0, 0, 0, 0};
-    
-    // Get selection rectangle for window/area modes
-    if (mode == ScreenshotModeWindow) {
-        // Hide the main window while the user selects a window so it doesn't get captured
-        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
-        if (windowWasVisible) {
-            [mainWindow orderOut:self];
-            // Give the window manager more time to unmap the window before grabbing pointer
-            usleep(250000); // 250ms - needed for X11 pointer grab to succeed
-        }
-
-        rect = [ScreenshotCapture selectWindow];
-
-        // Don't restore the window - it will be hidden until dialog is shown
-
-        [self showProgressIndicator:NO];
-        if (rect.width == 0 || rect.height == 0) {
-            [self updateStatus:@"Window selection cancelled or failed"];
-            NSAlert *alert = [[NSAlert alloc] init];
-            [alert setMessageText:@"Window Selection Failed"];
-            [alert setInformativeText:@"Unable to select window. This may be due to an X11 error. Check the terminal for details."];
-            [alert setAlertStyle:NSWarningAlertStyle];
-            [alert runModal];
-            [alert release];
-            [[NSApplication sharedApplication] terminate:self];
-            return;
-        }
-    } else if (mode == ScreenshotModeArea) {
-        // Hide the main window while the user selects an area so it doesn't get captured
-        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
-        if (windowWasVisible) {
-            [mainWindow orderOut:self];
-            // Give the window manager more time to unmap the window before grabbing pointer
-            usleep(250000); // 250ms - needed for X11 pointer grab to succeed
-        }
-
-        rect = [ScreenshotCapture selectArea];
-
-        // Don't restore the window - it will be hidden until dialog is shown
-
-        [self showProgressIndicator:NO];
-        if (rect.width == 0 || rect.height == 0) {
-            [self updateStatus:@"Area selection cancelled or failed"];
-            NSAlert *alert = [[NSAlert alloc] init];
-            [alert setMessageText:@"Area Selection Failed"];
-            [alert setInformativeText:@"Unable to select area. This may be due to an X11 error. Check the terminal for details."];
-            [alert setAlertStyle:NSWarningAlertStyle];
-            [alert runModal];
-            [alert release];
-            [[NSApplication sharedApplication] terminate:self];
-            return;
-        }
-    }
-    
-    // Perform the capture with the selected rect
     [self captureScreenshotWithRect:rect mode:mode delay:delay];
 }
 
@@ -748,6 +707,113 @@
     printf("If no output file is specified, a default name will be generated.\n");
     
     exit(0);
+}
+
+#pragma mark - Timer and Delay Handling
+
+- (void)startDelayTimerBeforeSelection:(int)delay mode:(ScreenshotMode)mode {
+    // Store the mode for later use
+    currentMode = mode;
+    
+    if (delay <= 0) {
+        // No delay, proceed directly with selection
+        [self performSelectionAfterDelay];
+        return;
+    }
+    
+    delayCountdown = delay;
+    [self updateCountdownDisplay];
+    
+    // Create and schedule the countdown timer
+    if (countdownTimer) {
+        [countdownTimer invalidate];
+        [countdownTimer release];
+    }
+    
+    countdownTimer = [[NSTimer scheduledTimerWithTimeInterval:1.0
+                                                       target:self
+                                                     selector:@selector(updateCountdownDisplay)
+                                                     userInfo:nil
+                                                      repeats:YES] retain];
+}
+
+- (void)updateCountdownDisplay {
+    if (delayCountdown > 0) {
+        [self updateStatus:[NSString stringWithFormat:@"Selection begins in %d seconds...", delayCountdown]];
+        delayCountdown--;
+    } else {
+        // Timer expired, perform selection
+        if (countdownTimer) {
+            [countdownTimer invalidate];
+            [countdownTimer release];
+            countdownTimer = nil;
+        }
+        [self performSelectionAfterDelay];
+    }
+}
+
+- (void)performSelectionAfterDelay {
+    [self updateStatus:@"Taking screenshot..."];
+    [self showProgressIndicator:YES];
+    
+    CaptureRect rect = {0, 0, 0, 0};
+    
+    // Get selection rectangle for window/area modes
+    if (currentMode == ScreenshotModeWindow) {
+        // Hide the main window while the user selects a window so it doesn't get captured
+        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
+        if (windowWasVisible) {
+            [mainWindow orderOut:self];
+            // Give the window manager more time to unmap the window before grabbing pointer
+            usleep(250000); // 250ms - needed for X11 pointer grab to succeed
+        }
+
+        rect = [ScreenshotCapture selectWindow];
+
+        // Don't restore the window - it will be hidden until dialog is shown
+
+        [self showProgressIndicator:NO];
+        if (rect.width == 0 || rect.height == 0) {
+            [self updateStatus:@"Window selection cancelled or failed"];
+            NSAlert *alert = [[NSAlert alloc] init];
+            [alert setMessageText:@"Window Selection Failed"];
+            [alert setInformativeText:@"Unable to select window. This may be due to an X11 error. Check the terminal for details."];
+            [alert setAlertStyle:NSWarningAlertStyle];
+            [alert runModal];
+            [alert release];
+            [[NSApplication sharedApplication] terminate:self];
+            return;
+        }
+    } else if (currentMode == ScreenshotModeArea) {
+        // Hide the main window while the user selects an area so it doesn't get captured
+        BOOL windowWasVisible = (mainWindow && [mainWindow isVisible]);
+        if (windowWasVisible) {
+            [mainWindow orderOut:self];
+            // Give the window manager more time to unmap the window before grabbing pointer
+            usleep(250000); // 250ms - needed for X11 pointer grab to succeed
+        }
+
+        rect = [ScreenshotCapture selectArea];
+
+        // Don't restore the window - it will be hidden until dialog is shown
+
+        [self showProgressIndicator:NO];
+        if (rect.width == 0 || rect.height == 0) {
+            [self updateStatus:@"Area selection cancelled or failed"];
+            NSAlert *alert = [[NSAlert alloc] init];
+            [alert setMessageText:@"Area Selection Failed"];
+            [alert setInformativeText:@"Unable to select area. This may be due to an X11 error. Check the terminal for details."];
+            [alert setAlertStyle:NSWarningAlertStyle];
+            [alert runModal];
+            [alert release];
+            [[NSApplication sharedApplication] terminate:self];
+            return;
+        }
+    }
+    
+    // Perform the capture with the selected rect
+    int delay = [delayField intValue];
+    [self captureScreenshotWithRect:rect mode:currentMode delay:delay];
 }
 
 @end
