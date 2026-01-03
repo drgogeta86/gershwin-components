@@ -313,6 +313,16 @@
     [self createTimeMenu];
     NSLog(@"MenuController: Time menu created");
     
+    // Create Action Search menu item - positioned between app menus and time menu
+    NSLog(@"MenuController: About to create action search view");
+    CGFloat searchWidth = 32;  // Just enough for the icon
+    CGFloat timeMenuWidth = 60;
+    CGFloat searchX = self.screenSize.width - timeMenuWidth - searchWidth - 10;
+    self.actionSearchView = [[ActionSearchMenuView alloc] initWithFrame:NSMakeRect(searchX, 0, searchWidth, menuBarHeight)];
+    [self.actionSearchView setAppMenuWidget:self.appMenuWidget];
+    [self.actionSearchView setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin | NSViewMinYMargin];
+    NSLog(@"MenuController: Action search view created");
+    
     // probono: Create rounded corners view for black top corners like in old/src/mainwindow.cpp
     // Position it at the top of the menu bar, with height enough for the corner radius effect
     CGFloat cornerHeight = 10.0; // 2 * corner radius (5px)
@@ -321,6 +331,7 @@
     // Add subviews in the correct order (background first, then content, then corners on top)
     [[self.menuBar contentView] addSubview:self.menuBarView];
     [[self.menuBar contentView] addSubview:self.appMenuWidget];
+    [[self.menuBar contentView] addSubview:self.actionSearchView];
     [[self.menuBar contentView] addSubview:self.timeMenuView];
     [[self.menuBar contentView] addSubview:self.roundedCornersView];
 }

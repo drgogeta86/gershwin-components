@@ -12,12 +12,10 @@
 #import "GTKActionHandler.h"
 #import "DBusMenuActionHandler.h"
 #import "MenuCacheManager.h"
-#import "ActionSearch.h"
 #import <X11/Xlib.h>
 #import <X11/Xutil.h>
 #import <X11/Xatom.h>
 #import <GNUstepGUI/GSTheme.h>
-#import <objc/message.h>
 
 // Global X11 error handling for BadWindow and other errors
 static BOOL x11_error_occurred = NO;
@@ -99,23 +97,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     [[[GSTheme theme] menuItemBackgroundColor] set];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
-}
-
-- (void)mouseDown:(NSEvent *)event
-{
-    NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-    NSMenu *menu = [self menu];
-    
-    if (menu) {
-        NSLog(@"\n*** USER ACTION: CLICKED ON MENU BAR AT (%.0f, %.0f) ***", loc.x, loc.y);
-        
-        // Let the normal menu system handle all clicks now - method swizzling will intercept submenu display
-        NSLog(@"AppMenuView: Click delegated to super for normal menu handling");
-    }
-    
-    NSLog(@"AppMenuView: Click delegated to super for menu handling\n");
-    // Use default menu view behavior for non-Search items
-    [super mouseDown:event];
 }
 
 @end
@@ -213,87 +194,19 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     SAFE_X11_CALL(display, {
         if (XGetWindowProperty(display, root, activeWindowAtom,
                               0, 1, False, AnyPropertyType,
-                              &actualType, &actualFormat,
-                              &nitems, &bytesAfter, &prop) == Success && prop) {
-            activeWindow = *(Window *)prop;
+                              &actualType, &actualFormat, &nitems, &bytesAfter,
+                              &prop) == Success && prop) {
+            activeWindow = *(Window*)prop;
             XFree(prop);
         }
     }, {
         // Cleanup on error
-        if (prop) XFree(prop);
-        XCloseDisplay(display);
-        return;
+        if (prop) {
+            XFree(prop);
+            prop = NULL;
+        }
+        NSLog(@"AppMenuWidget: Failed to get active window due to X11 error");
     });
-
-    // Check if this window is safe to access before doing any operations
-    if (activeWindow != 0 && ![AppMenuWidget isWindowSafeToAccess:activeWindow]) {
-        NSLog(@"AppMenuWidget: Skipping window %lu - marked as invalid", activeWindow);
-        XCloseDisplay(display);
-        return;
-    }
-    
-    // Check if this window belongs to the Menu application itself - if so, ignore the change
-    // to prevent ActionSearch popup from triggering fallback menu activation
-    if (activeWindow != 0) {
-        // First check: Get process ID of the window and compare with our own PID
-        pid_t windowPid = 0;
-        Atom pidAtom = XInternAtom(display, "_NET_WM_PID", True);
-        if (pidAtom != None) {
-            Atom actualType;
-            int actualFormat;
-            unsigned long nitems, bytesAfter;
-            unsigned char *pidProp = NULL;
-            
-            SAFE_X11_CALL(display, {
-                if (XGetWindowProperty(display, activeWindow, pidAtom, 0, 1, False, 
-                                     XA_CARDINAL, &actualType, &actualFormat, 
-                                     &nitems, &bytesAfter, &pidProp) == Success && pidProp) {
-                    windowPid = *((pid_t*)pidProp);
-                    XFree(pidProp);
-                }
-            }, {
-                if (pidProp) {
-                    XFree(pidProp);
-                }
-            });
-        }
-        
-        pid_t myPid = getpid();
-        NSLog(@"AppMenuWidget: Window %lu PID check: window PID=%d, my PID=%d", activeWindow, (int)windowPid, (int)myPid);
-        
-        if (windowPid > 0 && windowPid == myPid) {
-            NSLog(@"AppMenuWidget: *** FILTERING DETECTED *** Ignoring window change to Menu application itself (window %lu, PID=%d) - likely ActionSearch panel", activeWindow, (int)windowPid);
-            XCloseDisplay(display);
-            return;
-        } else if (windowPid > 0) {
-            NSLog(@"AppMenuWidget: Window %lu belongs to different process (PID=%d), processing normally", activeWindow, (int)windowPid);
-        } else {
-            NSLog(@"AppMenuWidget: Window %lu has no PID property, processing normally", activeWindow);
-        }
-        
-        // Second check: Try application name for additional context (but don't rely on it for filtering)
-        NSString *appName = nil;
-        @try {
-            appName = [MenuUtils getApplicationNameForWindow:activeWindow];
-        }
-        @catch (NSException *exception) {
-            NSLog(@"AppMenuWidget: Exception getting app name for window %lu: %@", activeWindow, exception);
-            appName = nil;
-        }
-        
-        NSLog(@"AppMenuWidget: Window %lu belongs to application: '%@'", activeWindow, appName ? appName : @"(nil)");
-        
-        // Additional fallback check for application name if PID check didn't work
-        if (appName && ([appName isEqualToString:@"Menu"] || 
-                       [appName isEqualToString:@"Menu.app"] ||
-                       [appName hasPrefix:@"Menu.app"] ||
-                       [appName hasSuffix:@"Menu"] ||
-                       [appName containsString:@"Menu"])) {
-            NSLog(@"AppMenuWidget: Ignoring window change to Menu application by name (window %lu, app=%@)", activeWindow, appName);
-            XCloseDisplay(display);
-            return;
-        }
-    }
     
     XCloseDisplay(display);
     
@@ -401,19 +314,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     if (windowId == 0) {
         return;
-    }
-    
-    // Check if window still exists before proceeding
-    Display *display = XOpenDisplay(NULL);
-    if (display) {
-        BOOL windowValid = [AppMenuWidget safelyCheckWindow:windowId withDisplay:display];
-        XCloseDisplay(display);
-        
-        if (!windowValid) {
-            NSLog(@"AppMenuWidget: Window %lu is no longer valid, calling emergency cleanup", windowId);
-            [self handleWindowDisappeared:windowId];
-            return;
-        }
     }
     
     // Get application name for this window
@@ -562,33 +462,8 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     [self.menuView setHorizontal:YES];
     [self.menuView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
-    // Remove any existing Search items to prevent duplicates
-    NSInteger itemCount = [menu numberOfItems];
-    for (NSInteger i = itemCount - 1; i >= 0; i--) {
-        NSMenuItem *item = [menu itemAtIndex:i];
-        if ([[item title] isEqual:@"Search"]) {
-            [menu removeItemAtIndex:i];
-            NSLog(@"AppMenuWidget: Removed duplicate Search menu item");
-            break; // Only remove one to be safe
-        }
-    }
-    
-    // Create Search menu item that toggles the Spotlight-style panel
-    ActionSearchSubmenu *searchSubmenu = [ActionSearchSubmenu sharedSubmenu];
-    [searchSubmenu setAppMenuWidget:self];
-    NSMenuItem *searchItem = [searchSubmenu createSearchMenuItem];
-    [searchItem setTarget:self];
-    [searchItem setAction:@selector(searchMenuItemClicked:)];
-    [menu addItem:searchItem];
-    NSLog(@"AppMenuWidget: Added Search menu item for ActionSearch panel");
-    
-    // Set the menu for the menu view AFTER adding the Search item
+    // Set the menu for the menu view
     [self.menuView setMenu:menu];
-    
-    // Set the app menu widget for both action search implementations
-    [[ActionSearchController sharedController] setAppMenuWidget:self];
-    
-    NSLog(@"AppMenuWidget: Set menu view menu after adding Search item");
     
     // Set ourselves as the delegate of the main menu to catch AboutToShow events
     [menu setDelegate:self];
@@ -600,12 +475,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSMenuItem *item = [items objectAtIndex:i];
         NSLog(@"AppMenuWidget: Setting up item %lu: '%@' (submenu: %@)", 
               i, [item title], [item hasSubmenu] ? @"YES" : @"NO");
-        
-        // Skip the Search item - it has its own action to show the search panel
-        if ([[item title] isEqual:@"Search"]) {
-            NSLog(@"AppMenuWidget: Skipping Search item - it has ActionSearchSubmenu target");
-            continue;
-        }
         
         // Set target and action for logging purposes
         if (![item hasSubmenu]) {
@@ -766,7 +635,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 - (void)menuDidClose:(NSMenu *)menu
 {
     NSLog(@"AppMenuWidget: Main menu did close: '%@'", [menu title] ?: @"(no title)");
-    [[ActionSearchSubmenu sharedSubmenu] hideSearch];
 }
 
 - (void)menu:(NSMenu *)menu willHighlightItem:(NSMenuItem *)item
@@ -776,18 +644,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSLog(@"AppMenuWidget: Main menu will highlight item: '%@' (has submenu: %@)", 
               [item title], [item hasSubmenu] ? @"YES" : @"NO");
         
-        // Special handling for Search menu item highlighting
-        if ([[item title] isEqualToString:@"Search"]) {
-            NSLog(@"AppMenuWidget: Search menu item being highlighted - showing ActionSearch panel");
-            NSMenuItem *searchItem = item;
-            NSRect anchor = [self anchorRectForSearchMenuItem:searchItem];
-            ActionSearchSubmenu *searchSubmenu = [ActionSearchSubmenu sharedSubmenu];
-            [searchSubmenu setAppMenuWidget:self];
-            [searchSubmenu showSearchAnchoredToRect:anchor];
-        } else {
-            [[ActionSearchSubmenu sharedSubmenu] hideSearch];
-        }
-        
         if ([item hasSubmenu]) {
             NSMenu *submenu = [item submenu];
             id<NSMenuDelegate> submenuDelegate = [submenu delegate];
@@ -795,11 +651,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
                   (unsigned long)[[submenu itemArray] count]);
             NSLog(@"AppMenuWidget: Submenu delegate: %@ (%@)", 
                   submenuDelegate, submenuDelegate ? NSStringFromClass([submenuDelegate class]) : @"nil");
+            NSLog(@"AppMenuWidget: THIS IS WHERE ABOUTTOSHOW SHOULD BE TRIGGERED!");
+            NSLog(@"AppMenuWidget: If you don't see AboutToShow logging after this, the delegate isn't working");
         }
         NSLog(@"AppMenuWidget: ===== END MAIN MENU ITEM HIGHLIGHT =====");
     } else {
-        NSLog(@"AppMenuWidget: Main menu will highlight item: nil (no item highlighted)");
-        [[ActionSearchSubmenu sharedSubmenu] hideSearch];
+        NSLog(@"AppMenuWidget: Main menu will unhighlight current item");
     }
 }
 
@@ -913,8 +770,14 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 
 - (void)mouseUp:(NSEvent *)theEvent
 {
-    // Don't forward mouseUp to menuView - it can cause infinite loops
-    // The menu view doesn't need to handle mouseUp for our purposes
+    NSLog(@"AppMenuWidget: ===== MOUSE UP IN MENU =====");
+    NSLog(@"AppMenuWidget: Mouse up at: %@", NSStringFromPoint([theEvent locationInWindow]));
+    
+    if (self.menuView) {
+        [self.menuView mouseUp:theEvent];
+        NSLog(@"AppMenuWidget: Forwarded mouse up to menu view");
+    }
+    
 }
 
 // MARK: - Debug Methods
@@ -1562,64 +1425,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
             self.menuView = nil;
         }
     }
-}
-
-- (NSRect)screenRectForMenuItem:(NSMenuItem *)item
-{
-    if (!self.menuView || !item) {
-        NSLog(@"AppMenuWidget: screenRectForMenuItem missing menuView or item (menuView=%@ item=%@)", self.menuView, item);
-        return NSZeroRect;
-    }
-
-    NSMenu *menu = [self.menuView menu];
-    NSInteger index = [menu indexOfItem:item];
-    if (index < 0) {
-        NSLog(@"AppMenuWidget: screenRectForMenuItem item not found in menu");
-        return NSZeroRect;
-    }
-
-    if (![self.menuView respondsToSelector:@selector(rectOfItemAtIndex:)]) {
-        NSLog(@"AppMenuWidget: menuView lacks rectOfItemAtIndex:");
-        return NSZeroRect;
-    }
-
-    SEL rectSelector = @selector(rectOfItemAtIndex:);
-    NSRect itemRect = ((NSRect (*)(id, SEL, NSInteger))objc_msgSend)(self.menuView, rectSelector, index);
-    if (!self.window) {
-        NSLog(@"AppMenuWidget: screenRectForMenuItem missing window");
-        return NSZeroRect;
-    }
-    NSRect inWindow = [self.menuView convertRect:itemRect toView:nil];
-    NSPoint screenOrigin = [self.window convertBaseToScreen:inWindow.origin];
-    NSLog(@"AppMenuWidget: screen rect for item %@ => %@ (itemRect=%@)", [item title], NSStringFromRect(NSMakeRect(screenOrigin.x, screenOrigin.y, itemRect.size.width, itemRect.size.height)), NSStringFromRect(itemRect));
-    return NSMakeRect(screenOrigin.x, screenOrigin.y, itemRect.size.width, itemRect.size.height);
-}
-
-- (NSRect)anchorRectForSearchMenuItem:(NSMenuItem *)menuItem
-{
-    NSRect anchor = [self screenRectForMenuItem:menuItem];
-    if (!NSIsEmptyRect(anchor)) {
-        return anchor;
-    }
-
-    NSScreen *mainScreen = [NSScreen mainScreen];
-    NSRect frame = mainScreen ? [mainScreen frame] : NSZeroRect;
-    CGFloat menuBarHeight = [[GSTheme theme] menuBarHeight];
-    return NSMakeRect(frame.origin.x + frame.size.width - 200.0,
-                      frame.origin.y + frame.size.height - menuBarHeight,
-                      200.0,
-                      menuBarHeight);
-}
-
-- (void)searchMenuItemClicked:(id)sender
-{
-    NSMenuItem *menuItem = [sender isKindOfClass:[NSMenuItem class]] ? sender : nil;
-    NSRect anchor = [self anchorRectForSearchMenuItem:menuItem];
-    NSLog(@"AppMenuWidget: searchMenuItemClicked anchor=%@ (menuItem=%@)", NSStringFromRect(anchor), menuItem);
-
-    ActionSearchSubmenu *submenu = [ActionSearchSubmenu sharedSubmenu];
-    [submenu setAppMenuWidget:self];
-    [submenu showSearchAnchoredToRect:anchor];
 }
 
 @end

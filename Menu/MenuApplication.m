@@ -11,7 +11,6 @@
 #import "DBusMenuParser.h"
 #import "DBusConnection.h"
 #import "MenuCacheManager.h"
-#import "ActionSearch.h"
 #import <signal.h>
 #import <unistd.h>
 #import <objc/runtime.h>
@@ -313,6 +312,11 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     NSLog(@"MenuApplication: Creating protocol manager...");
     [controller createProtocolManager];
     
+    // Ensure the application is activated BEFORE setting up the menu bar
+    NSLog(@"MenuApplication: Activating application...");
+    [self activateIgnoringOtherApps:YES];
+    NSLog(@"MenuApplication: Application activated");
+    
     // Setup menu bar (this calls initializeProtocols and setupWindowMonitoring internally)
     NSLog(@"MenuApplication: Setting up menu bar...");
     [controller setupMenuBar];
@@ -325,7 +329,7 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     [self setDelegate:self];
     NSLog(@"MenuApplication: Set self as application delegate");
     
-    // Ensure the application is activated
+    // Ensure the application is activated (again, just in case)
     [self activateIgnoringOtherApps:YES];
     
     NSLog(@"MenuApplication: Initialization complete");
@@ -361,9 +365,6 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
             [keyWin sendEvent:event];
             return;
         }
-    } else if (eventType == NSLeftMouseDown || eventType == NSRightMouseDown || eventType == NSOtherMouseDown) {
-        // Check if ActionSearch menu should close when clicking outside
-        [[ActionSearchController sharedController] checkIfClickIsOutside:event];
     } else if (eventType == NSMouseMoved) {
         // Suppress frequent event logging
     } else {

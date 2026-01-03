@@ -27,65 +27,61 @@
 
 
 /**
- * ActionSearchSubmenu - Presents a Spotlight-like search panel that is anchored to the
- *                       Search menu item but implemented as its own NSPanel. The menu
- *                       system stays untouched – no method swizzling or view overlays.
+ * ActionSearchController - Manages the search popup and results menu
  */
-@interface ActionSearchSubmenu : NSObject <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@interface ActionSearchController : NSObject <NSTextFieldDelegate>
 
-@property (nonatomic, strong, readonly) NSTextField *searchField;
-@property (nonatomic, strong, readonly) NSPanel *searchPanel;
+@property (nonatomic, strong) NSPanel *searchPanel;
+@property (nonatomic, strong) NSTextField *searchField;
+@property (nonatomic, strong) NSMenu *resultsMenu;
+@property (nonatomic, strong) NSMutableArray *allMenuItems;
+@property (nonatomic, strong) NSMutableArray *filteredResults;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
+@property (nonatomic, assign) NSPoint popupLocation;
 
-+ (instancetype)sharedSubmenu;
++ (instancetype)sharedController;
 
-/** Create the trailing “Search” menu item. Target/action can be reassigned by caller. */
-- (NSMenuItem *)createSearchMenuItem;
-
-/** Configure the widget we collect items from. */
+/**
+ * Set the app menu widget reference to access current menus
+ */
 - (void)setAppMenuWidget:(AppMenuWidget *)widget;
 
-/** Collect all actionable menu items from the current application menu. */
+/**
+ * Show the search popup at the given screen location
+ */
+- (void)showSearchPopupAtPoint:(NSPoint)point;
+
+/**
+ * Hide the search popup
+ */
+- (void)hideSearchPopup;
+
+/**
+ * Toggle the search popup
+ */
+- (void)toggleSearchPopupAtPoint:(NSPoint)point;
+
+/**
+ * Collect all menu items from the current application menu
+ */
 - (void)collectMenuItems;
 
-/** Execute the selected menu item. */
+/**
+ * Execute the selected action
+ */
 - (void)executeActionForResult:(ActionSearchResult *)result;
-
-/** Toggle/show the panel anchored to the given screen rect (usually the Search item). */
-- (void)toggleSearchAnchoredToRect:(NSRect)anchorRect;
-- (void)showSearchAnchoredToRect:(NSRect)anchorRect;
-
-/** Hide the search UI. */
-- (void)hideSearch;
-
-/** True while the panel is visible. */
-- (BOOL)isVisible;
-
-/** Update results after text changes. */
-- (void)updateSearchResults:(NSString *)searchText;
 
 @end
 
 
 /**
- * ActionSearchController - Legacy support wrapper around ActionSearchSubmenu
+ * ActionSearchMenuView - Menu bar item that triggers the search popup
  */
-@interface ActionSearchController : NSObject <NSTextFieldDelegate>
+@interface ActionSearchMenuView : NSView
 
-@property (nonatomic, strong) NSMutableArray *allMenuItems;
-@property (nonatomic, strong) NSMutableArray *filteredResults;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
 
-+ (instancetype)sharedController;
-
+- (id)initWithFrame:(NSRect)frameRect;
 - (void)setAppMenuWidget:(AppMenuWidget *)widget;
-- (void)hideSearchPopup;
-- (void)toggleSearchPopupAtPoint:(NSPoint)point;
-- (void)collectMenuItems;
-- (void)executeActionForResult:(ActionSearchResult *)result;
-- (void)searchMenuItemClicked:(id)sender;
-- (void)searchMenuItemClicked:(id)sender atPoint:(NSPoint)point;
-- (void)checkIfClickIsOutside:(NSEvent *)event;
 
 @end
-
