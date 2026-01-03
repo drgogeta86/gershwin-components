@@ -133,25 +133,33 @@ Window select_window_interactive(Display *display, Window root_window) {
         return 0;
     }
     
-    // Flush any pending events
+    // Flush any pending events and clear error state
     XSync(display, False);
+    x11_error_occurred = 0;
     
-    fprintf(stderr, "Attempting pointer grab with ButtonPressMask | KeyPressMask\n");
+    fprintf(stderr, "Attempting pointer grab with ButtonPressMask\n");
+    
+    // Try grabbing with just ButtonPressMask first
     int status = XGrabPointer(display, root_window, False,
-                             ButtonPressMask | KeyPressMask,
+                             ButtonPressMask,
                              GrabModeAsync, GrabModeAsync, root_window, cursor, CurrentTime);
     
-    if (status != GrabSuccess) {
-        fprintf(stderr, "Failed to grab pointer: status=%d\n", status);
+    // Check both the return status and the error flag
+    XSync(display, False);
+    
+    if (status != GrabSuccess || x11_error_occurred) {
+        fprintf(stderr, "Failed to grab pointer: status=%d, x11_error=%d\n", status, x11_error_occurred);
         XFreeCursor(display, cursor);
         return 0;
     }
     
-    fprintf(stderr, "Pointer grab succeeded, attempting keyboard grab\n");
-    // Grab keyboard to capture ESC key (but this can fail without causing issues)
+    fprintf(stderr, "Pointer grab succeeded\n");
+    
+    // Attempt keyboard grab but don't fail if it doesn't work
     int kbd_status = XGrabKeyboard(display, root_window, False, GrabModeAsync, GrabModeAsync, CurrentTime);
     if (kbd_status != GrabSuccess) {
         fprintf(stderr, "Warning: Failed to grab keyboard: status=%d (continuing anyway)\n", kbd_status);
+        kbd_status = 0; // Mark as failed so we don't try to ungrab it
     } else {
         fprintf(stderr, "Keyboard grab succeeded\n");
     }
@@ -160,10 +168,18 @@ Window select_window_interactive(Display *display, Window root_window) {
     
     XEvent event;
     Window target = 0;
+    int timeout = 0;
     
     while (1) {
+        // Timeout after 30 seconds
+        if (timeout++ > 300) {
+            fprintf(stderr, "Window selection timeout\n");
+            target = 0;
+            break;
+        }
+        
         if (XPending(display) == 0) {
-            usleep(10000); // 10ms sleep to prevent busy waiting
+            usleep(100000); // 100ms sleep to prevent busy waiting
             continue;
         }
         
@@ -179,24 +195,29 @@ Window select_window_interactive(Display *display, Window root_window) {
             // Check if ESC key was pressed
             KeySym keysym = XLookupKeysym(&event.xkey, 0);
             if (keysym == XK_Escape) {
+                fprintf(stderr, "ESC pressed, cancelling selection\n");
                 // Cancel selection
                 target = 0;
                 break;
             }
         } else if (event.type == ButtonPress) {
+            fprintf(stderr, "Button %d pressed\n", event.xbutton.button);
             // Check if right mouse button (Button3) was pressed
             if (event.xbutton.button == Button3) {
                 // Cancel selection
+                fprintf(stderr, "Right click, cancelling selection\n");
                 target = 0;
                 break;
             } else if (event.xbutton.button == Button1) {
                 // Left click - proceed with selection
+                fprintf(stderr, "Left click at (%d, %d)\n", event.xbutton.x, event.xbutton.y);
                 target = event.xbutton.subwindow;
                 if (target == None) {
                     target = root_window;
                 } else {
                     target = get_window_at_pointer(display, root_window);
                 }
+                fprintf(stderr, "Selected window: 0x%lx\n", target);
                 break;
             }
         }
@@ -253,6 +274,51 @@ int get_window_rect(Display *display, Window window, CaptureRect *rect) {
     rect->height = attrs.height;
     
     return 1;
+}
+
+// Get active window using _NET_ACTIVE_WINDOW
+Window get_active_window(Display *display, Window root_window) {
+    if (!display || !root_window) {
+        fprintf(stderr, "Invalid parameters for get_active_window\n");
+        return None;
+    }
+    
+    x11_error_occurred = 0;
+    
+    // Get the _NET_ACTIVE_WINDOW atom
+    Atom net_active_window = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    if (net_active_window == None) {
+        fprintf(stderr, "Failed to get _NET_ACTIVE_WINDOW atom\n");
+        return None;
+    }
+    
+    // Get the window property
+    Atom type;
+    int format;
+    unsigned long nitems, bytes_after;
+    unsigned char *prop = NULL;
+    
+    if (XGetWindowProperty(display, root_window, net_active_window, 0, 1, False, 
+                          XA_WINDOW, &type, &format, &nitems, &bytes_after, &prop) != Success) {
+        fprintf(stderr, "Failed to get _NET_ACTIVE_WINDOW property\n");
+        return None;
+    }
+    
+    Window active_window = None;
+    if (prop && nitems > 0) {
+        active_window = *((Window *)prop);
+    }
+    
+    if (prop) {
+        XFree(prop);
+    }
+    
+    if (x11_error_occurred) {
+        fprintf(stderr, "X11 error while getting active window\n");
+        return None;
+    }
+    
+    return active_window;
 }
 
 // Select area interactively
@@ -632,6 +698,33 @@ CaptureRect x11_select_area(void) {
     // Check for errors or cancellation
     if (x11_error_occurred || result == 0) {
         fprintf(stderr, "Area selection failed or cancelled\n");
+        rect.x = rect.y = rect.width = rect.height = 0;
+    }
+    
+    return rect;
+}
+
+CaptureRect x11_get_active_window(void) {
+    CaptureRect rect = {0, 0, 0, 0};
+    
+    if (!disp) {
+        if (!x11_init()) {
+            fprintf(stderr, "Failed to initialize X11\n");
+            return rect;
+        }
+    }
+    
+    x11_error_occurred = 0;
+    
+    Window active_window = get_active_window(disp, root);
+    
+    if (x11_error_occurred || active_window == None) {
+        fprintf(stderr, "Failed to get active window\n");
+        return rect;  // Return zero rect
+    }
+    
+    if (!get_window_rect(disp, active_window, &rect)) {
+        fprintf(stderr, "Failed to get active window geometry\n");
         rect.x = rect.y = rect.width = rect.height = 0;
     }
     

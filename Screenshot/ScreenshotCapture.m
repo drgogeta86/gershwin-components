@@ -20,6 +20,7 @@ extern unsigned char* x11_capture_data(CaptureMode mode, int delay, CaptureRect*
 extern void x11_free_data(unsigned char* data);
 extern CaptureRect x11_select_window(void);
 extern CaptureRect x11_select_area(void);
+extern CaptureRect x11_get_active_window(void);
 
 @implementation ScreenshotCapture
 
@@ -140,6 +141,10 @@ extern CaptureRect x11_select_area(void);
 
 + (CaptureRect)selectArea {
     return x11_select_area();
+}
+
++ (CaptureRect)getActiveWindow {
+    return x11_get_active_window();
 }
 
 @end

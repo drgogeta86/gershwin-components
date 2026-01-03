@@ -123,7 +123,7 @@
     [windowButton setButtonType:NSMomentaryLight];
     [windowButton setTarget:self];
     [windowButton setAction:@selector(takeWindowScreenshot:)];
-    [windowButton setEnabled:NO];
+    [windowButton setEnabled:YES];
     [contentView addSubview:windowButton];
     
     NSRect areaBtnFrame = NSMakeRect(startX + btnWidth + spacing, btnY, btnWidth, btnHeight);
@@ -226,8 +226,13 @@
 #pragma mark - Screenshot Actions
 
 - (IBAction)takeWindowScreenshot:(id)sender {
+    NSLog(@"=== takeWindowScreenshot started ===");
     [self setScreenshotMode:ScreenshotModeWindow];
-    [self performScreenshotWithMode:ScreenshotModeWindow];
+    
+    // Use the delayed selection flow (which lets user click on window to capture)
+    int delay = [delayField intValue];
+    NSLog(@"Performing window screenshot with delay=%d", delay);
+    [self performDelayedSelection:delay mode:ScreenshotModeWindow];
 }
 
 - (IBAction)takeAreaScreenshot:(id)sender {
@@ -370,6 +375,9 @@
 }
 
 - (void)captureScreenshotWithRect:(CaptureRect)rect mode:(ScreenshotMode)mode delay:(int)delay {
+    NSLog(@"=== captureScreenshotWithRect called: rect=(%d,%d,%d,%d), mode=%d, delay=%d ===", 
+          rect.x, rect.y, rect.width, rect.height, mode, delay);
+    
     CaptureMode captureMode;
     
     switch (mode) {
@@ -386,11 +394,17 @@
     }
     
     // Capture the image
+    NSLog(@"Calling captureImageWithMode");
     NSImage *image = [ScreenshotCapture captureImageWithMode:captureMode delay:delay rect:rect];
+    NSLog(@"captureImageWithMode returned: image=%@", image);
     
     // Flash the screen after capture for visual feedback
     if (captureMode == CaptureFullScreen || captureMode == CaptureArea) {
+        NSLog(@"Flashing fullscreen");
         [self flashScreenFullscreen];
+    } else if (captureMode == CaptureWindow) {
+        NSLog(@"Flashing window rect: x=%d, y=%d, w=%d, h=%d", rect.x, rect.y, rect.width, rect.height);
+        [self flashScreenInRect:rect];
     }
     
     [self showProgressIndicator:NO];

@@ -45,6 +45,7 @@ void x11_free_data(unsigned char* data);
 // Interactive window/area selection
 CaptureRect x11_select_window(void);
 CaptureRect x11_select_area(void);
+CaptureRect x11_get_active_window(void);
 
 #ifdef __cplusplus
 }
@@ -63,6 +64,7 @@ CaptureRect x11_select_area(void);
                              rect:(CaptureRect)rect;
 + (CaptureRect)selectWindow;
 + (CaptureRect)selectArea;
++ (CaptureRect)getActiveWindow;
 
 @end
 
