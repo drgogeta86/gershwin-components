@@ -3,6 +3,7 @@ include $(GNUSTEP_MAKEFILES)/common.make
 # Disable desktop file generation (pl2link tool not available)
 RemoteDesktop_HAS_RESOURCE_BUNDLE = no
 export GNUSTEP_CREATE_DESKTOP_RESOURCES = NO
+RemoteDesktop_INSTALL_DESKTOP_FILES = no
 
 GNUSTEP_INSTALLATION_DOMAIN = SYSTEM
 
@@ -89,3 +90,7 @@ RemoteDesktop_CPPFLAGS += -Wall
 RemoteDesktop_GUI_LIBS += -lgnustep-gui -lgnustep-base
 
 include $(GNUSTEP_MAKEFILES)/application.make
+# Remove desktop file if created (gnustep-make creates it even when disabled)
+RemoteDesktop.app/Resources/RemoteDesktop.desktop:
+	@echo "Skipping desktop file creation"
+	@touch $@

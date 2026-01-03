@@ -88,6 +88,10 @@ The application consists of several components:
 - Uses RFB (Remote Frame Buffer) protocol
 - Works with any VNC server (TightVNC, RealVNC, TigerVNC, macOS Screen Sharing, etc.)
 
+#### macOS VNC Password Configuration
+
+To control a Mac over VNC, enable the "additional" VNC password in the Mac's system preferences. Interestingly, this password is never actually needed for the connection to work.
+
 ### RDP (Remote Desktop Protocol)
 
 - Default port: 3389

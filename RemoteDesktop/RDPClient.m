@@ -31,6 +31,10 @@ typedef struct {
     RDPClient *client;
 } RDPCustomContext;
 
+// Suppress deprecation warnings for FreeRDP 3 settings that are still functional
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 @implementation RDPClient
 
 @synthesize hostname = _hostname;
@@ -702,5 +706,7 @@ cleanup:
         }
     }
 }
+
+#pragma GCC diagnostic pop
 
 @end
