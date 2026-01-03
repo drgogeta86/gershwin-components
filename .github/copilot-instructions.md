@@ -1,6 +1,7 @@
 - Write GNUstep compatible code. Don't use features unavailable in GNUstep such as CoreFoundation, Grand Central Dispatch, etc.
 - Use commands from `$PATH`, not hardcoded paths.
 - Use `gmake`, not `make`.
+- We may be running on Linux or on FreeBSD.
 - Avoid bashisms; use POSIX sh.
 - Build the application until it works, even with multiple attempts.
 - Use -Wall -Wextra -Werror -O2, fix all compiler warnings, regardless of severity.
@@ -8,12 +9,8 @@
 - Compile with `clang19`, never `gcc`.
 - Use extensive logging for debugging with NSLog.
 - If you build a preference pane, test with `/System/Applications/SystemPreferences.app/SystemPreferences`.
-- Refer to FreeBSD documentation and the porters handbook for building ports.
 - Before running any shell commands, check which shell is being used.
-- Remember that in one Terminal, you can only run one command at a time unless you use `&` to run it in the background.
-- Always run commands with `timeout` to prevent hanging.
-- If you run the same command multiple times, write an action to run it instead of repeating the command.
-- We don't have `strace`, so use `truss` for tracing system calls.
+- We may not have `strace`, in that case use `truss` for tracing system calls.
 - Use Model-View-Controller (MVC) architecture where appropriate.
 - Use KVO (Key-Value Observing) for observing changes in properties where needed.
 - Always use a `GNUmakefile` to compile anything involving Foundation or GNUstep.

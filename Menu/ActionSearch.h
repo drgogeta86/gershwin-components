@@ -27,69 +27,41 @@
 
 
 /**
- * ActionSearchSubmenu - Shows a search field when Search menu is clicked
- * 
- * When "Search" in the menu bar is clicked:
- * 1. A small window appears below containing just a search field (sized like a menu item)
- * 2. As user types, matching results appear in a regular NSMenu positioned below the search field
- * 3. This makes the search field + results look like one continuous dropdown menu
+ * ActionSearchSubmenu - Presents a Spotlight-like search panel that is anchored to the
+ *                       Search menu item but implemented as its own NSPanel. The menu
+ *                       system stays untouched – no method swizzling or view overlays.
  */
-@interface ActionSearchSubmenu : NSObject <NSTextFieldDelegate>
+@interface ActionSearchSubmenu : NSObject <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 
-@property (nonatomic, strong) NSSearchField *searchField;
-@property (nonatomic, strong) NSPanel *searchFieldPanel;      // Small panel for search field
-@property (nonatomic, strong) NSMenu *resultsMenu;            // Regular menu for results
-@property (nonatomic, strong) NSMutableArray *allMenuItems;
-@property (nonatomic, strong) NSMutableArray *filteredResults;
+@property (nonatomic, strong, readonly) NSTextField *searchField;
+@property (nonatomic, strong, readonly) NSPanel *searchPanel;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;
-@property (nonatomic, assign) BOOL isSearching;
-@property (nonatomic, assign) CGFloat searchItemX;  // X coordinate of Search menu item
 
 + (instancetype)sharedSubmenu;
 
-/**
- * Create a "Search" menu item (no submenu - clicking opens search panel)
- */
+/** Create the trailing “Search” menu item. Target/action can be reassigned by caller. */
 - (NSMenuItem *)createSearchMenuItem;
 
-/**
- * Set the app menu widget reference to access current menus
- */
+/** Configure the widget we collect items from. */
 - (void)setAppMenuWidget:(AppMenuWidget *)widget;
 
-/**
- * Set the X coordinate of the Search menu item for positioning
- */
-- (void)setSearchItemX:(CGFloat)xCoord;
-
-/**
- * Collect all menu items from the current application menu
- */
+/** Collect all actionable menu items from the current application menu. */
 - (void)collectMenuItems;
 
-/**
- * Execute the selected action
- */
+/** Execute the selected menu item. */
 - (void)executeActionForResult:(ActionSearchResult *)result;
 
-/**
- * Show the search panel below the Search menu item
- */
-- (void)showSearchPanel;
+/** Toggle/show the panel anchored to the given screen rect (usually the Search item). */
+- (void)toggleSearchAnchoredToRect:(NSRect)anchorRect;
+- (void)showSearchAnchoredToRect:(NSRect)anchorRect;
 
-/**
- * Show the search panel at specified X coordinate
- */
-- (void)showSearchPanelAtX:(NSNumber *)xCoord;
-
-/**
- * Hide search and cleanup
- */
+/** Hide the search UI. */
 - (void)hideSearch;
 
-/**
- * Update results based on current search text
- */
+/** True while the panel is visible. */
+- (BOOL)isVisible;
+
+/** Update results after text changes. */
 - (void)updateSearchResults:(NSString *)searchText;
 
 @end

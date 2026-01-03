@@ -53,4 +53,8 @@
 + (BOOL)isWindowStillValid:(Window)windowId;
 + (BOOL)safelyCheckWindow:(Window)windowId withDisplay:(Display *)display;
 
+// Error handling and cleanup
++ (void)setCurrentWidget:(AppMenuWidget *)widget;
+- (void)handleWindowDisappeared:(Window)windowId;
+
 @end
