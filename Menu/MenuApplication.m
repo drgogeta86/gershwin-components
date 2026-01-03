@@ -51,9 +51,17 @@ static void signalHandler(int sig)
         case SIGTERM: signame = "SIGTERM"; break;
         case SIGINT:  signame = "SIGINT"; break;
         case SIGHUP:  signame = "SIGHUP"; break;
+        case SIGUSR1: signame = "SIGUSR1"; break;
     }
     
     NSLog(@"Menu.app: Received signal %d (%s), performing cleanup...", sig, signame);
+    
+    // For USR1, just log and return without exiting (it's often used for testing)
+    if (sig == SIGUSR1) {
+        NSLog(@"Menu.app: USR1 signal handled, continuing operation...");
+        cleanup_in_progress = 0;  // Reset cleanup flag
+        return;
+    }
     
     @try {
         // Clean up global shortcuts
@@ -284,6 +292,12 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
         NSLog(@"MenuApplication: Warning: Failed to set SIGHUP handler");
     } else {
         NSLog(@"MenuApplication: SIGHUP handler registered");
+    }
+    
+    if (signal(SIGUSR1, signalHandler) == SIG_ERR) {
+        NSLog(@"MenuApplication: Warning: Failed to set SIGUSR1 handler");
+    } else {
+        NSLog(@"MenuApplication: SIGUSR1 handler registered");
     }
     
     // Set up atexit handler as additional safety

@@ -15,11 +15,28 @@
 #import "MenuCacheManager.h"
 
 // X11 error handler to prevent crashes when querying invalid/stale windows
+static BOOL x11_error_occurred = NO;
+static int last_error_code = 0;
+static unsigned long last_error_resourceid = 0;
+
 static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     char errorText[256];
     XGetErrorText(display, error->error_code, errorText, sizeof(errorText));
-    NSLog(@"GTKMenuImporter: X11 Error caught (non-fatal): %s (request: %d, resource: 0x%lx)", 
-          errorText, error->request_code, error->resourceid);
+    
+    // Set global error state
+    x11_error_occurred = YES;
+    last_error_code = error->error_code;
+    last_error_resourceid = error->resourceid;
+    
+    // Log the error but don't spam the log
+    static NSTimeInterval lastLogTime = 0;
+    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+    if (currentTime - lastLogTime > 1.0) {  // Only log once per second
+        NSLog(@"GTKMenuImporter: X11 Error caught (non-fatal): %s (request: %d, resource: 0x%lx)", 
+              errorText, error->request_code, error->resourceid);
+        lastLogTime = currentTime;
+    }
+    
     // Return 0 to indicate error was handled and shouldn't crash
     return 0;
 }
@@ -313,9 +330,13 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     Window window = (Window)windowId;
     
     // DEFENSIVE: Verify window is valid before querying properties
+    x11_error_occurred = NO;  // Reset error state before checking
     XWindowAttributes attrs;
-    if (XGetWindowAttributes(display, window, &attrs) == 0) {
-        NSLog(@"GTKMenuImporter: Window %lu not ready/valid in immediate scan, skipping", windowId);
+    if (XGetWindowAttributes(display, window, &attrs) == 0 || x11_error_occurred) {
+        NSLog(@"GTKMenuImporter: Window %lu not ready/valid%s in immediate scan, skipping", 
+              windowId, x11_error_occurred ? " (X11 error)" : "");
+        XSynchronize(display, False);
+        XSetErrorHandler(oldHandler);
         XCloseDisplay(display);
         return;
     }
@@ -326,19 +347,30 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     
     unsigned char *busNameProp = NULL;
     unsigned char *objectPathProp = NULL;
+    BOOL busNameSuccess = NO;
+    BOOL objectPathSuccess = NO;
     
     // Get bus name property
     Atom propType;
     int propFormat;
     unsigned long propItems, propBytesAfter;
-    if (XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
-                          &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp) == Success && busNameProp) {
+    
+    // DEFENSIVE: Reset property pointer before X11 call
+    busNameProp = NULL;
+    int busResult = XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
+                          &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp);
+    if (busResult == Success && busNameProp != NULL) {
+        busNameSuccess = YES;
         
         NSLog(@"GTKMenuImporter: Window %lu has _GTK_UNIQUE_BUS_NAME: %s", windowId, busNameProp);
         
         // Get object path property
-        if (XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
-                              &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp) == Success && objectPathProp) {
+        // DEFENSIVE: Reset property pointer before X11 call
+        objectPathProp = NULL;
+        int pathResult = XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
+                              &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp);
+        if (pathResult == Success && objectPathProp != NULL) {
+            objectPathSuccess = YES;
             
             NSLog(@"GTKMenuImporter: Window %lu has _GTK_MENUBAR_OBJECT_PATH: %s", windowId, objectPathProp);
             
@@ -349,15 +381,22 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
             
             // Register this window immediately
             [self registerWindow:windowId serviceName:busName objectPath:objectPath];
-            
-            XFree(objectPathProp);
         } else {
             NSLog(@"GTKMenuImporter: Window %lu has bus name but no object path", windowId);
         }
-        
-        XFree(busNameProp);
     } else {
         NSLog(@"GTKMenuImporter: Window %lu has no GTK menu properties", windowId);
+    }
+    
+    // DEFENSIVE: Only free if the properties were successfully retrieved
+    if (objectPathSuccess && objectPathProp != NULL) {
+        XFree(objectPathProp);
+        objectPathProp = NULL;
+    }
+    
+    if (busNameSuccess && busNameProp != NULL) {
+        XFree(busNameProp);
+        busNameProp = NULL;
     }
     
     // Restore synchronous mode and error handler
@@ -441,33 +480,53 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
             
             // DEFENSIVE: Verify window is valid before querying properties
             // This prevents interfering with windows that are still initializing
+            x11_error_occurred = NO;  // Reset error state before checking
             XWindowAttributes attrs;
-            if (XGetWindowAttributes(display, window, &attrs) == 0) {
-                // Window is not valid/ready, skip it
+            if (XGetWindowAttributes(display, window, &attrs) == 0 || x11_error_occurred) {
+                // Window is not valid/ready or caused an X11 error, skip it
                 if (gtkScans <= 2) {
-                    NSLog(@"GTKMenuImporter: Window %lu not ready/valid, skipping", (unsigned long)window);
+                    NSLog(@"GTKMenuImporter: Window %lu not ready/valid%s, skipping", 
+                          (unsigned long)window, x11_error_occurred ? " (X11 error)" : "");
                 }
+                x11_error_occurred = NO;  // Reset for next window
                 continue;
             }
             
             // Check this window for GTK menu properties
             unsigned char *busNameProp = NULL;
             unsigned char *objectPathProp = NULL;
+            BOOL busNameSuccess = NO;
+            BOOL objectPathSuccess = NO;
             
             // Get bus name property (use separate variables to avoid overwriting numClientWindows)
             Atom propType;
             int propFormat;
             unsigned long propItems, propBytesAfter;
-            if (XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
-                                  &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp) == Success && busNameProp) {
+            
+            // DEFENSIVE: Reset property pointer before X11 call
+            busNameProp = NULL;
+            x11_error_occurred = NO;  // Reset error state before call
+            NSLog(@"GTKMenuImporter: DEFENSIVE: property pointer initialized to NULL for busName scan");
+            int busResult = XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
+                                  &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp);
+            if (busResult == Success && busNameProp != NULL && !x11_error_occurred) {
+                busNameSuccess = YES;
+                NSLog(@"GTKMenuImporter: DEFENSIVE: success flag set for busName property retrieval");
                 
                 if (gtkScans <= 2) {
                     NSLog(@"GTKMenuImporter: Window %lu has _GTK_UNIQUE_BUS_NAME: %s", (unsigned long)window, busNameProp);
                 }
                 
-                // Get object path property  
-                if (XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
-                                      &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp) == Success && objectPathProp) {
+                // Get object path property
+                // DEFENSIVE: Reset property pointer before X11 call
+                objectPathProp = NULL;
+                x11_error_occurred = NO;  // Reset error state before call
+                NSLog(@"GTKMenuImporter: DEFENSIVE: property pointer initialized to NULL for objectPath scan");
+                int pathResult = XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
+                                      &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp);
+                if (pathResult == Success && objectPathProp != NULL && !x11_error_occurred) {
+                    objectPathSuccess = YES;
+                    NSLog(@"GTKMenuImporter: DEFENSIVE: success flag set for objectPath property retrieval");
                     
                     if (gtkScans <= 2) {
                         NSLog(@"GTKMenuImporter: Window %lu has _GTK_MENUBAR_OBJECT_PATH: %s", (unsigned long)window, objectPathProp);
@@ -492,10 +551,21 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
                     // Register this window
                     [self registerWindow:(unsigned long)window serviceName:busName objectPath:objectPath];
                     gtkWindows++;
-                    
-                    XFree(objectPathProp);
                 }
+                
+                // DEFENSIVE: Only free if the property was successfully retrieved
+                if (objectPathSuccess && objectPathProp != NULL) {
+                    NSLog(@"GTKMenuImporter: DEFENSIVE: freeing objectPath property safely");
+                    XFree(objectPathProp);
+                    objectPathProp = NULL;
+                }
+            }
+            
+            // DEFENSIVE: Only free if the property was successfully retrieved
+            if (busNameSuccess && busNameProp != NULL) {
+                NSLog(@"GTKMenuImporter: DEFENSIVE: freeing busName property safely");
                 XFree(busNameProp);
+                busNameProp = NULL;
             }
         }
         XFree(clientWindows);
@@ -517,17 +587,28 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
                 // Check for GTK menu properties
                 unsigned char *busNameProp = NULL;
                 unsigned char *objectPathProp = NULL;
+                BOOL busNameSuccess = NO;
+                BOOL objectPathSuccess = NO;
                 
                 // Get bus name property (use separate variables)
                 Atom propType;
                 int propFormat;
                 unsigned long propItems, propBytesAfter;
-                if (XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
-                                      &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp) == Success && busNameProp) {
+                
+                // DEFENSIVE: Reset property pointer before X11 call
+                busNameProp = NULL;
+                int busResult = XGetWindowProperty(display, window, busNameAtom, 0, 1024, False, AnyPropertyType,
+                                      &propType, &propFormat, &propItems, &propBytesAfter, &busNameProp);
+                if (busResult == Success && busNameProp != NULL) {
+                    busNameSuccess = YES;
                     
-                    // Get object path property  
-                    if (XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
-                                          &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp) == Success && objectPathProp) {
+                    // Get object path property
+                    // DEFENSIVE: Reset property pointer before X11 call
+                    objectPathProp = NULL;
+                    int pathResult = XGetWindowProperty(display, window, objectPathAtom, 0, 1024, False, AnyPropertyType,
+                                          &propType, &propFormat, &propItems, &propBytesAfter, &objectPathProp);
+                    if (pathResult == Success && objectPathProp != NULL) {
+                        objectPathSuccess = YES;
                         
                         NSString *busName = [NSString stringWithUTF8String:(char *)busNameProp];
                         NSString *objectPath = [NSString stringWithUTF8String:(char *)objectPathProp];
@@ -542,10 +623,19 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
                         // Register this window
                         [self registerWindow:(unsigned long)window serviceName:busName objectPath:objectPath];
                         gtkWindows++;
-                        
-                        XFree(objectPathProp);
                     }
+                    
+                    // DEFENSIVE: Only free if the property was successfully retrieved
+                    if (objectPathSuccess && objectPathProp != NULL) {
+                        XFree(objectPathProp);
+                        objectPathProp = NULL;
+                    }
+                }
+                
+                // DEFENSIVE: Only free if the property was successfully retrieved
+                if (busNameSuccess && busNameProp != NULL) {
                     XFree(busNameProp);
+                    busNameProp = NULL;
                 }
             }
             XFree(children);
