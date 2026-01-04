@@ -7,6 +7,7 @@
 
 #import "ScreenshotController.h"
 #import "ScreenshotCapture.h"
+#import "AppearanceMetrics.h"
 #import <AppKit/NSApplication.h>
 #import <AppKit/NSWindow.h>
 #import <AppKit/NSPanel.h>
@@ -76,8 +77,36 @@
     [[NSApplication sharedApplication] setMainMenu:mainMenu];
     [mainMenu release];
     
-    // Create main window as a utility panel (dialog-style)
-    NSRect windowFrame = NSMakeRect(100, 100, 420, 260);
+    // Calculate window dimensions following metrics guidelines
+    // All spacing must be multiples of 4px and follow the dialog layout rules
+    CGFloat windowWidth = METRICS_WIN_MIN_WIDTH;
+    
+    // Build layout from bottom to top to calculate total height needed
+    // Bottom margin: METRICS_CONTENT_BOTTOM_MARGIN (20px)
+    CGFloat totalHeight = METRICS_CONTENT_BOTTOM_MARGIN;
+    
+    // Delay field: 16px label height + progress indicator
+    totalHeight += METRICS_SPACE_16;  // Spacing from buttons to delay control
+    totalHeight += METRICS_TEXT_INPUT_FIELD_HEIGHT;  // Input field height (22px)
+    
+    // Buttons row: METRICS_BUTTON_HEIGHT (20px)
+    totalHeight += METRICS_SPACE_16;  // Spacing between primary control groups
+    totalHeight += METRICS_BUTTON_HEIGHT;  // Button height
+    
+    // Mode selection label
+    totalHeight += METRICS_SPACE_8;  // Spacing between label and buttons
+    totalHeight += 14.0;  // Label height
+    
+    // Status label
+    totalHeight += METRICS_SPACE_20;  // Spacing between control groups
+    totalHeight += 16.0;  // Status label height
+    
+    // Top margin: METRICS_CONTENT_TOP_MARGIN (15px)
+    totalHeight += METRICS_CONTENT_TOP_MARGIN;
+    
+    CGFloat windowHeight = totalHeight;
+    
+    NSRect windowFrame = NSMakeRect(100, 100, windowWidth, windowHeight);
     mainWindow = [[NSPanel alloc] initWithContentRect:windowFrame
                                              styleMask:NSTitledWindowMask | NSClosableWindowMask | NSUtilityWindowMask
                                                backing:NSBackingStoreBuffered
@@ -89,35 +118,49 @@
     
     NSView *contentView = [mainWindow contentView];
     
+    // Build layout from top to bottom
+    // Start with top margin
+    CGFloat currentY = windowHeight - METRICS_CONTENT_TOP_MARGIN - 16.0;
+    CGFloat contentWidth = windowWidth - (2 * METRICS_CONTENT_SIDE_MARGIN);
+    
     // Create status label
-    NSRect statusFrame = NSMakeRect(15, 225, 390, 16);
+    NSRect statusFrame = NSMakeRect(METRICS_CONTENT_SIDE_MARGIN, currentY, contentWidth, 16);
     statusLabel = [[NSTextField alloc] initWithFrame:statusFrame];
     [statusLabel setStringValue:@"Ready to take screenshot"];
     [statusLabel setEditable:NO];
     [statusLabel setSelectable:NO];
     [statusLabel setBezeled:NO];
     [statusLabel setDrawsBackground:NO];
+    [statusLabel setFont:METRICS_FONT_SYSTEM_REGULAR_13];
     [contentView addSubview:statusLabel];
     
+    // Spacing between control groups (20px)
+    currentY -= METRICS_SPACE_20 + 14.0;
+    
     // Create mode selection label
-    NSRect modeLabelFrame = NSMakeRect(15, 197, 390, 14);
+    NSRect modeLabelFrame = NSMakeRect(METRICS_CONTENT_SIDE_MARGIN, currentY, contentWidth, 14);
     NSTextField *modeLabel = [[NSTextField alloc] initWithFrame:modeLabelFrame];
     [modeLabel setStringValue:@"Select capture mode:"];
     [modeLabel setEditable:NO];
     [modeLabel setSelectable:NO];
     [modeLabel setBezeled:NO];
     [modeLabel setDrawsBackground:NO];
+    [modeLabel setFont:METRICS_FONT_SYSTEM_REGULAR_13];
     [contentView addSubview:modeLabel];
     [modeLabel release];
     
-    // Create buttons for screenshot mode (evenly spaced)
-    CGFloat btnY = 152;
-    CGFloat btnHeight = 22;
-    CGFloat btnWidth = 125;
-    CGFloat spacing = 13;
-    CGFloat startX = 15;
+    // Spacing between label and buttons (8px per metrics)
+    currentY -= METRICS_SPACE_8 + METRICS_BUTTON_HEIGHT;
     
-    NSRect windowBtnFrame = NSMakeRect(startX, btnY, btnWidth, btnHeight);
+    // Create buttons for screenshot mode
+    // Using METRICS_BUTTON_HORIZ_INTERSPACE (10px) between buttons per HIG
+    // Distribute three buttons evenly across available width
+    CGFloat btnHeight = METRICS_BUTTON_HEIGHT;
+    CGFloat btnWidth = (contentWidth - (2 * METRICS_BUTTON_HORIZ_INTERSPACE)) / 3.0;
+    CGFloat spacing = METRICS_BUTTON_HORIZ_INTERSPACE;
+    CGFloat startX = METRICS_CONTENT_SIDE_MARGIN;
+    
+    NSRect windowBtnFrame = NSMakeRect(startX, currentY, btnWidth, btnHeight);
     windowButton = [[NSButton alloc] initWithFrame:windowBtnFrame];
     [windowButton setTitle:@"Window"];
     [windowButton setButtonType:NSMomentaryLight];
@@ -126,7 +169,7 @@
     [windowButton setEnabled:YES];
     [contentView addSubview:windowButton];
     
-    NSRect areaBtnFrame = NSMakeRect(startX + btnWidth + spacing, btnY, btnWidth, btnHeight);
+    NSRect areaBtnFrame = NSMakeRect(startX + btnWidth + spacing, currentY, btnWidth, btnHeight);
     areaButton = [[NSButton alloc] initWithFrame:areaBtnFrame];
     [areaButton setTitle:@"Area"];
     [areaButton setButtonType:NSMomentaryLight];
@@ -134,7 +177,7 @@
     [areaButton setAction:@selector(takeAreaScreenshot:)];
     [contentView addSubview:areaButton];
     
-    NSRect fullScreenBtnFrame = NSMakeRect(startX + 2 * (btnWidth + spacing), btnY, btnWidth, btnHeight);
+    NSRect fullScreenBtnFrame = NSMakeRect(startX + 2 * (btnWidth + spacing), currentY, btnWidth, btnHeight);
     fullScreenButton = [[NSButton alloc] initWithFrame:fullScreenBtnFrame];
     [fullScreenButton setTitle:@"Full Screen"];
     [fullScreenButton setButtonType:NSMomentaryLight];
@@ -142,24 +185,37 @@
     [fullScreenButton setAction:@selector(takeFullScreenScreenshot:)];
     [contentView addSubview:fullScreenButton];
     
+    // Spacing between primary control groups (16px per metrics for mixed control dialogs)
+    currentY -= METRICS_SPACE_16 + METRICS_TEXT_INPUT_FIELD_HEIGHT;
+    
     // Create delay field label and input
-    NSRect delayLabelFrame = NSMakeRect(15, 120, 110, 16);
+    // Text input field height per metrics: 22px
+    // Use baseline-aligned layout for label and control
+    CGFloat labelWidth = 110.0;
+    CGFloat delayFieldY = currentY;
+    
+    NSRect delayLabelFrame = NSMakeRect(METRICS_CONTENT_SIDE_MARGIN, delayFieldY + 3, labelWidth, 16);
     NSTextField *delayLabel = [[NSTextField alloc] initWithFrame:delayLabelFrame];
     [delayLabel setStringValue:@"Delay (seconds):"];
     [delayLabel setEditable:NO];
     [delayLabel setSelectable:NO];
     [delayLabel setBezeled:NO];
     [delayLabel setDrawsBackground:NO];
+    [delayLabel setFont:METRICS_FONT_SYSTEM_REGULAR_13];
     [contentView addSubview:delayLabel];
     [delayLabel release];
     
-    NSRect delayFieldFrame = NSMakeRect(125, 120, 50, 20);
+    // Place input field with METRICS_SPACE_8 (8px) gap from label text per metrics
+    NSRect delayFieldFrame = NSMakeRect(METRICS_CONTENT_SIDE_MARGIN + labelWidth + METRICS_SPACE_8, 
+                                        delayFieldY, 50, METRICS_TEXT_INPUT_FIELD_HEIGHT);
     delayField = [[NSTextField alloc] initWithFrame:delayFieldFrame];
     [delayField setIntValue:0];
+    [delayField setFont:METRICS_FONT_SYSTEM_REGULAR_13];
     [contentView addSubview:delayField];
     
-    // Create progress indicator
-    NSRect progressFrame = NSMakeRect(400, 180, 16, 16);
+    // Create progress indicator (positioned at right side, vertically centered with delay field)
+    NSRect progressFrame = NSMakeRect(windowWidth - METRICS_CONTENT_SIDE_MARGIN - 20, 
+                                      delayFieldY + (METRICS_TEXT_INPUT_FIELD_HEIGHT - 16.0) / 2.0, 16, 16);
     progressIndicator = [[NSProgressIndicator alloc] initWithFrame:progressFrame];
     [progressIndicator setStyle:NSProgressIndicatorSpinningStyle];
     [progressIndicator setHidden:YES];
