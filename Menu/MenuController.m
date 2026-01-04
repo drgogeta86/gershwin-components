@@ -727,7 +727,7 @@
         [self.slideInAnimationTimer invalidate];
         self.slideInAnimationTimer = nil;
         
-        // Set final position
+        // Set final position (place menu bar at very top of the screen)
         [self.menuBar setFrameTopLeftPoint:NSMakePoint(0, self.screenSize.height)];
         [self revealAppMenuWidget];
         NSLog(@"MenuController: Menu slide-in animation completed");

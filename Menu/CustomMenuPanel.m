@@ -135,108 +135,140 @@
 
 @end
 
+/* Helper category to provide swizzleable methods for NSMenuView */
+@interface NSMenuView (CustomMenuPanelHooks)
+- (void)original_drawRect:(NSRect)dirtyRect;
+- (BOOL)original_isOpaque;
+- (NSWindow *)original_window;
+@end
+
+// Store original method implementations before swizzling
+static void (*original_NSMenuView_drawRect)(id, SEL, NSRect) = NULL;
+static BOOL (*original_NSMenuView_isOpaque)(id, SEL) = NULL;
+static NSWindow * (*original_NSMenuView_window)(id, SEL) = NULL;
+
+@implementation NSMenuView (CustomMenuPanelHooks)
+
+- (void)original_drawRect:(NSRect)dirtyRect
+{
+    // Draw transparent background
+    [[NSColor clearColor] set];
+    NSRectFill(dirtyRect);
+    
+    // Call original implementation directly
+    if (original_NSMenuView_drawRect) {
+        original_NSMenuView_drawRect(self, @selector(drawRect:), dirtyRect);
+    }
+}
+
+- (BOOL)original_isOpaque
+{
+    return NO;
+}
+
+- (NSWindow *)original_window
+{
+    // Get the actual window using the original implementation
+    NSWindow *window = NULL;
+    if (original_NSMenuView_window) {
+        window = original_NSMenuView_window(self, @selector(window));
+    }
+    
+    if (window && ![window isKindOfClass:[CustomMenuPanel class]]) {
+        // Apply gradient styling to the window
+        [window setBackgroundColor:[NSColor clearColor]];
+        [window setOpaque:NO];
+        
+        // Get the content view
+        NSView *contentView = [window contentView];
+        if (contentView && ![contentView isKindOfClass:[MenuGradientView class]]) {
+            // Wrap the content view with our gradient view (only once)
+            static NSMutableSet *wrappedViews = nil;
+            if (!wrappedViews) {
+                wrappedViews = [[NSMutableSet alloc] init];
+            }
+            
+            NSValue *viewKey = [NSValue valueWithPointer:(__bridge const void *)contentView];
+            if (![wrappedViews containsObject:viewKey]) {
+                [wrappedViews addObject:viewKey];
+                
+                // Create gradient view wrapper with full content bounds
+                NSView *oldContentView = [window contentView];
+                NSRect contentBounds = [oldContentView bounds];
+                MenuGradientView *gradientView = [[MenuGradientView alloc] initWithFrame:contentBounds];
+                
+                // Set up the gradient
+                NSColor *brightGrey = [NSColor colorWithCalibratedRed:0.95 
+                                                                green:0.95 
+                                                                 blue:0.95 
+                                                                alpha:0.80];
+                NSColor *midGrey = [NSColor colorWithCalibratedRed:0.85 
+                                                         green:0.85 
+                                                          blue:0.85 
+                                                         alpha:0.70];
+                
+                NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:brightGrey 
+                                                                   endingColor:midGrey];
+                [gradientView setGradient:gradient];
+                
+                // Ensure gradient view fills the content area
+                [gradientView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+                
+                // Adjust contentView to fill the gradient view
+                [contentView setFrame:contentBounds];
+                [contentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+                
+                // Set as background and bring content view to front
+                [contentView removeFromSuperview];
+                [window setContentView:gradientView];
+                [gradientView addSubview:contentView];
+                
+                NSLog(@"CustomMenuPanel: Wrapped menu panel content view with gradient");
+            }
+        }
+    }
+    
+    return window;
+}
+
+@end
+
 void HookNSMenuPanelCreation(void)
 {
     NSLog(@"CustomMenuPanel: Setting up hooks for menu window styling");
     
-    // Hook NSMenuView to make it transparent
+    // Hook NSMenuView to make it transparent and apply gradient styling
     Class nsMenuViewClass = NSClassFromString(@"NSMenuView");
     if (nsMenuViewClass) {
-        Method drawMethod = class_getInstanceMethod(nsMenuViewClass, @selector(drawRect:));
-        if (drawMethod) {
-            IMP originalImp = method_getImplementation(drawMethod);
-            
-            IMP newImp = imp_implementationWithBlock(^(id self, NSRect dirtyRect) {
-                // Draw transparent background
-                [[NSColor clearColor] set];
-                NSRectFill(dirtyRect);
-                
-                // Call original to draw menu items
-                ((void (*)(id, SEL, NSRect))originalImp)(self, @selector(drawRect:), dirtyRect);
-            });
-            
-            method_setImplementation(drawMethod, newImp);
-            NSLog(@"CustomMenuPanel: Hooked NSMenuView.drawRect for transparent background");
+        // Swizzle drawRect:
+        Method originalDrawMethod = class_getInstanceMethod(nsMenuViewClass, @selector(drawRect:));
+        Method newDrawMethod = class_getInstanceMethod([NSMenuView class], @selector(original_drawRect:));
+        
+        if (originalDrawMethod && newDrawMethod) {
+            // Save the original implementation
+            original_NSMenuView_drawRect = (void (*)(id, SEL, NSRect))method_getImplementation(originalDrawMethod);
+            method_exchangeImplementations(originalDrawMethod, newDrawMethod);
+            NSLog(@"CustomMenuPanel: Swizzled NSMenuView.drawRect for transparent background");
         }
         
-        // Mark NSMenuView as non-opaque
-        Method opaqueMethod = class_getInstanceMethod(nsMenuViewClass, @selector(isOpaque));
-        if (opaqueMethod) {
-            IMP newOpaqueImp = imp_implementationWithBlock(^(id self) {
-                return (BOOL)NO;
-            });
-            
-            method_setImplementation(opaqueMethod, newOpaqueImp);
-            NSLog(@"CustomMenuPanel: Set NSMenuView.isOpaque to return NO");
+        // Swizzle isOpaque:
+        Method originalOpaqueMethod = class_getInstanceMethod(nsMenuViewClass, @selector(isOpaque));
+        Method newOpaqueMethod = class_getInstanceMethod([NSMenuView class], @selector(original_isOpaque));
+        
+        if (originalOpaqueMethod && newOpaqueMethod) {
+            method_exchangeImplementations(originalOpaqueMethod, newOpaqueMethod);
+            NSLog(@"CustomMenuPanel: Swizzled NSMenuView.isOpaque");
         }
         
-        // Hook the window property to apply gradient to the menu panel
-        Method windowMethod = class_getInstanceMethod(nsMenuViewClass, @selector(window));
-        if (windowMethod) {
-            IMP originalWindowImp = method_getImplementation(windowMethod);
-            
-            IMP newWindowImp = imp_implementationWithBlock(^(id self) {
-                NSWindow *window = ((NSWindow* (*)(id, SEL))originalWindowImp)(self, @selector(window));
-                
-                if (window && ![window isKindOfClass:[CustomMenuPanel class]]) {
-                    // Apply gradient styling to the window
-                    [window setBackgroundColor:[NSColor clearColor]];
-                    [window setOpaque:NO];
-                    
-                    // Get the content view
-                    NSView *contentView = [window contentView];
-                    if (contentView && ![contentView isKindOfClass:[MenuGradientView class]]) {
-                        // Wrap the content view with our gradient view (only once)
-                        static NSMutableSet *wrappedViews = nil;
-                        if (!wrappedViews) {
-                            wrappedViews = [[NSMutableSet alloc] init];
-                        }
-                        
-                        NSValue *viewKey = [NSValue valueWithPointer:(__bridge const void *)contentView];
-                        if (![wrappedViews containsObject:viewKey]) {
-                            [wrappedViews addObject:viewKey];
-                            
-                            // Create gradient view wrapper with full content bounds
-                            NSView *oldContentView = [window contentView];
-                            NSRect contentBounds = [oldContentView bounds];
-                            MenuGradientView *gradientView = [[MenuGradientView alloc] initWithFrame:contentBounds];
-                            
-                            // Set up the gradient
-                            NSColor *brightGrey = [NSColor colorWithCalibratedRed:0.95 
-                                                                            green:0.95 
-                                                                             blue:0.95 
-                                                                            alpha:0.80];
-                            NSColor *midGrey = [NSColor colorWithCalibratedRed:0.85 
-                                                                         green:0.85 
-                                                                          blue:0.85 
-                                                                         alpha:0.70];
-                            
-                            NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:brightGrey 
-                                                                               endingColor:midGrey];
-                            [gradientView setGradient:gradient];
-                            
-                            // Ensure gradient view fills the content area
-                            [gradientView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-                            
-                            // Adjust contentView to fill the gradient view
-                            [contentView setFrame:contentBounds];
-                            [contentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-                            
-                            // Set as background and bring content view to front
-                            [contentView removeFromSuperview];
-                            [window setContentView:gradientView];
-                            [gradientView addSubview:contentView];
-                            
-                            NSLog(@"CustomMenuPanel: Wrapped menu panel content view with gradient");
-                        }
-                    }
-                }
-                
-                return window;
-            });
-            
-            method_setImplementation(windowMethod, newWindowImp);
-            NSLog(@"CustomMenuPanel: Hooked NSMenuView.window for gradient styling");
+        // Swizzle window:
+        Method originalWindowMethod = class_getInstanceMethod(nsMenuViewClass, @selector(window));
+        Method newWindowMethod = class_getInstanceMethod([NSMenuView class], @selector(original_window));
+        
+        if (originalWindowMethod && newWindowMethod) {
+            // Save the original implementation
+            original_NSMenuView_window = (NSWindow * (*)(id, SEL))method_getImplementation(originalWindowMethod);
+            method_exchangeImplementations(originalWindowMethod, newWindowMethod);
+            NSLog(@"CustomMenuPanel: Swizzled NSMenuView.window for gradient styling");
         }
     }
     
