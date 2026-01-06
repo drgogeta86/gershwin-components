@@ -1,0 +1,9 @@
+{
+    CFBundleIdentifier = "org.gnustep.network.prefpane";
+    NOTE = "Automatically generated, do not edit!";
+    NSExecutable = Network;
+    NSMainNibFile = "";
+    NSPrefPaneIconFile = "Network.png";
+    NSPrefPaneIconLabel = "Network";
+    NSPrincipalClass = NetworkPane;
+}

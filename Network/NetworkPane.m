@@ -1,0 +1,97 @@
+/*
+ * Copyright (c) 2026 Simon Peter
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Network Preference Pane Implementation
+ */
+
+#import "NetworkPane.h"
+#import "NetworkController.h"
+
+@implementation NetworkPane
+
+- (id)initWithBundle:(NSBundle *)bundle
+{
+    self = [super initWithBundle:bundle];
+    if (self) {
+        controller = [[NetworkController alloc] init];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [self stopRefreshTimer];
+    [controller release];
+    [super dealloc];
+}
+
+- (void)startRefreshTimer
+{
+    if (!refreshTimer) {
+        refreshTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
+                                                        target:controller
+                                                      selector:@selector(refreshInterfaces:)
+                                                      userInfo:nil
+                                                       repeats:YES];
+        [refreshTimer retain];
+    }
+}
+
+- (void)stopRefreshTimer
+{
+    if (refreshTimer) {
+        [refreshTimer invalidate];
+        [refreshTimer release];
+        refreshTimer = nil;
+    }
+}
+
+- (NSView *)loadMainView
+{
+    if (_mainView == nil) {
+        _mainView = [[controller createMainView] retain];
+    }
+    return _mainView;
+}
+
+- (NSString *)mainNibName
+{
+    return nil; // We create the view programmatically
+}
+
+- (void)mainViewDidLoad
+{
+    // Initial data refresh
+    [controller refreshInterfaces:nil];
+    [self setInitialKeyView:nil];
+}
+
+- (void)didSelect
+{
+    [super didSelect];
+    // Refresh data when the pane is selected
+    [controller refreshInterfaces:nil];
+    [self setInitialKeyView:nil];
+}
+
+- (void)willUnselect
+{
+    NSLog(@"NetworkPane: willUnselect called");
+}
+
+- (void)didUnselect
+{
+    [super didUnselect];
+    [self stopRefreshTimer];
+    NSLog(@"NetworkPane: didUnselect called");
+}
+
+- (NSPreferencePaneUnselectReply)shouldUnselect
+{
+    NSLog(@"NetworkPane: shouldUnselect called, allowing unselect");
+    return NSUnselectNow;
+}
+
+@end
