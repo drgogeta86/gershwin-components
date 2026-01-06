@@ -1,0 +1,9 @@
+{
+    CFBundleIdentifier = "org.gnustep.sound.prefpane";
+    NOTE = "Automatically generated, do not edit!";
+    NSExecutable = Sound;
+    NSMainNibFile = "";
+    NSPrefPaneIconFile = "Sound.png";
+    NSPrefPaneIconLabel = "Sound";
+    NSPrincipalClass = SoundPane;
+}
