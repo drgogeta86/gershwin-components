@@ -1,0 +1,151 @@
+.TH PLISTUPDATE 1 "January 2026" "Gershwin Desktop Environment" "User Commands"
+.SH NAME
+plistupdate \- updates Info-gnustep.plist files with build metadata
+.SH SYNOPSIS
+.B plistupdate
+[\fIOPTIONS\fR]
+.I PLIST_FILE
+.SH DESCRIPTION
+.B plistupdate
+is a command-line tool that automatically updates GNUstep property list files
+(Info-gnustep.plist) with build metadata including version control information
+and release dates.
+.PP
+The tool updates two key fields in the plist file:
+.TP
+.B NSBuildVersion
+Set to the short git commit hash if the file is in a git repository, otherwise
+set to "dev". Can be manually specified with the \fB\-b\fR option.
+.TP
+.B ApplicationRelease
+Set to the current date in YYYYMMDD format (e.g., 20260107). Can be manually
+specified with the \fB\-d\fR option.
+.PP
+This tool is typically invoked automatically by the GNUstep build system when
+building applications, but can also be used manually for custom build workflows.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Display usage information and exit.
+.TP
+.BR \-v ", " \-\-version
+Display version information and exit.
+.TP
+.BR \-b " \fIVERSION\fR, " \-\-build " \fIVERSION\fR"
+Set NSBuildVersion to the specified value manually. If not specified, the tool
+will attempt to obtain the version from git.
+.TP
+.BR \-d " \fIDATE\fR, " \-\-date " \fIDATE\fR"
+Set ApplicationRelease to the specified date. The date should be in YYYYMMDD
+format. If not specified, the current date is used.
+.TP
+.BR \-n ", " \-\-no\-git
+Do not attempt to retrieve version information from git. Sets NSBuildVersion
+to "dev" unless \fB\-b\fR is specified.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress informational messages. Error messages will still be displayed.
+.SH EXAMPLES
+.PP
+Update an application's Info-gnustep.plist file with automatic git version and
+current date:
+.PP
+.nf
+.RS
+plistupdate MyApp.app/Resources/Info-gnustep.plist
+.RE
+.fi
+.PP
+Update a plist file with specific version and date:
+.PP
+.nf
+.RS
+plistupdate \-b 1.0 \-d 20260107 Info-gnustep.plist
+.RE
+.fi
+.PP
+Update without attempting git version lookup:
+.PP
+.nf
+.RS
+plistupdate \-n MyApp.app/Resources/Info-gnustep.plist
+.RE
+.fi
+.PP
+Quiet operation (no informational output):
+.PP
+.nf
+.RS
+plistupdate \-q MyApp.app/Resources/Info-gnustep.plist
+.RE
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Successful completion.
+.TP
+.B 1
+An error occurred (e.g., file not found, parse error, write failure).
+.SH FILE FORMAT
+The tool expects and writes GNUstep-style property list files. The plist file
+must contain a dictionary (key-value pairs enclosed in braces).
+.PP
+Example Info-gnustep.plist structure:
+.PP
+.nf
+.RS
+{
+    ApplicationName = MyApp;
+    NSBuildVersion = "a1b2c3d";
+    ApplicationRelease = 20260107;
+    NSExecutable = MyApp;
+    NSPrincipalClass = NSApplication;
+}
+.RE
+.fi
+.SH INTEGRATION WITH GNUSTEP BUILD SYSTEM
+.B plistupdate
+is automatically integrated into the GNUstep build system for applications.
+During the build process (make/gmake), it is invoked after the Info-gnustep.plist
+file is generated to update it with current build metadata.
+.PP
+For custom integration, you can add plistupdate to your GNUmakefile.postamble:
+.PP
+.nf
+.RS
+after-all::
+    plistupdate $(APP_DIR)/Resources/Info-gnustep.plist
+.RE
+.fi
+.SH GIT REPOSITORY DETECTION
+The tool searches for a .git directory starting from the plist file's location
+and traversing up the directory tree. If found, it executes:
+.PP
+.nf
+.RS
+git rev-parse --short HEAD
+.RE
+.fi
+.PP
+to obtain the short commit hash. If git is not available, the repository is not
+found, or the git command fails, NSBuildVersion is set to "dev".
+.SH ENVIRONMENT
+The tool respects standard GNUstep environment variables for locating the git
+executable and processing property list files.
+.SH FILES
+.TP
+.I /usr/bin/git
+Git executable used for obtaining version information.
+.TP
+.I Info-gnustep.plist
+Standard GNUstep application property list file.
+.SH SEE ALSO
+.BR plmerge (1),
+.BR gmake (1),
+.BR git (1),
+.BR gnustep-config (1)
+.PP
+GNUstep Make Documentation: http://www.gnustep.org/resources/documentation/make/
+.PP
+This is free software; see the source for copying conditions. There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
