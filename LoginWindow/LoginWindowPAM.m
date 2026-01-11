@@ -124,8 +124,8 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     _storedUsername = [username copy];
     _storedPassword = [password copy];
     NSLog(@"[PAM] Credentials stored: username=%@ password=%@", _storedUsername, _storedPassword ? @"(hidden)" : @"(nil)");
-    // "system" is the service name used for PAM authentication, there is a file in /etc/pam.d/ that defines the service
-    int result = pam_start("system", [username UTF8String], &pam_conversation, &pam_handle);
+    // "LoginWindow-pam" is the service name used for PAM authentication, there is a file in /etc/pam.d/ that defines the service
+    int result = pam_start("LoginWindow-pam", [username UTF8String], &pam_conversation, &pam_handle);
     NSLog(@"[PAM] pam_start result: %d (%s)", result, pam_strerror(pam_handle, result));
     if (result != PAM_SUCCESS) {
         const char *error = pam_strerror(pam_handle, result);
@@ -137,6 +137,16 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     }
     result = pam_set_item(pam_handle, PAM_TTY, ttyname(STDIN_FILENO));
     NSLog(@"[PAM] pam_set_item PAM_TTY result: %d (%s)", result, pam_strerror(pam_handle, result));
+    
+    // Set DISPLAY for X11 authorization (required for pam_xauth to work)
+    const char *display = getenv("DISPLAY");
+    if (display) {
+        result = pam_set_item(pam_handle, PAM_XDISPLAY, display);
+        NSLog(@"[PAM] pam_set_item PAM_XDISPLAY result: %d (%s), DISPLAY=%s", result, pam_strerror(pam_handle, result), display);
+    } else {
+        NSLog(@"[PAM] Warning: DISPLAY environment variable not set");
+    }
+    
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) == 0) {
         pam_set_item(pam_handle, PAM_RHOST, hostname);
@@ -257,8 +267,8 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     
     NSLog(@"[PAM] Starting PAM session for auto-login user: %@", username);
     
-    // "system" is the service name used for PAM authentication
-    int result = pam_start("system", [username UTF8String], &pam_conversation, &pam_handle);
+    // "LoginWindow-pam" is the service name used for PAM authentication
+    int result = pam_start("LoginWindow-pam", [username UTF8String], &pam_conversation, &pam_handle);
     NSLog(@"[PAM] pam_start result for auto-login: %d (%s)", result, pam_strerror(pam_handle, result));
     if (result != PAM_SUCCESS) {
         const char *error = pam_strerror(pam_handle, result);
@@ -271,6 +281,15 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     
     result = pam_set_item(pam_handle, PAM_TTY, ttyname(STDIN_FILENO));
     NSLog(@"[PAM] pam_set_item PAM_TTY result for auto-login: %d (%s)", result, pam_strerror(pam_handle, result));
+    
+    // Set DISPLAY for X11 authorization (required for pam_xauth to work)
+    const char *display = getenv("DISPLAY");
+    if (display) {
+        result = pam_set_item(pam_handle, PAM_XDISPLAY, display);
+        NSLog(@"[PAM] pam_set_item PAM_XDISPLAY result for auto-login: %d (%s), DISPLAY=%s", result, pam_strerror(pam_handle, result), display);
+    } else {
+        NSLog(@"[PAM] Warning: DISPLAY environment variable not set for auto-login");
+    }
     
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) == 0) {

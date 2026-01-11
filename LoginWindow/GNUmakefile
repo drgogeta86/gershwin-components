@@ -12,7 +12,8 @@ LoginWindow_OBJC_FILES = \
     LoginWindowPAM.m
 
 LoginWindow_RESOURCE_FILES = \
-    Info.plist
+    Info.plist \
+    LoginWindow-pam.pam
 
 LoginWindow_PRINCIPAL_CLASS = LoginWindow
 
@@ -48,6 +49,16 @@ install:: all
 		else \
 			echo "/usr/local/etc/rc.d does not exist, skipping rc.d script install."; \
 		fi; \
+	fi
+	@echo "Installing PAM configuration..."
+	@if [ -n "$(DESTDIR)" ]; then \
+		echo "Installing to $(DESTDIR)/etc/pam.d/LoginWindow-pam (staged install)"; \
+		mkdir -p $(DESTDIR)/etc/pam.d; \
+		install -m 644 LoginWindow-pam.pam $(DESTDIR)/etc/pam.d/LoginWindow-pam; \
+	else \
+		echo "Installing to /etc/pam.d/LoginWindow-pam (system install)"; \
+		sudo -A mkdir -p /etc/pam.d; \
+		sudo -A install -m 644 LoginWindow-pam.pam /etc/pam.d/LoginWindow-pam; \
 	fi
 	@echo "Installation complete."
 
