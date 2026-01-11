@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 // Define PAM_XDISPLAY if not provided by system PAM headers (e.g., on FreeBSD)
 #ifndef PAM_XDISPLAY
@@ -100,8 +101,63 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
         _lastErrorMessage = nil;
         authenticationInProgress = NO;
         NSLog(@"[PAM] LoginWindowPAM initialized");
+        
+        // Ensure PAM configuration exists with xauth support
+        [self ensurePAMConfigurationWithXAuth];
     }
     return self;
+}
+
+- (void)ensurePAMConfigurationWithXAuth
+{
+    const char *pam_config_path = "/etc/pam.d/LoginWindow-pam";
+    
+    NSLog(@"[PAM] Checking if %s exists...", pam_config_path);
+    
+    // Check if it already exists
+    if (access(pam_config_path, R_OK) == 0) {
+        NSLog(@"[PAM] %s already exists", pam_config_path);
+        return;
+    }
+    
+    NSLog(@"[PAM] Creating %s for X11 authorization support...", pam_config_path);
+    
+    FILE *config = fopen(pam_config_path, "w");
+    if (!config) {
+        NSLog(@"[PAM] ERROR: Cannot create %s (errno=%d: %s)", pam_config_path, errno, strerror(errno));
+        NSLog(@"[PAM] LoginWindow must run as root to create PAM configuration");
+        return;
+    }
+    
+    // Create config that includes login and adds xauth support
+    fprintf(config, "# PAM configuration for Gershwin LoginWindow\n");
+    fprintf(config, "# Includes the system login configuration and adds X11 authorization support\n");
+    fprintf(config, "#\n\n");
+    
+    fprintf(config, "# Authentication - use login service\n");
+    fprintf(config, "auth\t\tinclude\t\tlogin\n\n");
+    
+    fprintf(config, "# Account management - use login service\n");
+    fprintf(config, "account\t\tinclude\t\tlogin\n\n");
+    
+    fprintf(config, "# Session management - use login service and add xauth for X11\n");
+    fprintf(config, "session\t\tinclude\t\tlogin\n");
+    
+    // Check if pam_xauth.so exists and add it
+    if (access("/usr/lib/pam_xauth.so", F_OK) == 0) {
+        fprintf(config, "session\t\toptional\tpam_xauth.so\n");
+        NSLog(@"[PAM] Added pam_xauth.so for X11 authorization with MIT-MAGIC-COOKIE");
+    } else {
+        NSLog(@"[PAM] WARNING: pam_xauth.so not found at /usr/lib/pam_xauth.so");
+    }
+    
+    fprintf(config, "\n# Password management - use login service\n");
+    fprintf(config, "password\tinclude\t\tlogin\n");
+    
+    fclose(config);
+    chmod(pam_config_path, 0644);
+    
+    NSLog(@"[PAM] PAM configuration created successfully at %s", pam_config_path);
 }
 
 - (void)dealloc
@@ -190,7 +246,7 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
         }
     }
     
-    // "LoginWindow-pam" is the service name used for PAM authentication, there is a file in /etc/pam.d/ that defines the service
+    // "LoginWindow-pam" is the service name that includes login config plus X11 support
     NSLog(@"[PAM] Calling pam_start with service='LoginWindow-pam', user='%s'", [username UTF8String]);
     int result = pam_start("LoginWindow-pam", [username UTF8String], &pam_conversation, &pam_handle);
     NSLog(@"[PAM] pam_start returned: %d", result);
@@ -202,7 +258,7 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     if (result != PAM_SUCCESS) {
         const char *error = pam_handle ? pam_strerror(pam_handle, result) : "unknown error";
         NSLog(@"[PAM] pam_start FAILED with code %d: %s (errno=%d: %s)", result, error, errno, strerror(errno));
-        NSLog(@"[PAM] Common causes: 1) /etc/pam.d/LoginWindow-pam missing, 2) PAM modules not found, 3) permission denied");
+        NSLog(@"[PAM] Common causes: 1) /etc/pam.d/LoginWindow-pam missing or not readable, 2) PAM modules not found, 3) permission denied");
         [_lastErrorMessage release];
         _lastErrorMessage = [[NSString stringWithFormat:@"PAM initialization failed: %s\nCheck /etc/pam.d/LoginWindow-pam exists and PAM modules are installed.", error] retain];
         authenticationInProgress = NO;
@@ -348,7 +404,7 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
         NSLog(@"[PAM] PAM configuration file exists and is readable");
     }
     
-    // "LoginWindow-pam" is the service name used for PAM authentication
+    // "LoginWindow-pam" is the service name that includes login config plus X11 support
     NSLog(@"[PAM] Calling pam_start with service='LoginWindow-pam', user='%s'", [username UTF8String]);
     int result = pam_start("LoginWindow-pam", [username UTF8String], &pam_conversation, &pam_handle);
     NSLog(@"[PAM] pam_start returned: %d", result);
@@ -360,7 +416,7 @@ int loginwindow_pam_conv(int num_msg, const struct pam_message **msg,
     if (result != PAM_SUCCESS) {
         const char *error = pam_handle ? pam_strerror(pam_handle, result) : "unknown error";
         NSLog(@"[PAM] pam_start FAILED for auto-login with code %d: %s (errno=%d: %s)", result, error, errno, strerror(errno));
-        NSLog(@"[PAM] Common causes: 1) /etc/pam.d/LoginWindow-pam missing, 2) PAM modules not found, 3) permission denied");
+        NSLog(@"[PAM] Common causes: 1) /etc/pam.d/LoginWindow-pam missing or not readable, 2) PAM modules not found, 3) permission denied");
         [_lastErrorMessage release];
         _lastErrorMessage = [[NSString stringWithFormat:@"PAM initialization failed for auto-login: %s\nCheck /etc/pam.d/LoginWindow-pam exists and PAM modules are installed.", error] retain];
         authenticationInProgress = NO;

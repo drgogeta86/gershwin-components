@@ -2451,7 +2451,6 @@ void signalHandler(int sig) {
         
         // Check if command line matches pattern and display number
         NSString *cmdlineStr = [NSString stringWithUTF8String:cmdline];
-        NSString *displayPattern = [NSString stringWithFormat:@"%@.*%@", pattern, displayNum];
         
         // Simple pattern matching: check if pattern exists and display number exists in cmdline
         if ([cmdlineStr rangeOfString:pattern].location != NSNotFound &&
