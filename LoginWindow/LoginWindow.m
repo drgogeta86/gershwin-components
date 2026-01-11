@@ -140,6 +140,75 @@ static int write_xauth_entry(
     return 0;
 }
 
+// Verify that an xauth entry was written correctly by reading it back
+static int verify_xauth_entry(
+    const char *authfile,
+    const char *display,
+    const unsigned char expected_cookie[16]
+) {
+    // Display number - strip leading colon if present
+    const char *dispnum = display;
+    if (dispnum[0] == ':') {
+        dispnum++;
+    }
+    // Strip screen number if present
+    char dispnum_copy[32];
+    strncpy(dispnum_copy, dispnum, sizeof(dispnum_copy) - 1);
+    dispnum_copy[sizeof(dispnum_copy) - 1] = '\0';
+    char *dot = strchr(dispnum_copy, '.');
+    if (dot) {
+        *dot = '\0';
+    }
+    
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        hostname[0] = '\0';
+    }
+    
+    FILE *fp = fopen(authfile, "rb");
+    if (!fp) {
+        NSLog(@"[XAUTH] Failed to open %s for reading: %s", authfile, strerror(errno));
+        return -1;
+    }
+    
+    // Read through all entries looking for a match
+    Xauth *entry;
+    int found = 0;
+    while ((entry = XauReadAuth(fp)) != NULL) {
+        // Check if this entry matches our criteria
+        if (entry->family == FamilyLocal &&
+            entry->address_length == strlen(hostname) &&
+            memcmp(entry->address, hostname, entry->address_length) == 0 &&
+            entry->number_length == strlen(dispnum_copy) &&
+            memcmp(entry->number, dispnum_copy, entry->number_length) == 0 &&
+            entry->name_length == strlen("MIT-MAGIC-COOKIE-1") &&
+            memcmp(entry->name, "MIT-MAGIC-COOKIE-1", entry->name_length) == 0) {
+            
+            // Found matching entry, verify the cookie data
+            if (entry->data_length == 16 &&
+                memcmp(entry->data, expected_cookie, 16) == 0) {
+                NSLog(@"[XAUTH] Verified: Cookie in %s matches expected value", authfile);
+                found = 1;
+            } else {
+                NSLog(@"[XAUTH] ERROR: Cookie in %s does NOT match expected value (length: %d)", 
+                      authfile, entry->data_length);
+            }
+            XauDisposeAuth(entry);
+            break;
+        }
+        XauDisposeAuth(entry);
+    }
+    
+    fclose(fp);
+    
+    if (!found) {
+        NSLog(@"[XAUTH] ERROR: No matching entry found in %s", authfile);
+        return -1;
+    }
+    
+    return 0;
+}
+
 // Global storage for the current X server cookie (shared between X server and user sessions)
 static unsigned char g_xserver_cookie[16];
 static BOOL g_xserver_cookie_valid = NO;
@@ -809,6 +878,89 @@ void signalHandler(int sig) {
     
     NSLog(@"[DEBUG] Changed to user home directory: %s", pwd->pw_dir);
     
+    // Create user's ~/.Xauthority using libXau BEFORE fork (as root)
+    // This allows us to verify creation and show NSAlert if it fails
+    NSLog(@"[DEBUG] Creating user Xauthority file using libXau");
+    char xauthPath[PATH_MAX];
+    snprintf(xauthPath, sizeof(xauthPath), "%s/.Xauthority", pwd->pw_dir);
+    
+    // Remove any existing auth file to start fresh
+    unlink(xauthPath);
+    
+    if (g_xserver_cookie_valid) {
+        if (write_xauth_entry(xauthPath, ":0", g_xserver_cookie) == 0) {
+            // Set proper ownership and permissions
+            if (chown(xauthPath, pwd->pw_uid, pwd->pw_gid) != 0) {
+                NSLog(@"[ERROR] Failed to set ownership of ~/.Xauthority: %s", strerror(errno));
+                NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Setup Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"Failed to set ownership of ~/.Xauthority for user %@. The X session may not work properly.", username];
+                [alert runModal];
+                [self showStatus:@"Failed to set .Xauthority ownership"];
+                [pamAuth closeSession];
+                return;
+            }
+            chmod(xauthPath, 0600);
+            NSLog(@"[DEBUG] ~/.Xauthority created successfully at: %s", xauthPath);
+            
+            // Verify that the file was actually created
+            if (access(xauthPath, F_OK) != 0) {
+                NSLog(@"[ERROR] ~/.Xauthority was not created at: %s", xauthPath);
+                NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"The ~/.Xauthority file could not be created at %s. The X session may not work properly.", xauthPath];
+                [alert runModal];
+                [self showStatus:@"Failed to create .Xauthority"];
+                [pamAuth closeSession];
+                return;
+            }
+            
+            // Verify that the cookie content matches what we wrote
+            if (verify_xauth_entry(xauthPath, ":0", g_xserver_cookie) != 0) {
+                NSLog(@"[ERROR] ~/.Xauthority content verification failed at: %s", xauthPath);
+                NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"The ~/.Xauthority file at %s was created but the cookie content does not match. The X session may not work properly.", xauthPath];
+                [alert runModal];
+                [self showStatus:@"Failed to verify .Xauthority content"];
+                [pamAuth closeSession];
+                return;
+            }
+            
+            NSLog(@"[DEBUG] ~/.Xauthority content verified successfully");
+        } else {
+            NSLog(@"[ERROR] Failed to create ~/.Xauthority at: %s", xauthPath);
+            NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Failed"
+                                             defaultButton:@"OK"
+                                           alternateButton:nil
+                                               otherButton:nil
+                                 informativeTextWithFormat:@"Failed to write X authorization entry to ~/.Xauthority for user %@. The X session may not work properly.", username];
+            [alert runModal];
+            [self showStatus:@"Failed to create .Xauthority"];
+            [pamAuth closeSession];
+            return;
+        }
+    } else {
+        NSLog(@"[WARNING] No X server cookie available - ~/.Xauthority not created");
+        NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Warning"
+                                         defaultButton:@"Continue Anyway"
+                                       alternateButton:@"Cancel"
+                                           otherButton:nil
+                             informativeTextWithFormat:@"No X server cookie is available. The ~/.Xauthority file cannot be created. The X session may not work properly."];
+        NSInteger response = [alert runModal];
+        if (response != NSAlertDefaultReturn) {
+            [self showStatus:@"Login cancelled"];
+            [pamAuth closeSession];
+            return;
+        }
+    }
+    
     // Start the user's session
     NSLog(@"[DEBUG] About to fork for session");
     pid_t pid = fork();
@@ -888,32 +1040,8 @@ void signalHandler(int sig) {
         
         NSLog(@"[DEBUG] User context setup complete");
         
-        // Create user's ~/.Xauthority using libXau (no PAM xauth needed)
-        // This uses the same cookie that was used for the X server
-        NSLog(@"[DEBUG] Creating user Xauthority file using libXau");
-        char xauthPath[PATH_MAX];
-        snprintf(xauthPath, sizeof(xauthPath), "%s/.Xauthority", pwd->pw_dir);
-        
-        // Remove any existing auth file to start fresh
-        unlink(xauthPath);
-        
-        if (g_xserver_cookie_valid) {
-            if (write_xauth_entry(xauthPath, ":0", g_xserver_cookie) == 0) {
-                // Set proper ownership and permissions
-                chmod(xauthPath, 0600);
-                NSLog(@"[DEBUG] ~/.Xauthority created successfully at: %s", xauthPath);
-                
-                // Verify that the file was actually created
-                if (access(xauthPath, F_OK) != 0) {
-                    NSLog(@"[ERROR] ~/.Xauthority was not created at: %s", xauthPath);
-                    // Can't use NSAlert in child process, just log and continue
-                }
-            } else {
-                NSLog(@"[ERROR] Failed to create ~/.Xauthority at: %s", xauthPath);
-            }
-        } else {
-            NSLog(@"[WARNING] No X server cookie available - ~/.Xauthority not created");
-        }
+        // Note: ~/.Xauthority was already created before fork with proper ownership
+        NSLog(@"[DEBUG] User Xauthority file was created before fork");
         
         // Clear signal handlers and reset signal mask
         signal(SIGTERM, SIG_DFL);
@@ -1344,6 +1472,92 @@ void signalHandler(int sig) {
     
     NSLog(@"[DEBUG] Changed to user home directory: %s", pwd->pw_dir);
     
+    // Create user's ~/.Xauthority using libXau BEFORE fork (as root)
+    // This allows us to verify creation and show NSAlert if it fails
+    NSLog(@"[DEBUG] Creating user Xauthority file for auto-login using libXau");
+    char xauthPath[PATH_MAX];
+    snprintf(xauthPath, sizeof(xauthPath), "%s/.Xauthority", pwd->pw_dir);
+    
+    // Remove any existing auth file to start fresh
+    unlink(xauthPath);
+    
+    if (g_xserver_cookie_valid) {
+        if (write_xauth_entry(xauthPath, ":0", g_xserver_cookie) == 0) {
+            // Set proper ownership and permissions
+            if (chown(xauthPath, pwd->pw_uid, pwd->pw_gid) != 0) {
+                NSLog(@"[ERROR] Failed to set ownership of ~/.Xauthority for auto-login: %s", strerror(errno));
+                NSAlert *alert = [NSAlert alertWithMessageText:@"Auto-Login X Authorization Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"Failed to set ownership of ~/.Xauthority for auto-login user %@. Falling back to login window.", username];
+                [alert runModal];
+                [self showStatus:@"Failed to set .Xauthority ownership"];
+                [pamAuth closeSession];
+                [loginWindow makeKeyAndOrderFront:self];
+                return;
+            }
+            chmod(xauthPath, 0600);
+            NSLog(@"[DEBUG] ~/.Xauthority created successfully for auto-login at: %s", xauthPath);
+            
+            // Verify that the file was actually created
+            if (access(xauthPath, F_OK) != 0) {
+                NSLog(@"[ERROR] ~/.Xauthority was not created for auto-login at: %s", xauthPath);
+                NSAlert *alert = [NSAlert alertWithMessageText:@"Auto-Login X Authorization Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"The ~/.Xauthority file could not be created at %s for auto-login. Falling back to login window.", xauthPath];
+                [alert runModal];
+                [self showStatus:@"Failed to create .Xauthority"];
+                [pamAuth closeSession];
+                [loginWindow makeKeyAndOrderFront:self];
+                return;
+            }
+            
+            // Verify that the cookie content matches what we wrote
+            if (verify_xauth_entry(xauthPath, ":0", g_xserver_cookie) != 0) {
+                NSLog(@"[ERROR] ~/.Xauthority content verification failed for auto-login at: %s", xauthPath);
+                NSAlert *alert = [NSAlert alertWithMessageText:@"Auto-Login X Authorization Failed"
+                                                 defaultButton:@"OK"
+                                               alternateButton:nil
+                                                   otherButton:nil
+                                     informativeTextWithFormat:@"The ~/.Xauthority file at %s was created but the cookie content does not match for auto-login. Falling back to login window.", xauthPath];
+                [alert runModal];
+                [self showStatus:@"Failed to verify .Xauthority content"];
+                [pamAuth closeSession];
+                [loginWindow makeKeyAndOrderFront:self];
+                return;
+            }
+            
+            NSLog(@"[DEBUG] ~/.Xauthority content verified successfully for auto-login");
+        } else {
+            NSLog(@"[ERROR] Failed to create ~/.Xauthority for auto-login at: %s", xauthPath);
+            NSAlert *alert = [NSAlert alertWithMessageText:@"Auto-Login X Authorization Failed"
+                                             defaultButton:@"OK"
+                                           alternateButton:nil
+                                               otherButton:nil
+                                 informativeTextWithFormat:@"Failed to write X authorization entry to ~/.Xauthority for auto-login user %@. Falling back to login window.", username];
+            [alert runModal];
+            [self showStatus:@"Failed to create .Xauthority"];
+            [pamAuth closeSession];
+            [loginWindow makeKeyAndOrderFront:self];
+            return;
+        }
+    } else {
+        NSLog(@"[WARNING] No X server cookie available for auto-login - ~/.Xauthority not created");
+        NSAlert *alert = [NSAlert alertWithMessageText:@"Auto-Login X Authorization Warning"
+                                         defaultButton:@"Show Login Window"
+                                       alternateButton:nil
+                                           otherButton:nil
+                             informativeTextWithFormat:@"No X server cookie is available for auto-login. The ~/.Xauthority file cannot be created. Falling back to login window."];
+        [alert runModal];
+        [self showStatus:@"Auto-login failed"];
+        [pamAuth closeSession];
+        [loginWindow makeKeyAndOrderFront:self];
+        return;
+    }
+    
     // Start the user's session (reuse the existing session starting code)
     NSLog(@"[DEBUG] About to fork for auto-login session");
     pid_t pid = fork();
@@ -1423,32 +1637,8 @@ void signalHandler(int sig) {
         
         NSLog(@"[DEBUG] Auto-login user context setup complete");
         
-        // Create user's ~/.Xauthority using libXau (no PAM xauth needed)
-        // This uses the same cookie that was used for the X server
-        NSLog(@"[DEBUG] Creating user Xauthority file for auto-login using libXau");
-        char xauthPath[PATH_MAX];
-        snprintf(xauthPath, sizeof(xauthPath), "%s/.Xauthority", pwd->pw_dir);
-        
-        // Remove any existing auth file to start fresh
-        unlink(xauthPath);
-        
-        if (g_xserver_cookie_valid) {
-            if (write_xauth_entry(xauthPath, ":0", g_xserver_cookie) == 0) {
-                // Set proper ownership and permissions
-                chmod(xauthPath, 0600);
-                NSLog(@"[DEBUG] ~/.Xauthority created successfully for auto-login at: %s", xauthPath);
-                
-                // Verify that the file was actually created
-                if (access(xauthPath, F_OK) != 0) {
-                    NSLog(@"[ERROR] ~/.Xauthority was not created for auto-login at: %s", xauthPath);
-                    // Can't use NSAlert in child process, just log and continue
-                }
-            } else {
-                NSLog(@"[ERROR] Failed to create ~/.Xauthority for auto-login at: %s", xauthPath);
-            }
-        } else {
-            NSLog(@"[WARNING] No X server cookie available for auto-login - ~/.Xauthority not created");
-        }
+        // Note: ~/.Xauthority was already created before fork with proper ownership
+        NSLog(@"[DEBUG] User Xauthority file for auto-login was created before fork");
         
         // Clear signal handlers and reset signal mask
         signal(SIGTERM, SIG_DFL);
@@ -2311,6 +2501,20 @@ void signalHandler(int sig) {
         [alert runModal];
         return NO;
     }
+    
+    // Verify that the cookie content matches what we wrote
+    if (verify_xauth_entry([authFile UTF8String], ":0", g_xserver_cookie) != 0) {
+        NSLog(@"[ERROR] X authorization file content verification failed at %@", authFile);
+        NSAlert *alert = [NSAlert alertWithMessageText:@"X Authorization Failed"
+                                         defaultButton:@"OK"
+                                       alternateButton:nil
+                                           otherButton:nil
+                             informativeTextWithFormat:@"The X authorization file at %@ was created but the cookie content does not match. The session may not be able to use the X server properly.", authFile];
+        [alert runModal];
+        return NO;
+    }
+    
+    NSLog(@"[DEBUG] X authorization file content verified successfully");
     
     // Rotate existing X server log file before starting new session
     NSString *xorgLogPath = @"/var/log/Xorg.0.log";
