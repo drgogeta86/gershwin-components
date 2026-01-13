@@ -2303,6 +2303,8 @@ void signalHandler(int sig) {
     // This is important on BSD systems where filesystems may still be mounting
     NSLog(@"[DEBUG] Checking if /tmp is mounted...");
     waitForTmpMountpoint(20);
+    // Sleep for 0.2 seconds longer
+    usleep(200000);  // 200,000 microseconds = 0.2 seconds
     
     // Clean up any existing X server processes first
     [self cleanupExistingXServer];
