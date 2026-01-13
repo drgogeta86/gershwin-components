@@ -2,8 +2,7 @@
 
 # Run before everything else; loginwindow waits until /tmp is mounted and then starts X server and shows the login screen
 # PROVIDE: loginwindow
-# REQUIRE: tmp var_run
-# BEFORE:
+# REQUIRE: tmp var_run cleanvar FILESYSTEMS zfs
 # KEYWORD: shutdown
 #
 # Add the following lines to /etc/rc.conf to enable the LoginWindow:
@@ -23,7 +22,8 @@ load_rc_config ${name}
 
 : ${loginwindow_enable:="NO"}
 
-sleep 1  # FIXME: What exactly are we waiting for here? /tmp not being mounted over after this runs?
+moused & # 'REQUIRE: moused' would result in way too late start
+sleep 1 # FIXME: Find a way without this
 command="/usr/sbin/daemon"
 procname="/System/Applications/LoginWindow.app/LoginWindow"
 pidfile="/var/run/${name}.pid"
