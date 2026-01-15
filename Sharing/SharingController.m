@@ -10,6 +10,7 @@
 #import "GSServiceDiscoveryManager.h"
 #import <sys/utsname.h>
 #import <arpa/inet.h>
+#import <netinet/in.h>
 #import <ifaddrs.h>
 
 // AppearanceMetrics design philosophy - do NOT hardcode layout values
