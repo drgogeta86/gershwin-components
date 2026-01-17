@@ -21,7 +21,7 @@ LoginWindow_PRINCIPAL_CLASS = LoginWindow
 LoginWindow_LDFLAGS += -L/usr/local/lib -lpam -lutil -lX11 -lXau
 
 # Installation directories
-GNUSTEP_APPS_DIR = /System/Applications
+INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_APPS)/../CoreServices/Applications
 
 include $(GNUSTEP_MAKEFILES)/application.make
 

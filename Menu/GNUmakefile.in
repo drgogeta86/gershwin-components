@@ -83,7 +83,7 @@ ifeq ($(UNAME_S),FreeBSD)
 	ADDITIONAL_CPPFLAGS = @DBUS_CFLAGS@
 endif
 
-INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_APPS)
+INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_APPS)/../CoreServices/Applications
 
 include $(GNUSTEP_MAKEFILES)/application.make
 
