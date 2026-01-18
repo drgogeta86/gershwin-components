@@ -105,7 +105,6 @@ install:: custom-install
 custom-install: $(APP_NAME).app
 	@if [ -n "$(DESTDIR)" ]; then \
 		echo "Installing $(APP_NAME) to $(DESTDIR)$(INSTALL_APPS_DIR)"; \
-		# Remove any legacy installs that may exist in other known locations
 		rm -rf $(DESTDIR)/System/Applications/$(APP_NAME).app || true; \
 		rm -rf $(DESTDIR)/System/CoreServices/Applications/$(APP_NAME).app || true; \
 		rm -rf $(DESTDIR)/System/Library/CoreServices/Applications/$(APP_NAME).app || true; \
@@ -115,7 +114,6 @@ custom-install: $(APP_NAME).app
 		cp Menu.png $(DESTDIR)$(INSTALL_APPS_DIR)/$(APP_NAME).app/Resources/; \
 	else \
 		echo "Installing $(APP_NAME) to $(INSTALL_APPS_DIR)"; \
-		# Remove any legacy install from $(GNUSTEP_SYSTEM_APPS) if present
 		sudo -A rm -rf $(GNUSTEP_SYSTEM_APPS)/$(APP_NAME).app || true; \
 		sudo -A mkdir -p $(INSTALL_APPS_DIR); \
 		sudo -A cp -R $(APP_NAME).app $(INSTALL_APPS_DIR)/; \
