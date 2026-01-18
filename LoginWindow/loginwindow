@@ -22,7 +22,6 @@ load_rc_config ${name}
 
 : ${loginwindow_enable:="NO"}
 
-moused & # 'REQUIRE: moused' would result in way too late start
 sleep 1 # FIXME: Find a way without this
 command="/usr/sbin/daemon"
 # procname="/System/Applications/LoginWindow.app/LoginWindow"
