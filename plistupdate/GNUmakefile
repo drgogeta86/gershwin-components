@@ -9,7 +9,7 @@ plistupdate_RESOURCE_FILES =
 
 # Man page installation
 MANPAGE = plistupdate.1
-INSTALL_MAN_DIR = $(GNUSTEP_INSTALLATION_DIR)/share/man/man1
+INSTALL_MAN_DIR = $(GNUSTEP_DOC_MAN)/man1
 
 -include GNUmakefile.preamble
 

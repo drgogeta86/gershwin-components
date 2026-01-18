@@ -21,7 +21,7 @@ LoginWindow_PRINCIPAL_CLASS = LoginWindow
 LoginWindow_LDFLAGS += -L/usr/local/lib -lpam -lutil -lX11 -lXau
 
 # Installation directories
-INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_APPS)/../CoreServices/Applications
+INSTALL_APPS_DIR = $(GNUSTEP_SYSTEM_LIBRARY)/CoreServices/Applications
 
 include $(GNUSTEP_MAKEFILES)/application.make
 
@@ -29,13 +29,13 @@ include $(GNUSTEP_MAKEFILES)/application.make
 install:: all
 	@echo "Installing LoginWindow.app..."
 	@if [ -n "$(DESTDIR)" ]; then \
-		echo "Installing to $(DESTDIR)$(GNUSTEP_APPS_DIR)/$(APP_NAME).app (staged install)"; \
-		mkdir -p $(DESTDIR)$(GNUSTEP_APPS_DIR); \
-		cp -R $(APP_NAME).app $(DESTDIR)$(GNUSTEP_APPS_DIR)/$(APP_NAME).app; \
+		echo "Installing to $(DESTDIR)$(INSTALL_APPS_DIR)"; \
+		/System/Library/Makefiles/mkinstalldirs "$(DESTDIR)$(INSTALL_APPS_DIR)"; \
+		(cd .; tar chfX - /System/Library/Makefiles/tar-exclude-list $(APP_NAME).app) | (cd "$(DESTDIR)$(INSTALL_APPS_DIR)"; tar xf -); \
 	else \
-		echo "Installing to $(GNUSTEP_APPS_DIR)/$(APP_NAME).app (system install)"; \
-		sudo -A mkdir -p $(GNUSTEP_APPS_DIR); \
-		sudo -A cp -R $(APP_NAME).app $(GNUSTEP_APPS_DIR)/$(APP_NAME).app; \
+		echo "Installing to $(INSTALL_APPS_DIR)"; \
+		sudo -A /System/Library/Makefiles/mkinstalldirs "$(INSTALL_APPS_DIR)"; \
+		(cd .; tar chfX - /System/Library/Makefiles/tar-exclude-list $(APP_NAME).app) | sudo -A sh -c 'cd "$(INSTALL_APPS_DIR)" && tar xf -'; \
 	fi
 	@echo "Installing rc.d script..."
 	@if [ -n "$(DESTDIR)" ]; then \
@@ -55,8 +55,8 @@ install:: all
 
 # Uninstall target
 uninstall::
-	@echo "Removing LoginWindow from $(GNUSTEP_APPS_DIR)..."
-	rm -rf $(GNUSTEP_APPS_DIR)/$(APP_NAME).app
+	@echo "Removing LoginWindow from $(INSTALL_APPS_DIR)..."
+	rm -rf $(INSTALL_APPS_DIR)/$(APP_NAME).app
 	@echo "Uninstallation complete."
 
 # Override built-in install targets to do nothing
