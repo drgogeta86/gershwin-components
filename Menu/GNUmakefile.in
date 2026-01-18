@@ -23,11 +23,13 @@ Menu_OBJC_FILES = \
 	CustomMenuPanel.m \
 	AppMenuWidget.m \
 	MenuProtocolManager.m \
+	GNUStepMenuImporter.m \
 	DBusMenuImporter.m \
 	GTKMenuImporter.m \
 	DBusMenuParser.m \
 	GTKMenuParser.m \
 	DBusMenuShortcutParser.m \
+	GNUStepMenuActionHandler.m \
 	DBusMenuActionHandler.m \
 	GTKActionHandler.m \
 	DBusSubmenuManager.m \
@@ -47,11 +49,14 @@ Menu_HEADER_FILES = \
 	CustomMenuPanel.h \
 	AppMenuWidget.h \
 	MenuProtocolManager.h \
+	GNUStepMenuIPC.h \
+	GNUStepMenuImporter.h \
 	DBusMenuImporter.h \
 	GTKMenuImporter.h \
 	DBusMenuParser.h \
 	GTKMenuParser.h \
 	DBusMenuShortcutParser.h \
+	GNUStepMenuActionHandler.h \
 	DBusMenuActionHandler.h \
 	GTKActionHandler.h \
 	DBusSubmenuManager.h \

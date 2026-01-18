@@ -34,7 +34,8 @@
 
 typedef NS_ENUM(NSInteger, MenuProtocolType) {
     MenuProtocolTypeCanonical = 0,  // com.canonical.dbusmenu
-    MenuProtocolTypeGTK = 1         // org.gtk.Menus + org.gtk.Actions
+    MenuProtocolTypeGTK = 1,        // org.gtk.Menus + org.gtk.Actions
+    MenuProtocolTypeGNUstep = 2     // GNUstep-native IPC
 };
 
 /**

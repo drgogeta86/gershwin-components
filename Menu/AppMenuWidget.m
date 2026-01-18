@@ -615,15 +615,37 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         [menu setDelegate:self];
         NSLog(@"AppMenuWidget: Set AppMenuWidget as delegate for main menu: %@", [menu title]);
         
-        // Add comprehensive logging to each menu item
+        // Check if this is a GNUStep menu by looking at menu items' representedObject
+        BOOL isGNUStepMenu = NO;
         NSArray *items = [menu itemArray];
+        for (NSMenuItem *item in items) {
+            if ([item hasSubmenu]) {
+                // Check submenu items
+                NSArray *subitems = [[item submenu] itemArray];
+                for (NSMenuItem *subitem in subitems) {
+                    NSDictionary *repObject = [subitem representedObject];
+                    if ([repObject isKindOfClass:[NSDictionary class]] && 
+                        [repObject objectForKey:@"clientName"] && 
+                        [repObject objectForKey:@"windowId"]) {
+                        isGNUStepMenu = YES;
+                        NSLog(@"AppMenuWidget: Detected GNUStep menu via representedObject - preserving original target/action");
+                        break;
+                    }
+                }
+                if (isGNUStepMenu) break;
+            }
+        }
+        
+        // Add comprehensive logging to each menu item
+        // DON'T override target/action for GNUStep menus - they handle their own actions
         for (NSUInteger i = 0; i < [items count]; i++) {
             NSMenuItem *item = [items objectAtIndex:i];
-            NSLog(@"AppMenuWidget: Setting up item %lu: '%@' (submenu: %@)", 
-                  i, [item title], [item hasSubmenu] ? @"YES" : @"NO");
+            NSLog(@"AppMenuWidget: Setting up item %lu: '%@' (submenu: %@, target: %@, action: %@)", 
+                  i, [item title], [item hasSubmenu] ? @"YES" : @"NO",
+                  [item target], NSStringFromSelector([item action]));
             
-            // Set target and action for logging purposes
-            if (![item hasSubmenu]) {
+            // Only override target/action for non-GNUStep menus (DBus, GTK)
+            if (!isGNUStepMenu && ![item hasSubmenu]) {
                 [item setTarget:self];
                 [item setAction:@selector(menuItemClicked:)];
                 NSLog(@"AppMenuWidget: Set click action for non-submenu item: '%@'", [item title]);

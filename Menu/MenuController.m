@@ -11,6 +11,7 @@
 #import "MenuProtocolManager.h"
 #import "DBusMenuImporter.h"
 #import "GTKMenuImporter.h"
+#import "GNUStepMenuImporter.h"
 #import "RoundedCornersView.h"
 #import "X11ShortcutManager.h"
 #import "ActionSearch.h"
@@ -587,13 +588,15 @@
     self.protocolManager = [MenuProtocolManager sharedManager];
     
     // Register both Canonical and GTK protocol handlers
+    GNUStepMenuImporter *gnustepHandler = [[GNUStepMenuImporter alloc] init];
     DBusMenuImporter *canonicalHandler = [[DBusMenuImporter alloc] init];
     GTKMenuImporter *gtkHandler = [[GTKMenuImporter alloc] init];
     
+    [self.protocolManager registerProtocolHandler:gnustepHandler forType:MenuProtocolTypeGNUstep];
     [self.protocolManager registerProtocolHandler:canonicalHandler forType:MenuProtocolTypeCanonical];
     [self.protocolManager registerProtocolHandler:gtkHandler forType:MenuProtocolTypeGTK];
     
-    NSLog(@"MenuController: Registered both Canonical and GTK protocol handlers");
+    NSLog(@"MenuController: Registered GNUstep, Canonical, and GTK protocol handlers");
     NSLog(@"MenuController: createProtocolManager COMPLETED");
 }
 

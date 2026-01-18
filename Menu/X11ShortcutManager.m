@@ -334,7 +334,6 @@ static int handleX11GrabError(Display *display, XErrorEvent *event)
             [keysToRemove addObject:key];
 
             // Also remove string representations from registered shortcuts array (best-effort match)
-            NSString *possibleShortcut = nil;
             for (NSString *s in _registeredShortcuts) {
                 if ([s containsString:@" "] || [s containsString:@"+"]) {
                     // simple heuristic; keep track
