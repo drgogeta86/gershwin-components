@@ -90,6 +90,10 @@
     NSLog(@"MenuController: Initializing controller...");
     self = [super init];
     if (self) {
+        // Initialize trailing-edge debounce properties to prevent infinite loops
+        self.clientListDebounceTimer = nil;
+        self.pendingClientListEvents = 0;
+        self.totalScans = 0;
         NSLog(@"MenuController: Controller initialized successfully");
     }
     return self;
@@ -191,6 +195,44 @@
     [self setupWindowMonitoring];
     
     NSLog(@"MenuController: Application setup complete");
+    
+    // Register D-Bus service immediately - no need for artificial delay
+    // The run loop is running at this point since we're in applicationDidFinishLaunching
+    NSLog(@"MenuController: Scheduling D-Bus service registration...");
+    [self performSelector:@selector(registerDBusServiceWhenReady) withObject:nil afterDelay:0.1];
+}
+
+- (void)registerDBusServiceWhenReady
+{
+    NSLog(@"MenuController: ===== REGISTERING D-BUS SERVICE NOW =====");
+    
+    // Get the canonical handler
+    id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
+    
+    // Get the DBus connection
+    GNUDBusConnection *dbusConnection = nil;
+    if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(dbusConnection)]) {
+        dbusConnection = [(id)canonicalHandler performSelector:@selector(dbusConnection)];
+    }
+    
+    // Process any final D-Bus messages that arrived during the delay
+    if (dbusConnection) {
+        NSLog(@"MenuController: Processing any pending messages before registration...");
+        for (int i = 0; i < 10; i++) {
+            [dbusConnection processMessages];
+            usleep(10000); // 10ms
+        }
+    }
+    
+    // Register the D-Bus service name - this makes us visible to other applications
+    NSLog(@"MenuController: Registering D-Bus service name (making Menu visible to clients)...");
+    if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(registerService)]) {
+        if ([(id)canonicalHandler registerService]) {
+            NSLog(@"MenuController: ===== Successfully registered D-Bus service - Menu is now VISIBLE =====");
+        } else {
+            NSLog(@"MenuController: Warning - failed to register D-Bus service");
+        }
+    }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification
@@ -448,6 +490,95 @@
         [[MenuProtocolManager sharedManager] setAppMenuWidget:self.appMenuWidget];
         NSLog(@"MenuController: Set up connection between MenuProtocolManager and AppMenuWidget");
     }
+    
+    // Drain the D-Bus message queue and wait for background operations to settle
+    // This ensures all service discovery, introspection, registration, and background tasks are complete
+    NSLog(@"MenuController: Waiting for Menu to stabilize...");
+    
+    int emptyRounds = 0;
+    int maxEmptyRounds = 5; // Require 5 consecutive rounds with no pending messages
+    int maxIterations = 200; // Safety limit (2 seconds with 10ms between checks)
+    int iteration = 0;
+    
+    // Get the DBus connection from the canonical handler
+    id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
+    GNUDBusConnection *dbusConnection = nil;
+    
+    if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(dbusConnection)]) {
+        dbusConnection = [(id)canonicalHandler performSelector:@selector(dbusConnection)];
+    }
+    
+    if (dbusConnection) {
+        // Phase 1: Drain D-Bus message queue
+        NSLog(@"MenuController: Phase 1 - Draining D-Bus message queue...");
+        int phaseStartIteration = 0;
+        
+        while (emptyRounds < maxEmptyRounds && iteration < maxIterations) {
+            iteration++;
+            
+            // Process any pending messages
+            [dbusConnection processMessages];
+            
+            // Check if there are more messages waiting
+            BOOL hasPending = [dbusConnection hasPendingMessages];
+            
+            if (!hasPending) {
+                emptyRounds++;
+                if (emptyRounds == 1) {
+                    phaseStartIteration = iteration;
+                    NSLog(@"MenuController: Queue becoming idle at iteration %d", iteration);
+                }
+            } else {
+                emptyRounds = 0; // Reset counter if we saw pending messages
+            }
+            
+            // Brief sleep between iterations to allow new messages to arrive and batch processing
+            usleep(10000); // 10ms
+        }
+        
+        NSLog(@"MenuController: Phase 1 complete - D-Bus queue idle for %d consecutive checks (iterations %d-%d)",
+              emptyRounds, phaseStartIteration, iteration);
+        
+        // Phase 2: Additional settling time for background operations
+        // Even with an empty D-Bus queue, threads may still be running tasks, timers firing, etc.
+        // Wait an additional period to let all background work complete
+        NSLog(@"MenuController: Phase 2 - Waiting 500ms for background operations to settle...");
+        for (int i = 0; i < 50; i++) {
+            [dbusConnection processMessages]; // Keep processing any stragglers
+            usleep(10000); // 10ms per iteration = 500ms total
+        }
+        
+        NSLog(@"MenuController: Phase 2 complete - background settling done");
+        
+        // Phase 3: Final verification - process any messages that arrived during settling
+        NSLog(@"MenuController: Phase 3 - Final message processing...");
+        int finalProcesses = 0;
+        for (int i = 0; i < 10; i++) {
+            [dbusConnection processMessages];
+            if ([dbusConnection hasPendingMessages]) {
+                finalProcesses++;
+            }
+            usleep(5000); // 5ms
+        }
+        
+        if (finalProcesses > 0) {
+            NSLog(@"MenuController: Phase 3 detected %d iterations with pending messages, processing...", finalProcesses);
+            // Process one more time to ensure everything is handled
+            for (int i = 0; i < 10; i++) {
+                [dbusConnection processMessages];
+                usleep(5000);
+            }
+        }
+        
+        NSLog(@"MenuController: All phases complete - total wait time: %.1fms", (iteration + 50 + 10) * 10.0);
+    } else {
+        NSLog(@"MenuController: Warning - could not get DBus connection for queue draining");
+    }
+    
+    // NOTE: We do NOT register the D-Bus service here yet!
+    // Service registration happens later in applicationDidFinishLaunching
+    // after the run loop is running and everything has truly settled
+    NSLog(@"MenuController: Deferring D-Bus service registration until after run loop starts");
 }
 
 - (void)createProtocolManager
@@ -594,6 +725,77 @@
     }
 }
 
+- (void)scheduleClientListScan
+{
+    // Must be called on main thread since NSTimer needs a run loop
+    if (![NSThread isMainThread]) {
+        [self performSelectorOnMainThread:@selector(scheduleClientListScan)
+                               withObject:nil
+                            waitUntilDone:NO];
+        return;
+    }
+    
+    // Cancel existing timer if any
+    if (self.clientListDebounceTimer) {
+        [self.clientListDebounceTimer invalidate];
+    }
+    
+    // Schedule new timer for 50ms from now
+    self.clientListDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 // 50ms
+                                                                     target:self
+                                                                   selector:@selector(performDebouncedClientListScan:)
+                                                                   userInfo:nil
+                                                                    repeats:NO];
+}
+
+- (void)performDebouncedClientListScan:(NSTimer *)timer
+{
+    // This is called 50ms after the last _NET_CLIENT_LIST PropertyNotify
+    // Log the scan with detailed information
+    self.totalScans++;
+    int eventCount = self.pendingClientListEvents;
+    self.pendingClientListEvents = 0; // Reset counter
+    
+    NSLog(@"MenuController: SCAN #%d - Performing debounced scan after %d _NET_CLIENT_LIST events",
+          self.totalScans, eventCount);
+    
+    // Get current client list to log what changed
+    Display *display = self.display;
+    if (display) {
+        Atom actualType;
+        int actualFormat;
+        unsigned long nWindows, bytesAfter;
+        unsigned char *data = NULL;
+        
+        int result = XGetWindowProperty(display, self.rootWindow,
+                                       self.netClientListAtom,
+                                       0, (~0L), False, XA_WINDOW,
+                                       &actualType, &actualFormat,
+                                       &nWindows, &bytesAfter, &data);
+        
+        if (result == Success && data) {
+            NSLog(@"MenuController: Current _NET_CLIENT_LIST has %lu windows", nWindows);
+            
+            // Log window IDs to help identify what's changing
+            Window *windows = (Window *)data;
+            if (nWindows > 0 && nWindows <= 20) { // Only log if reasonable number
+                NSMutableString *windowList = [NSMutableString stringWithString:@"Window IDs: "];
+                for (unsigned long i = 0; i < nWindows; i++) {
+                    [windowList appendFormat:@"0x%lx%s", windows[i], (i < nWindows-1) ? ", " : ""];
+                }
+                NSLog(@"MenuController: %@", windowList);
+            }
+            XFree(data);
+        }
+    }
+    
+    // Perform the actual scan
+    [[MenuProtocolManager sharedManager] scanForExistingMenuServices];
+    
+    // Clear the timer reference
+    self.clientListDebounceTimer = nil;
+}
+
 - (void)x11ActiveWindowMonitor
 {
     NSLog(@"MenuController: X11 _NET_ACTIVE_WINDOW monitor thread started");
@@ -632,15 +834,22 @@
                          event.xproperty.window == self.rootWindow &&
                          event.xproperty.atom == self.netClientListAtom) {
                     
-                    NSLog(@"MenuController: _NET_CLIENT_LIST property changed - new window created/destroyed");
+                    // TRAILING-EDGE DEBOUNCE: Only scan 50ms after the last _NET_CLIENT_LIST change
+                    // This prevents infinite loops where scanning triggers more PropertyNotify events
                     
-                    // IMPORTANT: Wait a moment before scanning to let new windows fully initialize
-                    // Scanning too early can interfere with app startup and cause crashes
-                    NSLog(@"MenuController: Waiting 100ms before scanning to allow window initialization");
-                    [NSThread sleepForTimeInterval:0.1];
+                    self.pendingClientListEvents++;
+                    NSLog(@"MenuController: _NET_CLIENT_LIST PropertyNotify #%d received", self.pendingClientListEvents);
                     
-                    // Scan for new GTK menu services when windows are created/destroyed
-                    [[MenuProtocolManager sharedManager] scanForExistingMenuServices];
+                    // Cancel any existing debounce timer
+                    if (self.clientListDebounceTimer) {
+                        [self.clientListDebounceTimer invalidate];
+                    }
+                    
+                    // Schedule a new scan for 50ms from now (on main thread to access timer)
+                    // If another event comes in before 50ms, this timer will be cancelled
+                    [self performSelectorOnMainThread:@selector(scheduleClientListScan)
+                                           withObject:nil
+                                        waitUntilDone:NO];
                 }
             } else {
                 // No events pending, sleep briefly to avoid busy waiting

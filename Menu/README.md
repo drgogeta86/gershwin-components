@@ -45,7 +45,7 @@ sudo gmake install
 
 ## Installation
 
-The application will be installed to `/usr/GNUstep/System/Applications/Menu.app`.
+The application will be installed to `/System/Library/CoreServices/Applications/Menu.app`.
 
 ## Usage
 
@@ -53,7 +53,7 @@ The application will be installed to `/usr/GNUstep/System/Applications/Menu.app`
 
 ```bash
 # Start from command line
-/usr/GNUstep/System/Applications/Menu.app/Menu
+/System/Library/CoreServices/Applications/Menu.app/Menu
 
 # Or launch using openapp
 openapp Menu

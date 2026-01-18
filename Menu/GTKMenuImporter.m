@@ -98,6 +98,14 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     return YES;
 }
 
+- (BOOL)registerService
+{
+    // GTK protocol doesn't register a central service - each app exposes its own
+    // So this is a no-op for GTK importer
+    NSDebugLog(@"GTKMenuImporter: registerService called (no-op for GTK protocol)");
+    return YES;
+}
+
 - (BOOL)hasMenuForWindow:(unsigned long)windowId
 {
     NSNumber *windowKey = [NSNumber numberWithUnsignedLong:windowId];

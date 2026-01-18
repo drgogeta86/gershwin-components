@@ -54,43 +54,58 @@
         return NO;
     }
     
+    // DO NOT register service yet - we'll do that after full initialization
+    // This prevents other applications from seeing us before we're ready
+    NSDebugLog(@"DBusMenuImporter: Connected to DBus - deferring service registration until ready");
+    
+    return YES;
+}
+
+- (BOOL)registerService
+{
+    if (!self.dbusConnection || ![self.dbusConnection isConnected]) {
+        NSLog(@"DBusMenuImporter: Cannot register service - not connected to DBus");
+        return NO;
+    }
+    
+    NSLog(@"DBusMenuImporter: Attempting to register AppMenu.Registrar service...");
     // Try to register the AppMenu.Registrar service
     if ([self.dbusConnection registerService:@"com.canonical.AppMenu.Registrar"]) {
-        NSDebugLog(@"DBusMenuImporter: Successfully registered as AppMenu.Registrar service");
+        NSLog(@"DBusMenuImporter: ===== Successfully registered as AppMenu.Registrar service =====");
         
         // Register object path for the registrar interface
         if (![self.dbusConnection registerObjectPath:@"/com/canonical/AppMenu/Registrar"
                                        interface:@"com.canonical.AppMenu.Registrar"
                                          handler:self]) {
-            NSDebugLog(@"DBusMenuImporter: Failed to register object path");
+            NSLog(@"DBusMenuImporter: Failed to register object path");
             return NO;
         }
         
-        NSDebugLog(@"DBusMenuImporter: Successfully connected to DBus and registered service");
+        NSLog(@"DBusMenuImporter: Successfully connected to DBus and registered service");
         
         // Now that we're connected and the run loop is running, set up the cleanup timer
         if (!self.cleanupTimer) {
-            NSDebugLog(@"DBusMenuImporter: Setting up cleanup timer...");
+            NSLog(@"DBusMenuImporter: Setting up cleanup timer...");
             self.cleanupTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
                                                             target:self
                                                           selector:@selector(cleanupStaleEntries:)
                                                           userInfo:nil
                                                            repeats:YES];
-            NSDebugLog(@"DBusMenuImporter: Cleanup timer scheduled");
+            NSLog(@"DBusMenuImporter: Cleanup timer scheduled");
         }
         
-        NSDebugLog(@"DBusMenuImporter: About to scan for existing menu services...");
+        NSLog(@"DBusMenuImporter: About to scan for existing menu services...");
         [self scanForExistingMenuServices];
-        NSDebugLog(@"DBusMenuImporter: Finished scanning for existing menu services");
+        NSLog(@"DBusMenuImporter: Finished scanning for existing menu services");
         return YES;
     } else {
-        NSDebugLog(@"DBusMenuImporter: Could not register as primary AppMenu.Registrar");
-        NSDebugLog(@"DBusMenuImporter: Another application is likely providing this service");
-        NSDebugLog(@"DBusMenuImporter: Continuing in monitoring mode...");
+        NSLog(@"DBusMenuImporter: *** Could not register as primary AppMenu.Registrar ***");
+        NSLog(@"DBusMenuImporter: Another application is likely providing this service");
+        NSLog(@"DBusMenuImporter: Continuing in monitoring mode...");
         
         // Set up cleanup timer for monitoring mode too
         if (!self.cleanupTimer) {
-            NSDebugLog(@"DBusMenuImporter: Setting up cleanup timer (monitoring mode)...");
+            NSLog(@"DBusMenuImporter: Setting up cleanup timer (monitoring mode)...");
             self.cleanupTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
                                                             target:self
                                                           selector:@selector(cleanupStaleEntries:)

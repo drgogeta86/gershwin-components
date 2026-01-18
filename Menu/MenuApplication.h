@@ -8,9 +8,13 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 
+@class MenuController;
+
 @interface MenuApplication : NSApplication <NSApplicationDelegate>
 {
 }
+
+@property (nonatomic, strong) MenuController *controller;
 
 + (MenuApplication *)sharedApplication;
 - (void)sendEvent:(NSEvent *)event;

@@ -15,6 +15,7 @@
 
 @required
 - (BOOL)connectToDBus;
+- (BOOL)registerService;
 - (BOOL)hasMenuForWindow:(unsigned long)windowId;
 - (NSMenu *)getMenuForWindow:(unsigned long)windowId;
 - (void)activateMenuItem:(NSMenuItem *)menuItem forWindow:(unsigned long)windowId;

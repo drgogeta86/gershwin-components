@@ -267,8 +267,8 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     
     // Create MenuController
     NSLog(@"MenuApplication: Creating MenuController...");
-    MenuController *controller = [[MenuController alloc] init];
-    g_controller = controller; // Store global reference for signal handlers
+    self.controller = [[MenuController alloc] init];
+    g_controller = self.controller; // Store global reference for signal handlers
     NSLog(@"MenuApplication: Created MenuController");
     
     // Set up signal handlers for graceful shutdown
@@ -317,7 +317,7 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     
     // Create protocol manager first
     NSLog(@"MenuApplication: Creating protocol manager...");
-    [controller createProtocolManager];
+    [self.controller createProtocolManager];
     
     // Ensure the application is activated BEFORE setting up the menu bar
     NSLog(@"MenuApplication: Activating application...");
@@ -326,15 +326,15 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     
     // Setup menu bar (this calls initializeProtocols and setupWindowMonitoring internally)
     NSLog(@"MenuApplication: Setting up menu bar...");
-    [controller setupMenuBar];
+    [self.controller setupMenuBar];
     
     // Announce global menu support via X11 properties
     NSLog(@"MenuApplication: Announcing global menu support...");
-    [controller announceGlobalMenuSupport];
+    [self.controller announceGlobalMenuSupport];
     
-    // Set ourselves as delegate to handle termination decisions
-    [self setDelegate:self];
-    NSLog(@"MenuApplication: Set self as application delegate");
+    // Set MenuController as delegate so applicationDidFinishLaunching gets called
+    [self setDelegate:self.controller];
+    NSLog(@"MenuApplication: Set MenuController as application delegate");
     
     // Ensure the application is activated (again, just in case)
     [self activateIgnoringOtherApps:YES];

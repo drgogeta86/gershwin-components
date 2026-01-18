@@ -47,6 +47,10 @@
 @property (nonatomic, strong) NSTimer *slideInAnimationTimer;
 @property (nonatomic, assign) NSTimeInterval slideInStartTime;
 @property (nonatomic, assign) CGFloat slideInStartY;
+// Trailing-edge debounce for _NET_CLIENT_LIST to prevent infinite loops
+@property (nonatomic, strong) NSTimer *clientListDebounceTimer;
+@property (nonatomic, assign) int pendingClientListEvents;
+@property (nonatomic, assign) int totalScans;
 
 - (id)init;
 - (NSColor *)backgroundColor;

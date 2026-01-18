@@ -704,6 +704,29 @@ typedef struct DBusConnection DBusConnectionStruct;
     }
 }
 
+- (BOOL)hasPendingMessages
+{
+    if (!self.connected || !self.connection) {
+        return NO;
+    }
+    
+    @try {
+        // First do a read/write without dispatch to pull in new messages
+        dbus_connection_read_write((DBusConnectionStruct *)self.connection, 0);
+        
+        // Now check if there are any messages waiting in the queue
+        // Peek at the message queue without removing messages
+        // by trying to peek at what dbus_connection_get_dispatch_status returns
+        DBusDispatchStatus status = dbus_connection_get_dispatch_status((DBusConnectionStruct *)self.connection);
+        
+        // If there are messages to dispatch, status will be DBUS_DISPATCH_DATA_REMAINS
+        return (status == DBUS_DISPATCH_DATA_REMAINS);
+    } @catch (NSException *exception) {
+        NSLog(@"DBusConnection: Exception checking pending messages: %@", exception);
+        return NO;
+    }
+}
+
 - (void *)rawConnection
 {
     return (void *)self.connection;

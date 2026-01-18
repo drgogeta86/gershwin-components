@@ -34,6 +34,7 @@
                   onService:(NSString *)serviceName
                  objectPath:(NSString *)objectPath;
 - (void)processMessages;
+- (BOOL)hasPendingMessages;
 - (void *)rawConnection;
 - (int)getFileDescriptor;
 

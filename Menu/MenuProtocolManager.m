@@ -199,16 +199,14 @@
 
 - (void)scanForExistingMenuServices
 {
-    // Reduced logging to avoid spam - only log significant events
     static int scanCount = 0;
     scanCount++;
     
-    // TEMPORARY DEBUG: Log every scan to identify busy loop
-    NSLog(@"MenuProtocolManager: SCAN #%d - scanForExistingMenuServices called", scanCount);
+    // Reduce log spam: log first 10 scans in detail, then only every 50th scan
+    BOOL shouldLogVerbose = (scanCount <= 10) || (scanCount % 50 == 0);
     
-    // Only log every 20th scan to avoid spam
-    if (scanCount % 20 == 1) {
-        NSLog(@"MenuProtocolManager: Periodic scan #%d - checking for menu services...", scanCount);
+    if (shouldLogVerbose) {
+        NSLog(@"MenuProtocolManager: SCAN #%d - scanForExistingMenuServices called", scanCount);
     }
     
     for (NSUInteger i = 0; i < [self.protocolHandlers count]; i++) {
@@ -221,7 +219,10 @@
             [handler scanForExistingMenuServices];
         }
     }
-    NSLog(@"MenuProtocolManager: SCAN #%d - scanForExistingMenuServices completed", scanCount);
+    
+    if (shouldLogVerbose) {
+        NSLog(@"MenuProtocolManager: SCAN #%d - scanForExistingMenuServices completed", scanCount);
+    }
 }
 
 #pragma mark - Window Registration
