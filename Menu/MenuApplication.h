@@ -18,6 +18,6 @@
 
 + (MenuApplication *)sharedApplication;
 - (void)sendEvent:(NSEvent *)event;
-- (BOOL)checkForExistingMenuApplication;
+- (void)checkForExistingMenuApplicationAsync;
 
 @end

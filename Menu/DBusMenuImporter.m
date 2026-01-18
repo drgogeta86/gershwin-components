@@ -94,9 +94,9 @@
             NSLog(@"DBusMenuImporter: Cleanup timer scheduled");
         }
         
-        NSLog(@"DBusMenuImporter: About to scan for existing menu services...");
-        [self scanForExistingMenuServices];
-        NSLog(@"DBusMenuImporter: Finished scanning for existing menu services");
+        // DO NOT scan for menus here - it causes 15 seconds of blocking!
+        // Menus will be discovered on-demand when windows become active
+        NSLog(@"DBusMenuImporter: Skipping initial menu scan - menus discovered on-demand");
         return YES;
     } else {
         NSLog(@"DBusMenuImporter: *** Could not register as primary AppMenu.Registrar ***");

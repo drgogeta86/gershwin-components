@@ -16,6 +16,8 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
 @interface GNUStepMenuImporter ()
 @property (nonatomic, strong) NSMutableDictionary *menusByWindow;
 @property (nonatomic, strong) NSMutableDictionary *clientNamesByWindow;
+@property (nonatomic, strong) NSMutableDictionary *lastMenuDataByWindow;
+@property (nonatomic, strong) NSMutableDictionary *lastMenuUpdateTimeByWindow;
 @property (nonatomic, strong) NSConnection *menuServerConnection;
 @end
 
@@ -27,6 +29,8 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
     if (self) {
         _menusByWindow = [[NSMutableDictionary alloc] init];
         _clientNamesByWindow = [[NSMutableDictionary alloc] init];
+        _lastMenuDataByWindow = [[NSMutableDictionary alloc] init];
+        _lastMenuUpdateTimeByWindow = [[NSMutableDictionary alloc] init];
         
         // Register the GNUstep menu server immediately so apps can connect
         // This must happen early, before any GNUstep apps try to connect
@@ -131,14 +135,36 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
                           menuData:(NSDictionary *)menuData
                         clientName:(NSString *)clientName
 {
-    NSLog(@"GNUStepMenuImporter: updateMenuForWindow called - windowId=%@, clientName=%@", windowId, clientName);
+    // Reduce verbose logging for frequent menu updates
     if (!windowId || !menuData || !clientName) {
         NSLog(@"GNUStepMenuImporter: Invalid update payload");
         return;
     }
 
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    static NSTimeInterval startupTime = 0;
+    if (startupTime == 0) {
+        startupTime = now;
+    }
+    if ((now - startupTime) < 15.0 && [self.lastMenuDataByWindow objectForKey:windowId]) {
+        NSLog(@"GNUStepMenuImporter: Suppressing repeated menu updates during startup for window %@", windowId);
+        return;
+    }
+
+    NSNumber *lastTime = [self.lastMenuUpdateTimeByWindow objectForKey:windowId];
+    if (lastTime && (now - [lastTime doubleValue]) < 1.0) {
+        NSLog(@"GNUStepMenuImporter: Throttling rapid menu update for window %@", windowId);
+        return;
+    }
+
+    NSDictionary *lastMenuData = [self.lastMenuDataByWindow objectForKey:windowId];
+    if (lastMenuData && [lastMenuData isEqual:menuData]) {
+        NSLog(@"GNUStepMenuImporter: Skipping duplicate menu update for window %@", windowId);
+        return;
+    }
+
     unsigned long windowValue = [windowId unsignedLongValue];
-    NSLog(@"GNUStepMenuImporter: Building menu for window %lu", windowValue);
+    // NSLog(@"GNUStepMenuImporter: Building menu for window %lu", windowValue);
     NSMenu *menu = [self menuFromData:menuData
                              windowId:windowValue
                            clientName:clientName
@@ -148,10 +174,12 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
         return;
     }
 
-    NSLog(@"GNUStepMenuImporter: Successfully built menu with %ld top-level items", (long)[menu numberOfItems]);
+    // NSLog(@"GNUStepMenuImporter: Successfully built menu with %ld top-level items", (long)[menu numberOfItems]);
     self.menusByWindow[windowId] = menu;
     self.clientNamesByWindow[windowId] = clientName;
-    NSLog(@"GNUStepMenuImporter: Stored menu for window %@ (client: %@)", windowId, clientName);
+    self.lastMenuDataByWindow[windowId] = [menuData copy];
+    self.lastMenuUpdateTimeByWindow[windowId] = @(now);
+    // NSLog(@"GNUStepMenuImporter: Stored menu for window %@ (client: %@)", windowId, clientName);
 
     if (self.appMenuWidget) {
         NSDictionary *userInfo = @{@"windowId": windowId};

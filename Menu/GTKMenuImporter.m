@@ -333,7 +333,7 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     
     // DEFENSIVE: Install X11 error handler to catch errors from invalid windows
     XErrorHandler oldHandler = XSetErrorHandler(x11ErrorHandler);
-    XSynchronize(display, True);
+    // DO NOT use XSynchronize - it causes blocking delays
     
     Window window = (Window)windowId;
     
@@ -343,7 +343,6 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     if (XGetWindowAttributes(display, window, &attrs) == 0 || x11_error_occurred) {
         NSDebugLog(@"GTKMenuImporter: Window %lu not ready/valid%s in immediate scan, skipping", 
               windowId, x11_error_occurred ? " (X11 error)" : "");
-        XSynchronize(display, False);
         XSetErrorHandler(oldHandler);
         XCloseDisplay(display);
         return;
@@ -407,8 +406,7 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
         busNameProp = NULL;
     }
     
-    // Restore synchronous mode and error handler
-    XSynchronize(display, False);
+    // Restore error handler
     XSetErrorHandler(oldHandler);
     
     XCloseDisplay(display);
@@ -441,8 +439,8 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     
     // DEFENSIVE: Install X11 error handler to catch errors from invalid windows
     XErrorHandler oldHandler = XSetErrorHandler(x11ErrorHandler);
-    // Enable synchronous mode for error handling during scanning
-    XSynchronize(display, True);
+    // DO NOT use XSynchronize(display, True) - it causes 15 second blocking delays!
+    // Asynchronous mode is fine with proper error handling
     
     NSUInteger gtkWindows = 0;
     NSUInteger newWindows = 0;
@@ -652,8 +650,7 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     
     NSDebugLog(@"GTKMenuImporter: About to close X11 display");
     
-    // Restore synchronous mode and error handler before closing
-    XSynchronize(display, False);
+    // Restore error handler before closing
     XSetErrorHandler(oldHandler);
     
     XCloseDisplay(display);

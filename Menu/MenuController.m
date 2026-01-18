@@ -15,6 +15,7 @@
 #import "RoundedCornersView.h"
 #import "X11ShortcutManager.h"
 #import "ActionSearch.h"
+#import "MenuUtils.h"
 #import "GNUstepGUI/GSTheme.h"
 #import <X11/Xlib.h>
 #import <X11/Xatom.h>
@@ -197,10 +198,9 @@
     
     NSLog(@"MenuController: Application setup complete");
     
-    // Register D-Bus service immediately - no need for artificial delay
-    // The run loop is running at this point since we're in applicationDidFinishLaunching
-    NSLog(@"MenuController: Scheduling D-Bus service registration...");
-    [self performSelector:@selector(registerDBusServiceWhenReady) withObject:nil afterDelay:0.1];
+    // Register D-Bus service immediately - run loop is active
+    NSLog(@"MenuController: Registering D-Bus service now...");
+    [self performSelector:@selector(registerDBusServiceWhenReady) withObject:nil afterDelay:0.0];
 }
 
 - (void)registerDBusServiceWhenReady
@@ -210,26 +210,16 @@
     // Get the canonical handler
     id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
     
-    // Get the DBus connection
-    GNUDBusConnection *dbusConnection = nil;
-    if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(dbusConnection)]) {
-        dbusConnection = [(id)canonicalHandler performSelector:@selector(dbusConnection)];
-    }
-    
-    // Process any final D-Bus messages that arrived during the delay
-    if (dbusConnection) {
-        NSLog(@"MenuController: Processing any pending messages before registration...");
-        for (int i = 0; i < 10; i++) {
-            [dbusConnection processMessages];
-            usleep(10000); // 10ms
-        }
-    }
-    
-    // Register the D-Bus service name - this makes us visible to other applications
+    // Register the D-Bus service name immediately - this makes us visible to other applications
+    // No need to process messages first - the file descriptor monitoring handles it
     NSLog(@"MenuController: Registering D-Bus service name (making Menu visible to clients)...");
     if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(registerService)]) {
         if ([(id)canonicalHandler registerService]) {
             NSLog(@"MenuController: ===== Successfully registered D-Bus service - Menu is now VISIBLE =====");
+            
+            // DO NOT scan for menus here - it causes 15 seconds of blocking!
+            // Menus will be discovered on-demand when windows become active
+            NSLog(@"MenuController: Skipping menu scan at startup - menus discovered on-demand");
         } else {
             NSLog(@"MenuController: Warning - failed to register D-Bus service");
         }
@@ -421,9 +411,9 @@
         }
     }
 
-    // Wait 50ms then animate menu sliding in from above and reveal AppMenuWidget after animation
-    [self performSelector:@selector(animateMenuSlideIn) withObject:nil afterDelay:0.05];
-    NSLog(@"MenuController: Window shown, menu will slide in with animation after 50ms delay");
+    // Animate menu sliding in immediately - no delay
+    [self performSelector:@selector(animateMenuSlideIn) withObject:nil afterDelay:0.0];
+    NSLog(@"MenuController: Window shown, menu will slide in immediately");
 }
 
 - (void)setupMenuBar
@@ -476,11 +466,8 @@
             } else {
                 NSLog(@"MenuController: Failed to create NSFileHandle for DBus file descriptor");
             }
-    
-    // Add a small delay to ensure everything is properly settled
-    [NSThread sleepForTimeInterval:0.05];
-    
-    NSLog(@"MenuController: Event loop integration setup complete");
+            
+            NSLog(@"MenuController: Event loop integration setup complete");
         } else {
             NSLog(@"MenuController: Failed to get DBus file descriptor");
         }
@@ -492,94 +479,11 @@
         NSLog(@"MenuController: Set up connection between MenuProtocolManager and AppMenuWidget");
     }
     
-    // Drain the D-Bus message queue and wait for background operations to settle
-    // This ensures all service discovery, introspection, registration, and background tasks are complete
-    NSLog(@"MenuController: Waiting for Menu to stabilize...");
-    
-    int emptyRounds = 0;
-    int maxEmptyRounds = 5; // Require 5 consecutive rounds with no pending messages
-    int maxIterations = 200; // Safety limit (2 seconds with 10ms between checks)
-    int iteration = 0;
-    
-    // Get the DBus connection from the canonical handler
-    id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
-    GNUDBusConnection *dbusConnection = nil;
-    
-    if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(dbusConnection)]) {
-        dbusConnection = [(id)canonicalHandler performSelector:@selector(dbusConnection)];
-    }
-    
-    if (dbusConnection) {
-        // Phase 1: Drain D-Bus message queue
-        NSLog(@"MenuController: Phase 1 - Draining D-Bus message queue...");
-        int phaseStartIteration = 0;
-        
-        while (emptyRounds < maxEmptyRounds && iteration < maxIterations) {
-            iteration++;
-            
-            // Process any pending messages
-            [dbusConnection processMessages];
-            
-            // Check if there are more messages waiting
-            BOOL hasPending = [dbusConnection hasPendingMessages];
-            
-            if (!hasPending) {
-                emptyRounds++;
-                if (emptyRounds == 1) {
-                    phaseStartIteration = iteration;
-                    NSLog(@"MenuController: Queue becoming idle at iteration %d", iteration);
-                }
-            } else {
-                emptyRounds = 0; // Reset counter if we saw pending messages
-            }
-            
-            // Brief sleep between iterations to allow new messages to arrive and batch processing
-            usleep(10000); // 10ms
-        }
-        
-        NSLog(@"MenuController: Phase 1 complete - D-Bus queue idle for %d consecutive checks (iterations %d-%d)",
-              emptyRounds, phaseStartIteration, iteration);
-        
-        // Phase 2: Additional settling time for background operations
-        // Even with an empty D-Bus queue, threads may still be running tasks, timers firing, etc.
-        // Wait an additional period to let all background work complete
-        NSLog(@"MenuController: Phase 2 - Waiting 500ms for background operations to settle...");
-        for (int i = 0; i < 50; i++) {
-            [dbusConnection processMessages]; // Keep processing any stragglers
-            usleep(10000); // 10ms per iteration = 500ms total
-        }
-        
-        NSLog(@"MenuController: Phase 2 complete - background settling done");
-        
-        // Phase 3: Final verification - process any messages that arrived during settling
-        NSLog(@"MenuController: Phase 3 - Final message processing...");
-        int finalProcesses = 0;
-        for (int i = 0; i < 10; i++) {
-            [dbusConnection processMessages];
-            if ([dbusConnection hasPendingMessages]) {
-                finalProcesses++;
-            }
-            usleep(5000); // 5ms
-        }
-        
-        if (finalProcesses > 0) {
-            NSLog(@"MenuController: Phase 3 detected %d iterations with pending messages, processing...", finalProcesses);
-            // Process one more time to ensure everything is handled
-            for (int i = 0; i < 10; i++) {
-                [dbusConnection processMessages];
-                usleep(5000);
-            }
-        }
-        
-        NSLog(@"MenuController: All phases complete - total wait time: %.1fms", (iteration + 50 + 10) * 10.0);
-    } else {
-        NSLog(@"MenuController: Warning - could not get DBus connection for queue draining");
-    }
-    
-    // NOTE: We do NOT register the D-Bus service here yet!
-    // Service registration happens later in applicationDidFinishLaunching
-    // after the run loop is running and everything has truly settled
-    NSLog(@"MenuController: Deferring D-Bus service registration until after run loop starts");
+    // D-Bus will continue initializing via the file descriptor monitoring on the main thread
+    // The run loop will handle D-Bus messages asynchronously without blocking the UI
+    // This ensures thread safety - D-Bus is NOT thread-safe and must run on main thread only
+    NSLog(@"MenuController: D-Bus initialization will continue via main thread run loop");
+    NSLog(@"MenuController: File descriptor monitoring will handle D-Bus messages asynchronously");
 }
 
 - (void)createProtocolManager
@@ -758,6 +662,28 @@
     self.totalScans++;
     int eventCount = self.pendingClientListEvents;
     self.pendingClientListEvents = 0; // Reset counter
+
+    static NSTimeInterval startupTime = 0;
+    static NSTimeInterval lastScanTime = 0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (startupTime == 0) {
+        startupTime = now;
+    }
+
+    // Skip scanning during the initial startup burst
+    if ((now - startupTime) < 15.0) {
+        NSLog(@"MenuController: Skipping client list scan during startup burst (%.1fs)", now - startupTime);
+        self.clientListDebounceTimer = nil;
+        return;
+    }
+
+    // Rate-limit scans to at most once per second
+    if ((now - lastScanTime) < 1.0) {
+        NSLog(@"MenuController: Skipping client list scan (rate limited)");
+        self.clientListDebounceTimer = nil;
+        return;
+    }
+    lastScanTime = now;
     
     NSLog(@"MenuController: SCAN #%d - Performing debounced scan after %d _NET_CLIENT_LIST events",
           self.totalScans, eventCount);
@@ -804,12 +730,20 @@
     NSLog(@"MenuController: X11 _NET_ACTIVE_WINDOW monitor thread started");
     
     @autoreleasepool {
-        // Do initial scan once when thread starts
-        [[MenuProtocolManager sharedManager] scanForExistingMenuServices];
+        // DO NOT scan for menus at startup - it causes 15 seconds of high CPU usage
+        // Menus will be discovered on-demand when windows become active
+        // This makes startup instant instead of blocking for 15 seconds
+        
+        // Schedule desktop menu load on main thread (lightweight operation)
+        [self performSelectorOnMainThread:@selector(loadDesktopMenuIfAvailable)
+                               withObject:nil
+                            waitUntilDone:NO];
         
         // Get X11 connection file descriptor
         int x11_fd = ConnectionNumber(self.display);
-        NSLog(@"MenuController: X11 file descriptor: %d, DBus file descriptor: %d", x11_fd, self.dbusFileDescriptor);
+        NSLog(@"MenuController: X11 file descriptor: %d", x11_fd);
+        NSLog(@"MenuController: NOTE - DBus is handled separately via main thread file descriptor monitoring");
+        NSLog(@"MenuController: NOTE - Menu scanning skipped at startup for instant launch");
         
         while (!self.shouldStopMonitoring) {
             // Process X11 events - simpler approach from working commit
@@ -854,18 +788,15 @@
                                            withObject:nil
                                         waitUntilDone:NO];
                 }
-            } else {
-                // No events pending, sleep briefly to avoid busy waiting
-                [NSThread sleepForTimeInterval:0.01];
             }
             
-            // Process DBus messages (non-blocking check)
-            if (self.dbusFileDescriptor >= 0) {
-                id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
-                if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(processDBusMessages)]) {
-                    [(id)canonicalHandler processDBusMessages];
-                }
-            }
+            // D-Bus is handled completely separately via main thread file descriptor monitoring
+            // DO NOT process D-Bus messages here - it causes blocking and high CPU usage
+            // The dbusFileDescriptorReady: notification handler on main thread handles all D-Bus traffic
+            
+            // Always sleep briefly to avoid busy waiting
+            // This prevents 100% CPU usage from the monitoring loop
+            [NSThread sleepForTimeInterval:0.01];
         }
     }
     
@@ -984,6 +915,41 @@
     [self.appMenuWidget setHidden:NO];
     [self.appMenuWidget setNeedsDisplay:YES];
     NSLog(@"MenuController: AppMenuWidget revealed");
+}
+
+- (void)loadDesktopMenuIfAvailable
+{
+    NSLog(@"MenuController: Checking for Desktop/Workspace window to load default menu...");
+    
+    // Get all windows
+    NSArray *windows = [MenuUtils getAllWindows];
+    
+    // Find the desktop window
+    unsigned long desktopWindowId = 0;
+    for (NSNumber *windowNum in windows) {
+        unsigned long windowId = [windowNum unsignedLongValue];
+        if ([MenuUtils isDesktopWindow:windowId]) {
+            desktopWindowId = windowId;
+            NSLog(@"MenuController: Found Desktop/Workspace window: 0x%lx", desktopWindowId);
+            break;
+        }
+    }
+    
+    if (desktopWindowId == 0) {
+        NSLog(@"MenuController: No Desktop/Workspace window found yet - will load when it appears");
+        return;
+    }
+    
+    // Check if this desktop window has a menu registered
+    if ([[MenuProtocolManager sharedManager] hasMenuForWindow:desktopWindowId]) {
+        NSLog(@"MenuController: Desktop/Workspace window has menu - loading it as default");
+        // Load the desktop menu in the AppMenuWidget
+        if (self.appMenuWidget) {
+            [self.appMenuWidget displayMenuForWindow:desktopWindowId];
+        }
+    } else {
+        NSLog(@"MenuController: Desktop/Workspace window found but no menu registered yet");
+    }
 }
 
 @end

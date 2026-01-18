@@ -267,6 +267,32 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     XCloseDisplay(display);
     
+    // If no active window (or activeWindow is 0), try to load Desktop/Workspace menu
+    if (activeWindow == 0) {
+        NSLog(@"AppMenuWidget: No active window - looking for Desktop/Workspace menu...");
+        
+        // Get all windows and find the desktop window
+        NSArray *windows = [MenuUtils getAllWindows];
+        unsigned long desktopWindowId = 0;
+        
+        for (NSNumber *windowNum in windows) {
+            unsigned long windowId = [windowNum unsignedLongValue];
+            if ([MenuUtils isDesktopWindow:windowId]) {
+                desktopWindowId = windowId;
+                NSLog(@"AppMenuWidget: Found Desktop window: 0x%lx", desktopWindowId);
+                break;
+            }
+        }
+        
+        if (desktopWindowId != 0) {
+            // Use the desktop window as the active window
+            activeWindow = desktopWindowId;
+            NSLog(@"AppMenuWidget: Using Desktop window 0x%lx for menu", activeWindow);
+        } else {
+            NSLog(@"AppMenuWidget: No Desktop window found");
+        }
+    }
+    
     if (activeWindow != self.currentWindowId) {
         NSLog(@"AppMenuWidget: Active window changed from %lu to %lu", self.currentWindowId, activeWindow);
         

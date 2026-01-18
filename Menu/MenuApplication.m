@@ -163,56 +163,72 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     return nil; // drawRect: returns void, but IMP expects id return type
 }
 
-- (BOOL)checkForExistingMenuApplication
+- (void)checkForExistingMenuApplicationAsync
 {
-    NSLog(@"MenuApplication: Checking for existing menu applications...");
-    
-    // Create a temporary DBus connection to check if services are already registered
-    GNUDBusConnection *tempConnection = [GNUDBusConnection sessionBus];
-    if (![tempConnection isConnected]) {
-        NSLog(@"MenuApplication: Cannot connect to DBus to check for existing services");
-        return NO; // If we can't connect to DBus, let the app try to start normally
-    }
-    
-    // Check if com.canonical.AppMenu.Registrar service is already running
-    BOOL serviceExists = NO;
-    
-    @try {
-        // Use DBus introspection to check if the service exists
-        id result = [tempConnection callMethod:@"NameHasOwner"
-                                     onService:@"org.freedesktop.DBus"
-                                    objectPath:@"/org/freedesktop/DBus"
-                                     interface:@"org.freedesktop.DBus"
-                                     arguments:@[@"com.canonical.AppMenu.Registrar"]];
+    // Run the check in a background thread to avoid blocking startup
+    [NSThread detachNewThreadSelector:@selector(checkForExistingMenuApplicationBackground)
+                             toTarget:self
+                           withObject:nil];
+}
+
+- (void)checkForExistingMenuApplicationBackground
+{
+    @autoreleasepool {
+        NSLog(@"MenuApplication: Checking for existing menu applications (async)...");
         
-        if (result && [result respondsToSelector:@selector(boolValue)]) {
-            serviceExists = [result boolValue];
+        // Create a temporary DBus connection to check if services are already registered
+        GNUDBusConnection *tempConnection = [GNUDBusConnection sessionBus];
+        if (![tempConnection isConnected]) {
+            NSLog(@"MenuApplication: Cannot connect to DBus to check for existing services");
+            return; // If we can't connect to DBus, let the app try to start normally
+        }
+        
+        // Check if com.canonical.AppMenu.Registrar service is already running
+        BOOL serviceExists = NO;
+        
+        @try {
+            // Use DBus introspection to check if the service exists
+            id result = [tempConnection callMethod:@"NameHasOwner"
+                                         onService:@"org.freedesktop.DBus"
+                                        objectPath:@"/org/freedesktop/DBus"
+                                         interface:@"org.freedesktop.DBus"
+                                         arguments:@[@"com.canonical.AppMenu.Registrar"]];
+            
+            if (result && [result respondsToSelector:@selector(boolValue)]) {
+                serviceExists = [result boolValue];
+            }
+        }
+        @catch (NSException *exception) {
+            NSLog(@"MenuApplication: Exception while checking for existing service: %@", exception);
+            serviceExists = NO;
+        }
+        
+        if (serviceExists) {
+            NSLog(@"MenuApplication: Found existing AppMenu.Registrar service - another menu application is running");
+            
+            // Show NSAlert to inform user on main thread
+            [self performSelectorOnMainThread:@selector(showMenuConflictAlert)
+                                   withObject:nil
+                                waitUntilDone:NO];
+        } else {
+            NSLog(@"MenuApplication: No conflicting menu applications found");
         }
     }
-    @catch (NSException *exception) {
-        NSLog(@"MenuApplication: Exception while checking for existing service: %@", exception);
-        serviceExists = NO;
-    }
+}
+
+- (void)showMenuConflictAlert
+{
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:NSLocalizedString(@"Menu Application Already Running", @"Menu app conflict dialog title")];
+    [alert setInformativeText:NSLocalizedString(@"Another menu application is already running. Only one menu application can run at a time.", @"Menu app conflict dialog message")];
+    [alert addButtonWithTitle:NSLocalizedString(@"OK", @"OK button")];
+    [alert setAlertStyle:NSWarningAlertStyle];
     
-    if (serviceExists) {
-        NSLog(@"MenuApplication: Found existing AppMenu.Registrar service - another menu application is running");
-        
-        // Show NSAlert to inform user
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:NSLocalizedString(@"Menu Application Already Running", @"Menu app conflict dialog title")];
-        [alert setInformativeText:NSLocalizedString(@"Another menu application is already running. Only one menu application can run at a time.", @"Menu app conflict dialog message")];
-        [alert addButtonWithTitle:NSLocalizedString(@"OK", @"OK button")];
-        [alert setAlertStyle:NSWarningAlertStyle];
-        
-        NSLog(@"MenuApplication: Showing conflict alert...");
-        [alert runModal];
-        
-        NSLog(@"MenuApplication: Exiting due to service conflict");
-        exit(1);
-    }
+    NSLog(@"MenuApplication: Showing conflict alert...");
+    [alert runModal];
     
-    NSLog(@"MenuApplication: No conflicting menu applications found");
-    return YES;
+    NSLog(@"MenuApplication: Exiting due to service conflict");
+    exit(1);
 }
 
 + (MenuApplication *)sharedApplication
@@ -246,8 +262,8 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
         hasSwizzled = YES;
     }
     
-    // Check for existing menu applications before proceeding
-    [self checkForExistingMenuApplication];
+    // Check for existing menu applications asynchronously (non-blocking)
+    [self checkForExistingMenuApplicationAsync];
     
     // Configure menu cache settings from command line arguments
     [self configureCacheSettings];
@@ -339,11 +355,7 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     // Ensure the application is activated (again, just in case)
     [self activateIgnoringOtherApps:YES];
     
-    NSLog(@"MenuApplication: Initialization complete");
-    
-    // Add a brief delay to let everything settle before entering main run loop
-    NSLog(@"MenuApplication: Allowing brief settling period...");
-    [NSThread sleepForTimeInterval:0.1];
+    NSLog(@"MenuApplication: Initialization complete - Menu will appear immediately");
 }
 
 - (void)sendEvent:(NSEvent *)event
