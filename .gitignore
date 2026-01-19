@@ -37,3 +37,5 @@ screenshot*.png
 *_scrot.png
 *.desktop
 ICNSImageRep/NSICNSImageRep.bundle/NSICNSImageRep
+stamp.make
+Info-gnustep.plist

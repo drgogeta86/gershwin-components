@@ -6,6 +6,7 @@
 
 #import "ConsoleController.h"
 #import <stdarg.h>
+#import <sys/stat.h>
 
 static void ConsoleDebugLog(NSString *format, ...)
 {
@@ -489,7 +490,8 @@ static ConsoleController *sharedInstance = nil;
     // Application logs
     NSArray *appLogDirs = @[
         [@"~/Library/Logs" stringByExpandingTildeInPath],
-        @"/var/log"
+        @"/var/log",
+        @"/tmp"
     ];
     
     for (NSString *dir in appLogDirs) {
@@ -662,19 +664,35 @@ static ConsoleController *sharedInstance = nil;
 {
     NSMutableArray *files = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = @"/var/log";
-    NSArray *entries = [fm contentsOfDirectoryAtPath:dir error:nil];
-    for (NSString *name in entries) {
-        NSString *ext = [[name pathExtension] lowercaseString];
-        if (![ext isEqualToString:@"log"] && ![ext isEqualToString:@"txt"]) {
-            continue;
-        }
-        NSString *path = [dir stringByAppendingPathComponent:name];
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir && [fm isReadableFileAtPath:path]) {
-            [files addObject:path];
+    
+    // Directories to scan for log files
+    NSArray *logDirs = @[
+        [@"~/Library/Logs" stringByExpandingTildeInPath],
+        @"/var/log",
+        @"/tmp"
+    ];
+    
+    for (NSString *dir in logDirs) {
+        NSArray *entries = [fm contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *name in entries) {
+            NSString *path = [dir stringByAppendingPathComponent:name];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:path isDirectory:&isDir] && !isDir && [fm isReadableFileAtPath:path]) {
+                // Check if it's a log file or FIFO
+                NSString *ext = [[name pathExtension] lowercaseString];
+                if ([ext isEqualToString:@"log"] || [ext isEqualToString:@"txt"] || [name hasSuffix:@".log.fifo"] || [name hasSuffix:@".fifo"]) {
+                    [files addObject:path];
+                } else {
+                    // Check if it's a FIFO
+                    struct stat st;
+                    if (stat([path UTF8String], &st) == 0 && S_ISFIFO(st.st_mode)) {
+                        [files addObject:path];
+                    }
+                }
+            }
         }
     }
+    
     [files sortUsingComparator:^NSComparisonResult(id a, id b) {
         return [[(NSString *)a lastPathComponent] compare:[(NSString *)b lastPathComponent] options:NSCaseInsensitiveSearch];
     }];
@@ -911,8 +929,11 @@ static ConsoleController *sharedInstance = nil;
 {
     if ([item isKindOfClass:[NSString class]]) {
         NSString *str = (NSString *)item;
-        if ([str hasPrefix:@"/var/log/"]) {
-            return [str lastPathComponent];
+        if ([str hasPrefix:@"/"]) {
+            // For file paths, show directory/filename
+            NSString *dir = [str stringByDeletingLastPathComponent];
+            NSString *file = [str lastPathComponent];
+            return [NSString stringWithFormat:@"%@/%@", [dir lastPathComponent], file];
         }
         return str;
     } else if ([item isKindOfClass:[LogQuery class]]) {
@@ -978,12 +999,14 @@ static ConsoleController *sharedInstance = nil;
         } else if ([item isKindOfClass:[NSString class]]) {
             NSString *str = (NSString *)item;
             if ([str isEqualToString:@"Log Files"]) {
-                [self setCurrentSourcePrefix:@"/var/log/"];
+                [self setCurrentSourcePrefix:nil];
+                [self setCurrentQuery:nil];
+                [self setCurrentSourceName:nil];
             } else if ([str isEqualToString:@"System Log Queries"]) {
                 if ([_queries count] > 0) {
                     [self setCurrentQuery:[_queries objectAtIndex:0]];
                 }
-            } else if ([str hasPrefix:@"/var/log/"]) {
+            } else if ([str hasPrefix:@"/"]) {
                 [self setCurrentSourceName:str];
             }
         }
