@@ -16,6 +16,8 @@
 #import "X11ShortcutManager.h"
 #import "ActionSearch.h"
 #import "MenuUtils.h"
+#import "StatusItemManager.h"
+#import "StatusItemsView.h"
 #import "GNUstepGUI/GSTheme.h"
 #import <X11/Xlib.h>
 #import <X11/Xatom.h>
@@ -230,7 +232,14 @@
 {
     NSLog(@"MenuController: Application will terminate");
     
-    // Clean up global shortcuts first
+    // Unload status items first
+    if (self.statusItemManager) {
+        NSLog(@"MenuController: Unloading status items...");
+        [self.statusItemManager unloadAllStatusItems];
+        self.statusItemManager = nil;
+    }
+    
+    // Clean up global shortcuts
     NSLog(@"MenuController: Cleaning up global shortcuts...");
     [[X11ShortcutManager sharedManager] cleanup];
     
@@ -331,8 +340,10 @@
     self.menuBarView = [[MenuBarView alloc] initWithFrame:NSMakeRect(0, 0, self.screenSize.width, menuBarHeight)];
     NSLog(@"MenuController: Created MenuBarView: %@", self.menuBarView);
     
-    // Create app menu widget for displaying menus - leave space for time menu
-    CGFloat menuWidgetWidth = self.screenSize.width - 67; // 60px clock + 7px padding
+    // Create app menu widget for displaying menus - leave space for status items on right
+    // Status items are at the far right: time (60px) + systemmonitor (140px) + spacing (10px) = 210px
+    CGFloat statusItemsWidth = 210; // actual width of status items
+    CGFloat menuWidgetWidth = self.screenSize.width - statusItemsWidth;
     self.appMenuWidget = [[AppMenuWidget alloc] initWithFrame:NSMakeRect(0, 0, menuWidgetWidth, menuBarHeight)];
     NSLog(@"MenuController: AppMenuWidget created successfully");
     
@@ -355,10 +366,16 @@
     // NSLog(@"MenuController: Created AppMenuWidget with width %.0f at address %p", menuWidgetWidth, self.appMenuWidget);
     NSLog(@"MenuController: Skipping potentially problematic NSLog");
     
-    // Create time/date menu bar
-    NSLog(@"MenuController: About to create time menu");
-    [self createTimeMenu];
-    NSLog(@"MenuController: Time menu created");
+    // Create status item manager (but don't load yet)
+    NSLog(@"MenuController: Creating StatusItemManager");
+    self.statusItemManager = [[StatusItemManager alloc] initWithContainerView:[self.menuBar contentView]
+                                                                   screenWidth:self.screenSize.width
+                                                                 menuBarHeight:menuBarHeight];
+    
+    // Create status items view at right edge with proper spacing
+    StatusItemsView *statusItemsView = [[StatusItemsView alloc] 
+        initWithFrame:NSMakeRect(self.screenSize.width - statusItemsWidth, 0, statusItemsWidth, menuBarHeight)
+            statusMenu:self.statusItemManager.statusMenu];
     
     // Remove the Action Search icon from the menu bar (search remains accessible via Command menu)
     
@@ -367,11 +384,21 @@
     CGFloat cornerHeight = 10.0; // 2 * corner radius (5px)
     self.roundedCornersView = [[RoundedCornersView alloc] initWithFrame:NSMakeRect(0, menuBarHeight - cornerHeight, self.screenSize.width, cornerHeight)];
     
-    // Add subviews in the correct order (background first, then content, then corners on top)
+    // Add MenuBarView as the background (spans full width)
     [[self.menuBar contentView] addSubview:self.menuBarView];
-    [[self.menuBar contentView] addSubview:self.appMenuWidget];
-    [[self.menuBar contentView] addSubview:self.timeMenuView];
+    
+    // Add AppMenuWidget and StatusItemsView as children of MenuBarView (on top of the background)
+    [self.menuBarView addSubview:self.appMenuWidget];
+    
+    // Load status items and add the display view as a child of MenuBarView
+    [self.statusItemManager loadStatusItems];
+    NSLog(@"MenuController: StatusItemManager items loaded");
+    [self.menuBarView addSubview:statusItemsView];
+    NSLog(@"MenuController: Added StatusItemsView as child of MenuBarView");
+    
+    // Finally add rounded corners on top of everything
     [[self.menuBar contentView] addSubview:self.roundedCornersView];
+
     
     // Show the window and slide it in from above with animation
     [self.menuBar makeKeyAndOrderFront:self];

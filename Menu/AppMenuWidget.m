@@ -115,9 +115,15 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    [[[GSTheme theme] menuItemBackgroundColor] set];
+    // Use transparent background to allow MenuBarView gradient to show through
+    [[NSColor clearColor] set];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
+}
+
+- (BOOL)isOpaque
+{
+    return NO;
 }
 
 @end

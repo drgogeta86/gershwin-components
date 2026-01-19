@@ -16,6 +16,7 @@
 @class MenuProtocolManager;
 @class RoundedCornersView;
 @class ActionSearchMenuView;
+@class StatusItemManager;
 
 @interface MenuController : NSObject <NSApplicationDelegate>
 
@@ -27,6 +28,7 @@
 @property (nonatomic, strong) MenuProtocolManager *protocolManager;
 @property (nonatomic, strong) RoundedCornersView *roundedCornersView;
 @property (nonatomic, strong) ActionSearchMenuView *actionSearchView;
+@property (nonatomic, strong) StatusItemManager *statusItemManager;
 @property (nonatomic, strong) NSMenuView *timeMenuView;
 @property (nonatomic, strong) NSMenu *timeMenu;
 @property (nonatomic, strong) NSMenuItem *timeMenuItem;
