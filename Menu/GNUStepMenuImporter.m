@@ -273,18 +273,6 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
         NSLog(@"GNUStepMenuImporter: WARNING - processMenuUpdateWithPayload executing off main thread!");
     }
 
-    // Attempt to capture the incoming menuData to /tmp for reproduction if something goes wrong
-    @try {
-        NSData *json = [NSJSONSerialization dataWithJSONObject:menuData options:NSJSONWritingPrettyPrinted error:nil];
-        if (json) {
-            NSString *fname = [NSString stringWithFormat:@"/tmp/menu-update-%@-window-%@.json", [[NSUUID UUID] UUIDString], windowId];
-            [json writeToFile:fname atomically:YES];
-            NSLog(@"GNUStepMenuImporter: Saved incoming menuData to %@", fname);
-        }
-    } @catch (NSException *ex) {
-        NSLog(@"GNUStepMenuImporter: Could not serialize menuData: %@", ex);
-    }
-
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     static NSTimeInterval startupTime = 0;
     if (startupTime == 0) {
