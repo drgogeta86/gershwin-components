@@ -439,11 +439,14 @@
         }
     }
 
-    // Animate menu sliding in immediately - no delay
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self animateMenuSlideIn];
-    });
-    NSLog(@"MenuController: Window shown, menu will slide in immediately");
+    // Animate menu sliding in using NSTimer instead of dispatch_async for better GNUstep/FreeBSD compatibility
+    // FIXME: GCD dispatch_async may not execute reliably with GNUstep run loop on some platforms
+    [NSTimer scheduledTimerWithTimeInterval:0.001  // Start almost immediately
+                                     target:self
+                                   selector:@selector(animateMenuSlideIn)
+                                   userInfo:nil
+                                    repeats:NO];
+    NSLog(@"MenuController: Window shown, menu will slide in immediately (using NSTimer for compatibility)");
 }
 
 - (void)setupMenuBar
