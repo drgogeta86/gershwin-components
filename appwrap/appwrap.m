@@ -15,10 +15,39 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+// Show an NSAlert if possible; otherwise log and print to stderr.
+// If APPWRAP_NO_GUI=1 or we're not attached to a TTY, avoid modal alerts to allow
+// batch, non-interactive usage.
+static void ShowErrorAlert(NSString *title, NSString *message)
+{
+  NSLog(@"%@: %@", title, message);
+  fprintf(stderr, "%s\n", [message UTF8String]);
+
+  const char *noGui = getenv("APPWRAP_NO_GUI");
+  if (noGui && strcmp(noGui, "1") == 0)
+    return;
+
+  if (!isatty(fileno(stderr)))
+    return;
+
+  Class NSAlertClass = NSClassFromString(@"NSAlert");
+  if (NSAlertClass)
+    {
+      NSAlert *alert = [[NSAlertClass alloc] init];
+      [alert setMessageText:title];
+      [alert setInformativeText:message];
+      [alert addButtonWithTitle:@"OK"];
+      [alert runModal];
+      [alert release];
+    }
+}
+
 
 // Desktop file parser
 @interface DesktopFileParser : NSObject
@@ -64,7 +93,8 @@
                                                      error:&error];
   if (!content)
     {
-      NSLog(@"Error reading file: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Error reading file: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Error reading desktop file", msg);
       return NO;
     }
 
@@ -164,18 +194,67 @@
 // contains a plain executable command without % codes.
 - (NSString *)sanitizeExecCommand:(NSString *)command;
 
+// Return an array of file extensions (without dot) for a given MIME type when possible.
+- (NSArray *)extensionsForMIMEType:(NSString *)mimeType;
+
+// Find an executable in PATH (returns full path) or nil
+- (NSString *)findExecutableInPath:(NSString *)name;
+
+// Rasterize an SVG file to PNG using GNUstep drawing APIs or external tools as fallback
+- (BOOL)rasterizeSVG:(NSString *)svgPath toPNG:(NSString *)pngPath size:(int)size;
+
+// Sanitize a string for use as a filename: remove control chars and slash, collapse whitespace
+- (NSString *)sanitizeFileName:(NSString *)name;
+
 @end
 
 @implementation AppBundleCreator
+
+- (NSString *)sanitizeFileName:(NSString *)name
+{
+  if (!name) return @"";
+  // Replace path-separators with dashes
+  NSString *s = [name stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+
+  // Replace control characters with spaces
+  NSCharacterSet *ctrl = [NSCharacterSet controlCharacterSet];
+  NSMutableString *out = [NSMutableString stringWithCapacity:[s length]];
+  for (NSUInteger i = 0; i < [s length]; i++)
+    {
+      unichar c = [s characterAtIndex:i];
+      if ([ctrl characterIsMember:c])
+        {
+          [out appendString:@" "];
+        }
+      else
+        {
+          [out appendFormat:@"%C", c];
+        }
+    }
+
+  // Collapse whitespace and newlines to single spaces
+  NSArray *parts = [out componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSPredicate *notEmpty = [NSPredicate predicateWithFormat:@"length > 0"];
+  NSArray *filtered = [parts filteredArrayUsingPredicate:notEmpty];
+  NSString *result = [filtered componentsJoinedByString:@" "];
+  // Trim leading/trailing whitespace
+  result = [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+
+  if ([result length] == 0)
+    return @"application";
+  return result;
+}
 
 - (BOOL)createBundleFromDesktopFile:(NSString *)desktopPath
                            outputDir:(NSString *)outputDir
 {
   // Parse the desktop file
+  NSLog(@"Starting bundle creation from desktop file: %@", desktopPath);
   DesktopFileParser *parser = [[DesktopFileParser alloc] initWithFile:desktopPath];
   if (!parser)
     {
-      NSLog(@"Failed to parse desktop file: %@", desktopPath);
+      NSString *msg = [NSString stringWithFormat:@"Failed to parse desktop file: %@", desktopPath];
+      ShowErrorAlert(@"Error", msg);
       return NO;
     }
 
@@ -184,15 +263,18 @@
   NSString *execCommand = [parser stringForKey:@"Exec"];
   NSString *iconName = [parser stringForKey:@"Icon"];
 
+  NSLog(@"Parsed desktop file entries: Name=%@ Exec=%@ Icon=%@", appName, execCommand, iconName);
+
   if (!appName || !execCommand)
     {
-      NSLog(@"Invalid desktop file: missing Name or Exec");
+      NSString *msg = @"Invalid desktop file: missing Name or Exec";
+      ShowErrorAlert(@"Error", msg);
       [parser release];
       return NO;
     }
 
-  // Use application name as bundle name (preserve whitespace)
-  NSString *bundleName = appName;
+  // Use application name as bundle name, but sanitize it for filesystem safety
+  NSString *bundleName = [self sanitizeFileName:appName];
 
   // Create the bundle path
   NSString *appPath = [NSString stringWithFormat:@"%@/%@.app", 
@@ -205,21 +287,46 @@
       resolvedIconPath = [self resolveIconPath:iconName];
     }
 
+  // If no icon was specified or resolution failed, try a set of generic fallback icons
+  if (!resolvedIconPath)
+    {
+      NSArray *genericFallbacks = @[@"dialog-information", @"application", @"preferences-system", @"dialog-warning", @"dialog-error", @"notification", @"utilities-system-monitor"];
+      NSLog(@"No specific icon resolved for %@; trying generic fallbacks: %@", appName, genericFallbacks);
+      for (NSString *gname in genericFallbacks)
+        {
+          NSString *p = [self resolveIconPath:gname];
+          if (p)
+            {
+              resolvedIconPath = p;
+              NSLog(@"Using generic fallback icon '%@' -> %@", gname, p);
+              break;
+            }
+        }
+      if (!resolvedIconPath)
+        {
+          NSLog(@"No icon could be resolved for %@ (including generic fallbacks)", appName);
+        }
+    }
+
   // Create bundle structure
+  NSLog(@"Creating bundle structure at %@", appPath);
   if (![self createBundleStructure:appPath withAppName:bundleName])
     {
-      NSLog(@"Failed to create bundle structure");
+      NSString *msg = [NSString stringWithFormat:@"Failed to create bundle structure at %@", appPath];
+      ShowErrorAlert(@"Error", msg);
       [parser release];
       return NO;
     }
 
-  // Create the launcher script with the full Exec command; script name keeps spaces
+  // Create the launcher script with the full Exec command; sanitize script name for safety
+  NSLog(@"Creating launcher script (name: %@) with Exec: %@", bundleName, execCommand);
   if (![self createLauncherScript:appPath 
                       execCommand:execCommand
                         iconPath:resolvedIconPath
-                        scriptName:appName])
+                        scriptName:bundleName])
     {
-      NSLog(@"Failed to create launcher script");
+      NSString *msg = [NSString stringWithFormat:@"Failed to create launcher script for %@", appName];
+      ShowErrorAlert(@"Error", msg);
       [parser release];
       return NO;
     }
@@ -228,19 +335,27 @@
   NSString *copiedIconFilename = nil;
   if (resolvedIconPath)
     {
+      NSLog(@"Copying icon from %@ into bundle resources", resolvedIconPath);
       copiedIconFilename = [self copyIconToBundle:resolvedIconPath
                                   toBundleResources:[NSString stringWithFormat:@"%@/Resources", appPath]
                                            appName:bundleName];
+      NSLog(@"Resulting icon filename in bundle: %@", copiedIconFilename);
+    }
+  else
+    {
+      NSLog(@"No icon resolved; skipping icon copy and Info.plist icon entry will be omitted");
     }
 
   // Create the Info.plist with the actual copied icon filename
+  NSLog(@"Creating Info.plist (appName=%@, exec=%@, icon=%@)", appName, execCommand, copiedIconFilename);
   if (![self createInfoPlist:appPath 
                  desktopInfo:parser
                      appName:appName
                    execPath:execCommand
                    iconFilename:copiedIconFilename])
     {
-      NSLog(@"Failed to create Info.plist");
+      NSString *msg = [NSString stringWithFormat:@"Failed to create Info.plist for %@", appName];
+      ShowErrorAlert(@"Error", msg);
       [parser release];
       return NO;
     }
@@ -262,7 +377,8 @@
                          attributes:nil 
                               error:&error])
     {
-      NSLog(@"Failed to create app directory: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Failed to create app directory: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Error", msg);
       return NO;
     }
 
@@ -273,7 +389,8 @@
                          attributes:nil 
                               error:&error])
     {
-      NSLog(@"Failed to create Resources directory: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Failed to create Resources directory: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Error", msg);
       return NO;
     }
 
@@ -309,9 +426,59 @@
       [infoPlist setObject:iconNameWithExtension forKey:@"NSIcon"];
     }
 
+  // Add document types from desktop MimeType key, if present
+  NSArray *mimeTypes = [parser arrayForKey:@"MimeType"];
+  if (mimeTypes && [mimeTypes count] > 0)
+    {
+      NSLog(@"Found MimeType entries in desktop file: %@", mimeTypes);
+      NSMutableArray *docTypes = [NSMutableArray array];
+      for (NSString *mt in mimeTypes)
+        {
+          if (![mt length]) continue;
+          NSMutableDictionary *dt = [NSMutableDictionary dictionary];
+          NSString *typeName = mt;
+          [dt setObject:typeName forKey:@"CFBundleTypeName"];
+          [dt setObject:@"Editor" forKey:@"CFBundleTypeRole"];
+
+          NSArray *exts = [self extensionsForMIMEType:mt];
+          if (exts && [exts count] > 0)
+            {
+              NSLog(@"Mapping MIME %@ -> extensions %@", mt, exts);
+              [dt setObject:exts forKey:@"CFBundleTypeExtensions"];
+            }
+          else
+            {
+              NSLog(@"No extensions mapped for MIME %@; adding type without extensions", mt);
+            }
+
+          if (iconFilename && [iconFilename length] > 0)
+            {
+              [dt setObject:[iconFilename lastPathComponent] forKey:@"CFBundleTypeIconFile"];
+            }
+
+          [docTypes addObject:dt];
+        }
+
+      if ([docTypes count] > 0)
+        {
+          [infoPlist setObject:docTypes forKey:@"CFBundleDocumentTypes"];
+          NSLog(@"Added CFBundleDocumentTypes to Info.plist: %@", docTypes);
+        }
+    }
+
   // Create the plist file
   NSString *plistPath = [NSString stringWithFormat:@"%@/Resources/Info.plist", appPath];
-  return [infoPlist writeToFile:plistPath atomically:YES];
+  BOOL ok = [infoPlist writeToFile:plistPath atomically:YES];
+  if (!ok)
+    {
+      NSString *msg = [NSString stringWithFormat:@"Failed to write Info.plist to %@", plistPath];
+      ShowErrorAlert(@"Error", msg);
+    }
+  else
+    {
+      NSLog(@"Wrote Info.plist to %@", plistPath);
+    }
+  return ok;
 }
 
 - (BOOL)createLauncherScript:(NSString *)appPath
@@ -324,12 +491,16 @@
   NSString *launcherPath = [NSString stringWithFormat:@"%@/%@", appPath, scriptName];
 
   // Sanitize Exec= field codes (%U, %u, %F, %f, %i, %c, %k) and %% → %
+  NSLog(@"Sanitizing Exec command for launcher: %@", command);
   NSString *sanitized = [self sanitizeExecCommand:command];
   if (!sanitized || [sanitized length] == 0)
     {
-      NSLog(@"Failed to sanitize Exec command");
+      NSString *msg = [NSString stringWithFormat:@"Failed to sanitize Exec command: %@", command];
+      ShowErrorAlert(@"Error", msg);
       return NO;
     }
+
+  NSLog(@"Sanitized Exec command: %@", sanitized);
 
   // Create the launcher script using the sanitized command
   NSString *script = [NSString stringWithFormat:
@@ -344,15 +515,22 @@
                    encoding:NSUTF8StringEncoding 
                       error:&error])
     {
-      NSLog(@"Failed to write launcher script: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Failed to write launcher script: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Error", msg);
       return NO;
     }
 
   // Make the script executable
-  [fm setAttributes:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:0755]
-                                                forKey:NSFilePosixPermissions]
-        ofItemAtPath:launcherPath error:&error];
+  if (![fm setAttributes:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:0755]
+                                                     forKey:NSFilePosixPermissions]
+            ofItemAtPath:launcherPath error:&error])
+    {
+      NSString *msg = [NSString stringWithFormat:@"Failed to set permissions on launcher script: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Error", msg);
+      return NO;
+    }
 
+  NSLog(@"Created launcher script at %@", launcherPath);
   return YES;
 }
 
@@ -360,6 +538,7 @@
 {
   if (!command) { return nil; }
 
+  NSLog(@"Sanitizing Exec field: %@", command);
   NSMutableString *mutable = [NSMutableString stringWithString:command];
 
   // Remove common freedesktop field codes
@@ -387,69 +566,569 @@
       if ([p length] > 0) { [filtered addObject:p]; }
     }
   NSString *collapsed = [filtered componentsJoinedByString:@" "];
+  NSLog(@"Sanitized Exec field -> %@", collapsed);
   return collapsed;
+}
+
+- (NSArray *)extensionsForMIMEType:(NSString *)mimeType
+{
+  if (!mimeType) return nil;
+
+  NSLog(@"Looking up extensions for MIME type: %@", mimeType);
+
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSMutableSet *exts = [NSMutableSet set];
+
+
+  NSArray *pkgDirs = @[@"/usr/share/mime/packages",
+                       @"/usr/local/share/mime/packages",
+                       [NSString stringWithFormat:@"%@/.local/share/mime/packages", NSHomeDirectory()]];
+  for (NSString *dir in pkgDirs)
+    {
+      if (![fm fileExistsAtPath:dir]) continue;
+      NSLog(@"Scanning mime package dir: %@", dir);
+      NSDirectoryEnumerator *e = [fm enumeratorAtPath:dir];
+      NSString *file;
+      while ((file = [e nextObject]))
+        {
+          NSString *path = [dir stringByAppendingPathComponent:file];
+          NSError *readErr = nil;
+          NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&readErr];
+          if (!content)
+            {
+              NSLog(@"Failed reading %@: %@", path, [readErr localizedDescription]);
+              continue;
+            }
+
+          // Look for the specific mime-type tag
+          NSString *searchTag1 = [NSString stringWithFormat:@"<mime-type type=\"%@\"", mimeType];
+          NSString *searchTag2 = [NSString stringWithFormat:@"<mime-type type=\'%@\'", mimeType];
+
+          NSRange foundRange = [content rangeOfString:searchTag1];
+          if (foundRange.location == NSNotFound)
+            foundRange = [content rangeOfString:searchTag2];
+
+          if (foundRange.location != NSNotFound)
+            {
+              // Limit to the mime-type section (until </mime-type> or next <mime-type)
+              NSRange tailRange = NSMakeRange(foundRange.location, [content length] - foundRange.location);
+              NSRange endRange = [content rangeOfString:@"</mime-type>" options:0 range:tailRange];
+              NSUInteger scanLength = (endRange.location != NSNotFound) ? (endRange.location - foundRange.location) : (tailRange.length);
+              NSString *section = [content substringWithRange:NSMakeRange(foundRange.location, scanLength)];
+
+              // Find pattern="*.ext" occurrences using regex
+              NSError *reErr = nil;
+              NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"pattern\\s*=\\s*['\"](\\*\\.[^'\"]+)['\"]" options:NSRegularExpressionCaseInsensitive error:&reErr];
+              if (re && !reErr)
+                {
+                  NSArray *matches = [re matchesInString:section options:0 range:NSMakeRange(0, [section length])];
+                  for (NSTextCheckingResult *m in matches)
+                    {
+                      NSRange r = [m rangeAtIndex:1];
+                      NSString *pat = [section substringWithRange:r]; // like "*.txt" or "*.tar.gz"
+                      if ([pat hasPrefix:@"*."] && [pat length] > 2)
+                        {
+                          NSString *ext = [pat substringFromIndex:2];
+                          [exts addObject:ext];
+                        }
+                    }
+                }
+            }
+        }
+
+      if ([exts count] > 0)
+        {
+          NSLog(@"Found extensions via mime packages: %@", exts);
+          return [[exts allObjects] sortedArrayUsingSelector:@selector(compare:)];
+        }
+    }
+
+  // 2) Try globs2 / globs files as a fallback
+  NSArray *globsFiles = @[@"/usr/share/mime/globs2",
+                          @"/usr/local/share/mime/globs2",
+                          [NSString stringWithFormat:@"%@/.local/share/mime/globs2", NSHomeDirectory()],
+                          @"/usr/share/mime/globs",
+                          @"/usr/local/share/mime/globs"];
+
+  for (NSString *gf in globsFiles)
+    {
+      if (![fm fileExistsAtPath:gf]) continue;
+      NSError *gErr = nil;
+      NSString *content = [NSString stringWithContentsOfFile:gf encoding:NSUTF8StringEncoding error:&gErr];
+      if (!content)
+        {
+          NSLog(@"Failed reading %@: %@", gf, [gErr localizedDescription]);
+          continue;
+        }
+
+      NSLog(@"Scanning globs file: %@", gf);
+      NSArray *lines = [content componentsSeparatedByString:@"\n"];
+      for (NSString *line in lines)
+        {
+          if ([line rangeOfString:mimeType].location == NSNotFound) continue;
+
+          // Find any token with *.
+          NSScanner *sc = [NSScanner scannerWithString:line];
+          while (![sc isAtEnd])
+            {
+              [sc scanUpToString:@"*." intoString:NULL];
+              if ([sc scanString:@"*." intoString:NULL])
+                {
+                  // read until non-word or whitespace
+                  NSMutableString *acc = [NSMutableString string];
+                  unichar ch;
+                  while (![sc isAtEnd])
+                    {
+                      ch = [line characterAtIndex:sc.scanLocation];
+                      if ([[NSCharacterSet alphanumericCharacterSet] characterIsMember:ch] || ch == '.')
+                        {
+                          [acc appendFormat:@"%c", ch];
+                          sc.scanLocation += 1;
+                        }
+                      else
+                        break;
+                    }
+                  if ([acc length] > 0)
+                    {
+                      [exts addObject:acc];
+                    }
+                }
+              else
+                break;
+            }
+        }
+
+      if ([exts count] > 0)
+        {
+          NSLog(@"Found extensions via globs file %@: %@", gf, exts);
+          return [[exts allObjects] sortedArrayUsingSelector:@selector(compare:)];
+        }
+    }
+
+  // 3) Fallback to small built-in mapping (only used if system DB not available)
+  NSLog(@"No shared-mime-info entries found for %@; falling back to built-in mapping", mimeType);
+  static NSDictionary *mimeMap = nil;
+  if (!mimeMap)
+    {
+      mimeMap = [[NSDictionary alloc] initWithObjectsAndKeys:
+                 @[@"txt"], @"text/plain",
+                 @[@"html", @"htm"], @"text/html",
+                 @[@"png"], @"image/png",
+                 @[@"jpg", @"jpeg"], @"image/jpeg",
+                 @[@"gif"], @"image/gif",
+                 @[@"pdf"], @"application/pdf",
+                 @[@"zip"], @"application/zip",
+                 @[@"tar"], @"application/x-tar",
+                 @[@"7z"], @"application/x-7z-compressed",
+                 @[@"json"], @"application/json",
+                 @[@"xml"], @"application/xml",
+                 @[@"mp3"], @"audio/mpeg",
+                 @[@"mp4"], @"video/mp4",
+                 nil];
+    }
+
+  NSArray *fb = [mimeMap objectForKey:mimeType];
+  if (fb && [fb count] > 0)
+    return fb;
+
+  // Final fallback: use subtype
+  NSArray *parts = [mimeType componentsSeparatedByString:@"/"];
+  if ([parts count] > 1)
+    {
+      NSString *subtype = [[parts lastObject] lowercaseString];
+      NSRange plus = [subtype rangeOfString:@"+"];
+      if (plus.location != NSNotFound)
+        subtype = [subtype substringFromIndex:plus.location + 1];
+      if ([subtype length] > 0) return [NSArray arrayWithObject:subtype];
+    }
+
+  return nil;
+}
+
+- (NSString *)findExecutableInPath:(NSString *)name
+{
+  if (!name || [name length] == 0) return nil;
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSDictionary *env = [[NSProcessInfo processInfo] environment];
+  NSString *path = [env objectForKey:@"PATH"];
+  if (!path) path = @"/usr/bin:/bin:/usr/local/bin";
+
+  NSArray *components = [path componentsSeparatedByString:@":" ];
+  for (NSString *dir in components)
+    {
+      NSString *candidate = [dir stringByAppendingPathComponent:name];
+      if ([fm isExecutableFileAtPath:candidate])
+        {
+          NSLog(@"Found executable '%@' at %@", name, candidate);
+          return candidate;
+        }
+    }
+  NSLog(@"Executable '%@' not found in PATH", name);
+  return nil;
+}
+
+- (BOOL)rasterizeSVG:(NSString *)svgPath toPNG:(NSString *)pngPath size:(int)size
+{
+  NSFileManager *fm = [NSFileManager defaultManager];
+  NSLog(@"Attempting to rasterize SVG %@ -> %@ at %dx%d using GNUstep if available", svgPath, pngPath, size, size);
+
+  // First try pure-GNUstep approach using NSImage drawing
+  @try
+    {
+      NSImage *img = [[NSImage alloc] initWithContentsOfFile:svgPath];
+      if (img && [img isKindOfClass:[NSImage class]])
+        {
+          NSLog(@"Loaded SVG into NSImage (size=%@). Rendering to %dx%d...", NSStringFromSize([img size]), size, size);
+
+          // Create an alpha-enabled bitmap representation and draw into it using SourceOver
+          NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+                                                                           pixelsWide:size
+                                                                           pixelsHigh:size
+                                                                        bitsPerSample:8
+                                                                      samplesPerPixel:4
+                                                                             hasAlpha:YES
+                                                                             isPlanar:NO
+                                                                       colorSpaceName:NSDeviceRGBColorSpace
+                                                                         bytesPerRow:0
+                                                                          bitsPerPixel:0];
+
+          NSLog(@"Created NSBitmapImageRep for rasterization (hasAlpha=%d)", [rep hasAlpha]);
+
+          if (rep)
+            {
+              NSGraphicsContext *ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+              [NSGraphicsContext saveGraphicsState];
+              [NSGraphicsContext setCurrentContext:ctx];
+
+              // Clear to transparent first
+              [[NSColor clearColor] set];
+              NSRectFill(NSMakeRect(0, 0, size, size));
+
+              // Draw image scaled to target using SourceOver so alpha is preserved
+              [img drawInRect:NSMakeRect(0,0,size,size) fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
+
+              [NSGraphicsContext restoreGraphicsState];
+
+              NSData *pngData = [rep representationUsingType:NSPNGFileType properties:nil];
+              if (pngData && [pngData writeToFile:pngPath atomically:YES])
+                {
+                  NSLog(@"GNUstep rasterization succeeded: %@", pngPath);
+                  [rep release];
+                  [img release];
+                  return YES;
+                }
+              else
+                {
+                  NSLog(@"GNUstep rasterization produced no data or failed to write to %@", pngPath);
+                }
+              [rep release];
+            }
+          [img release];
+        }
+    }
+  @catch (NSException *ex)
+    {
+      NSLog(@"GNUstep rasterization failed with exception: %@", ex);
+    }
+
+  // If we get here, fallback to command-line tools found on PATH
+  NSArray *tools = @[@"rsvg-convert", @"convert", @"magick"]; // try rsvg-convert, then ImageMagick
+  for (NSString *t in tools)
+    {
+      NSString *exe = [self findExecutableInPath:t];
+      if (!exe) continue;
+
+      NSLog(@"Using external tool '%@' at %@ to rasterize", t, exe);
+      NSTask *task = [[NSTask alloc] init];
+
+      if ([t isEqualToString:@"rsvg-convert"]) 
+        {
+          [task setLaunchPath:exe];
+          // Request transparent background explicitly
+          [task setArguments:@[@"-w", [NSString stringWithFormat:@"%d", size], @"-h", [NSString stringWithFormat:@"%d", size], @"-b", @"transparent", @"-o", pngPath, svgPath]];
+        }
+      else if ([t isEqualToString:@"magick"]) // 'magick' uses syntax: magick input.svg -background none -resize 256x256 output.png
+        {
+          [task setLaunchPath:exe];
+          [task setArguments:@[svgPath, @"-background", @"none", @"-resize", [NSString stringWithFormat:@"%dx%d", size, size], pngPath]];
+        }
+      else // convert
+        {
+          [task setLaunchPath:exe];
+          [task setArguments:@[svgPath, @"-background", @"none", @"-resize", [NSString stringWithFormat:@"%dx%d", size, size], pngPath]];
+        }
+
+      @try
+        {
+          [task launch];
+          [task waitUntilExit];
+          int status = [task terminationStatus];
+          [task release];
+          if (status == 0 && [fm fileExistsAtPath:pngPath])
+            {
+              NSLog(@"External tool '%@' rasterized SVG successfully to %@", t, pngPath);
+              return YES;
+            }
+          else
+            {
+              NSLog(@"External tool '%@' failed (status %d)", t, status);
+            }
+        }
+      @catch (NSException *e)
+        {
+          NSLog(@"Failed to run '%@' due to exception: %@", t, e);
+        }
+    }
+
+  NSLog(@"All rasterization methods failed for %@", svgPath);
+  return NO;
 }
 
 - (NSString *)resolveIconPath:(NSString *)iconName
 {
   NSFileManager *fm = [NSFileManager defaultManager];
-  
-  // If it's already a full path and exists, use it
+  if (!iconName || [iconName length] == 0)
+    {
+      NSLog(@"resolveIconPath: called with empty iconName");
+      return nil;
+    }
+
+  NSLog(@"Resolving icon path for: '%@'", iconName);
+
+  // If it's an absolute path and exists, use it directly
   if ([iconName hasPrefix:@"/"] && [fm fileExistsAtPath:iconName])
     {
+      NSLog(@"Icon provided as absolute path and exists: %@", iconName);
       return iconName;
     }
 
-  // Build search paths including home directory
-  NSString *homeDir = NSHomeDirectory();
-  NSMutableArray *searchPaths = [NSMutableArray array];
-  
-  // Add standard system paths with their local variants
-  NSArray *standardPaths = @[
-    @"/usr/share/icons/hicolor/256x256/apps",
-    @"/usr/local/share/icons/hicolor/256x256/apps",
-    @"/usr/share/icons/hicolor/128x128/apps",
-    @"/usr/local/share/icons/hicolor/128x128/apps",
-    @"/usr/share/icons/hicolor/96x96/apps",
-    @"/usr/local/share/icons/hicolor/96x96/apps",
-    @"/usr/share/icons/hicolor/64x64/apps",
-    @"/usr/local/share/icons/hicolor/64x64/apps",
-    @"/usr/share/icons/hicolor/48x48/apps",
-    @"/usr/local/share/icons/hicolor/48x48/apps",
-    @"/usr/share/pixmaps",
-    @"/usr/local/share/pixmaps"
-  ];
-  [searchPaths addObjectsFromArray:standardPaths];
-  
-  // Add user-local paths
-  NSArray *userLocalPaths = @[
-    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/256x256/apps", homeDir],
-    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/128x128/apps", homeDir],
-    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/96x96/apps", homeDir],
-    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/64x64/apps", homeDir],
-    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor/48x48/apps", homeDir],
-    [NSString stringWithFormat:@"%@/.local/share/pixmaps", homeDir]
-  ];
-  [searchPaths addObjectsFromArray:userLocalPaths];
+  // Candidate structure: @{ @"path": path, @"ext": ext, @"score": @(score) }
+  NSMutableArray *candidates = [NSMutableArray array];
 
-  // Try various extensions
-  NSArray *extensions = @[@".png", @".svg", @".xpm", @""];
+  // Extensions to consider (ordered by preference)
+  NSArray *extensions = @[@".png", @".svg", @".xpm", @".ico", @".gif", @".jpg", @".jpeg", @""];
 
-  for (NSString *searchPath in searchPaths)
+  // Build a list of directories to search (themes + pixmaps + local)
+  NSMutableArray *iconBaseDirs = [NSMutableArray arrayWithObjects:
+                                  @"/usr/share/icons",
+                                  @"/usr/local/share/icons",
+                                  @"/usr/share/pixmaps",
+                                  @"/usr/local/share/pixmaps",
+                                  [NSString stringWithFormat:@"%@/.local/share/icons", NSHomeDirectory()],
+                                  [NSString stringWithFormat:@"%@/.local/share/pixmaps", NSHomeDirectory()],
+                                  nil];
+
+  // Also add top-level hicolor locations for quick checks
+  NSArray *quickPaths = @[
+    @"/usr/share/icons/hicolor",
+    @"/usr/local/share/icons/hicolor",
+    [NSString stringWithFormat:@"%@/.local/share/icons/hicolor", NSHomeDirectory()]
+  ];
+
+  // 1) Quick exact checks (theme common sizes + pixmaps)
+  NSArray *quickSizePaths = @[@"256x256/apps", @"128x128/apps", @"96x96/apps", @"64x64/apps", @"48x48/apps", @"32x32/apps", @"24x24/apps"];
+  for (NSString *base in quickPaths)
     {
-      for (NSString *ext in extensions)
+      for (NSString *sizeSub in quickSizePaths)
         {
-          NSString *candidatePath = [NSString stringWithFormat:@"%@/%@%@",
-                                    searchPath, iconName, ext];
-          if ([fm fileExistsAtPath:candidatePath])
+          for (NSString *ext in extensions)
             {
-              return candidatePath;
+              NSString *cand = [NSString stringWithFormat:@"%@/%@/%@%@", base, sizeSub, iconName, ext];
+              if ([fm fileExistsAtPath:cand])
+                {
+                  NSLog(@"Quick-match found candidate: %@", cand);
+                  [candidates addObject:@{@"path": cand, @"ext": ext}];
+                }
             }
         }
     }
 
-  NSLog(@"Warning: Could not find icon file for: %@", iconName);
-  return nil;
+  // 2) Recursive search in iconBaseDirs for exact basename matches
+  for (NSString *base in iconBaseDirs)
+    {
+      if (![fm fileExistsAtPath:base]) continue;
+      NSLog(@"Searching base icon dir: %@", base);
+      NSDirectoryEnumerator *e = [fm enumeratorAtPath:base];
+      NSString *file;
+      while ((file = [e nextObject]))
+        {
+          NSString *lowerFile = [file lowercaseString];
+          NSString *lowerIcon = [iconName lowercaseString];
+
+          // Check if file ends with iconName + ext or equals iconName
+          for (NSString *ext in extensions)
+            {
+              NSString *target = nil;
+              if ([ext length] > 0)
+                target = [NSString stringWithFormat:@"%@%@", iconName, ext];
+              else
+                target = iconName;
+
+              if ([[file lastPathComponent] isEqualToString:target] || [[file lastPathComponent] isEqualToString:[target lowercaseString]] || [[file lastPathComponent] isEqualToString:[target uppercaseString]])
+                {
+                  NSString *full = [base stringByAppendingPathComponent:file];
+                  NSLog(@"Found candidate by basename match: %@", full);
+                  [candidates addObject:@{@"path": full, @"ext": ext}];
+                }
+            }
+
+          // quick substring fuzzy match (e.g., iconName-symbolic, iconName-16)
+          if ([lowerFile rangeOfString:lowerIcon].location != NSNotFound)
+            {
+              NSString *full = [base stringByAppendingPathComponent:file];
+              NSLog(@"Found fuzzy candidate (substring match): %@", full);
+              [candidates addObject:@{@"path": full, @"ext": [[file pathExtension] length] ? [@"." stringByAppendingString:[file pathExtension]] : @""}];
+            }
+        }
+
+      if ([candidates count] > 0)
+        {
+          NSLog(@"Stopping search at base %@ because candidates were found", base);
+          break;
+        }
+    }
+
+  // If no candidates yet, try more aggressive fuzzy search across installed themes
+  if ([candidates count] == 0)
+    {
+      NSLog(@"No direct candidates found; performing aggressive fuzzy search (case-insensitive substring) across icon dirs");
+      for (NSString *base in iconBaseDirs)
+        {
+          if (![fm fileExistsAtPath:base]) continue;
+          NSDirectoryEnumerator *e = [fm enumeratorAtPath:base];
+          NSString *file;
+          while ((file = [e nextObject]))
+            {
+              NSString *lowerFile = [file lowercaseString];
+              NSString *lowerIcon = [iconName lowercaseString];
+              if ([lowerFile rangeOfString:lowerIcon].location != NSNotFound)
+                {
+                  NSString *full = [base stringByAppendingPathComponent:file];
+                  NSLog(@"Aggressive fuzzy candidate: %@", full);
+                  [candidates addObject:@{@"path": full, @"ext": [[file pathExtension] length] ? [@"." stringByAppendingString:[file pathExtension]] : @""}];
+                }
+            }
+        }
+    }
+
+  // If still no candidates, try a short list of generic application icons as a last-resort fallback
+  if ([candidates count] == 0)
+    {
+      NSArray *genericIcons = @[@"application-x-executable", @"application", @"dialog-information", @"preferences-system", @"system-run", @"utilities-terminal", @"help-about", @"preferences-desktop", @"applications-graphics"]; 
+      NSLog(@"No candidates for '%@'; trying generic icon names: %@", iconName, genericIcons);
+      for (NSString *g in genericIcons)
+        {
+          // Quick check in common quickPaths
+          BOOL found = NO;
+          for (NSString *base in quickPaths)
+            {
+              for (NSString *sizeSub in quickSizePaths)
+                {
+                  for (NSString *ext in extensions)
+                    {
+                      NSString *cand = [NSString stringWithFormat:@"%@/%@/%@%@", base, sizeSub, g, ext];
+                      if ([fm fileExistsAtPath:cand])
+                        {
+                          NSLog(@"Generic fallback matched: %@", cand);
+                          [candidates addObject:@{@"path": cand, @"ext": ext}];
+                          found = YES; break;
+                        }
+                    }
+                  if (found) break;
+                }
+              if (found) break;
+            }
+
+          if (found) break;
+
+          // If not found in quick paths, do a shallow search in iconBaseDirs
+          for (NSString *base in iconBaseDirs)
+            {
+              if (![fm fileExistsAtPath:base]) continue;
+              NSDirectoryEnumerator *e = [fm enumeratorAtPath:base];
+              NSString *file;
+              while ((file = [e nextObject]))
+                {
+                  NSString *lowerFile = [file lowercaseString];
+                  if ([lowerFile rangeOfString:g].location != NSNotFound)
+                    {
+                      NSString *full = [base stringByAppendingPathComponent:file];
+                      NSLog(@"Generic fallback fuzzy candidate: %@", full);
+                      [candidates addObject:@{@"path": full, @"ext": [[file pathExtension] length] ? [@"." stringByAppendingString:[file pathExtension]] : @""}];
+                      found = YES; break;
+                    }
+                }
+              if (found) break;
+            }
+          if (found) break;
+        }
+    }
+
+  if ([candidates count] == 0)
+    {
+      NSLog(@"No icon candidates found for '%@' after extensive search and generic fallbacks", iconName);
+      return nil;
+    }
+
+  // Score candidates and pick the best one
+  NSMutableArray *scored = [NSMutableArray array];
+  for (NSDictionary *c in candidates)
+    {
+      NSString *path = [c objectForKey:@"path"];
+      NSString *ext = [[path pathExtension] lowercaseString];
+      int score = 0;
+
+      // Extension preference
+      if ([ext isEqualToString:@"png"]) score += 100;
+      else if ([ext isEqualToString:@"svg"]) score += 90;
+      else if ([ext isEqualToString:@"xpm"]) score += 70;
+      else if ([ext isEqualToString:@"ico"]) score += 60;
+      else if ([ext isEqualToString:@"gif"]) score += 50;
+      else if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"]) score += 40;
+      else if ([ext length] == 0) score += 10;
+
+      // Theme boost for hicolor
+      if ([path rangeOfString:@"hicolor" options:NSCaseInsensitiveSearch].location != NSNotFound) score += 50;
+
+      // Pixmaps directory moderate boost
+      if ([path rangeOfString:@"/pixmaps" options:NSCaseInsensitiveSearch].location != NSNotFound) score += 20;
+
+      // Prefer non-symbolic icons a bit
+      if ([[path lastPathComponent] rangeOfString:@"-symbolic" options:NSCaseInsensitiveSearch].location != NSNotFound)
+        score -= 30;
+
+      // Parse size in path like 256x256
+      NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"([0-9]+)x([0-9]+)" options:0 error:NULL];
+      NSTextCheckingResult *m = [re firstMatchInString:path options:0 range:NSMakeRange(0, [path length])];
+      if (m && [m numberOfRanges] >= 3)
+        {
+          NSString *s1 = [path substringWithRange:[m rangeAtIndex:1]];
+          int sizeVal = [s1 intValue];
+          score += sizeVal; // larger size -> higher score
+        }
+
+      // Scalable icons should be treated as high quality
+      if ([path rangeOfString:@"scalable" options:NSCaseInsensitiveSearch].location != NSNotFound)
+        score += 200;
+
+      [scored addObject:@{@"path": path, @"score": @(score)}];
+    }
+
+  // Log candidate scores
+  NSLog(@"Icon candidates and scores for '%@':", iconName);
+  for (NSDictionary *s in scored)
+    {
+      NSLog(@"  %@ -> %@", [s objectForKey:@"path"], [s objectForKey:@"score"]);
+    }
+
+  // Pick the candidate with the highest score
+  NSSortDescriptor *sd = [NSSortDescriptor sortDescriptorWithKey:@"score" ascending:NO];
+  NSArray *sorted = [scored sortedArrayUsingDescriptors:@[sd]];
+  NSDictionary *best = [sorted objectAtIndex:0];
+  NSString *bestPath = [best objectForKey:@"path"];
+
+  NSLog(@"Selected icon for '%@': %@ (reason: highest score)", iconName, bestPath);
+  return bestPath;
 }
 
 - (NSString *)copyIconToBundle:(NSString *)iconPath
@@ -466,32 +1145,85 @@
   NSDictionary *fileAttrs = [fm attributesOfItemAtPath:iconPath error:&error];
   if (!fileAttrs)
     {
-      NSLog(@"Warning: Could not read icon file attributes: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Could not read icon file attributes: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Icon error", msg);
       return nil;
     }
 
   unsigned long long fileSize = [fileAttrs fileSize];
   if (fileSize == 0)
     {
-      NSLog(@"Warning: Icon file is empty (0 bytes): %@", iconPath);
+      NSString *msg = [NSString stringWithFormat:@"Icon file is empty (0 bytes): %@", iconPath];
+      ShowErrorAlert(@"Icon error", msg);
       return nil;
     }
 
   // Get the icon file extension
-  NSString *iconExt = [iconPath pathExtension];
+  NSString *iconExt = [[iconPath pathExtension] lowercaseString];
   if ([iconExt length] == 0)
     {
       iconExt = @"png";
     }
 
-  // Create the destination path with the extension
+  // If the icon is an SVG, try to rasterize to PNG (256x256)
+  if ([iconExt isEqualToString:@"svg"])
+    {
+      NSString *bundleIconPath = [NSString stringWithFormat:@"%@/%@.%@",
+                                 resourcesPath, appName, @"png"];
+
+      // Attempt GNUstep rasterization or external tool fallback
+      if ([self rasterizeSVG:iconPath toPNG:bundleIconPath size:256])
+        {
+          NSDictionary *copiedAttrs = [fm attributesOfItemAtPath:bundleIconPath error:&error];
+          if (copiedAttrs && [copiedAttrs fileSize] > 0)
+            {
+              NSLog(@"Rasterized SVG and wrote PNG to bundle as %@", [bundleIconPath lastPathComponent]);
+              return [bundleIconPath lastPathComponent];
+            }
+          else
+            {
+              NSLog(@"Rasterization produced empty file or failed to write: %@", bundleIconPath);
+              // Fall through to copying original svg file if rasterization failed
+            }
+        }
+      else
+        {
+          NSLog(@"Rasterization failed for %@; will try to copy original SVG into bundle as fallback", iconPath);
+        }
+
+      // As a fallback, copy the original SVG into the resources (so icon still exists)
+      NSString *bundleSVGPath = [NSString stringWithFormat:@"%@/%@.%@", resourcesPath, appName, @"svg"];
+      if ([fm copyItemAtPath:iconPath toPath:bundleSVGPath error:&error])
+        {
+          NSDictionary *copiedAttrs = [fm attributesOfItemAtPath:bundleSVGPath error:&error];
+          if (copiedAttrs && [copiedAttrs fileSize] > 0)
+            {
+              NSLog(@"Copied SVG fallback into bundle as %@", [bundleSVGPath lastPathComponent]);
+              return [bundleSVGPath lastPathComponent];
+            }
+          else
+            {
+              NSLog(@"Copied SVG fallback file is empty, removing: %@", bundleSVGPath);
+              [fm removeItemAtPath:bundleSVGPath error:NULL];
+              return nil;
+            }
+        }
+      else
+        {
+          NSLog(@"Failed to copy SVG fallback into bundle: %@", [error localizedDescription]);
+          return nil;
+        }
+    }
+
+  // Non-SVG: Create the destination path with the extension
   NSString *bundleIconPath = [NSString stringWithFormat:@"%@/%@.%@",
                              resourcesPath, appName, iconExt];
 
   // Copy icon to bundle Resources
   if (![fm copyItemAtPath:iconPath toPath:bundleIconPath error:&error])
     {
-      NSLog(@"Warning: Failed to copy icon: %@", [error localizedDescription]);
+      NSString *msg = [NSString stringWithFormat:@"Failed to copy icon: %@", [error localizedDescription]];
+      ShowErrorAlert(@"Icon error", msg);
       return nil;
     }
 
@@ -499,11 +1231,13 @@
   NSDictionary *copiedAttrs = [fm attributesOfItemAtPath:bundleIconPath error:&error];
   if (!copiedAttrs || [copiedAttrs fileSize] == 0)
     {
-      NSLog(@"Warning: Copied icon file is empty, removing: %@", bundleIconPath);
+      NSString *msg = [NSString stringWithFormat:@"Copied icon file is empty, removing: %@", bundleIconPath];
+      ShowErrorAlert(@"Icon error", msg);
       [fm removeItemAtPath:bundleIconPath error:NULL];
       return nil;
     }
 
+  NSLog(@"Copied icon to bundle as %@", [bundleIconPath lastPathComponent]);
   // Return the filename with extension
   return [bundleIconPath lastPathComponent];
 }
@@ -514,6 +1248,10 @@
 int main(int argc, char *argv[])
 {
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+  // Create a minimal NSApplication to allow AppKit operations (image loading, drawing)
+  [[NSUserDefaults standardUserDefaults] setBool: YES forKey: @"NSApplicationSuppressPSN"];
+  NSApplication *app __attribute__((unused)) = [NSApplication sharedApplication];
 
   if (argc < 2)
     {
@@ -584,8 +1322,8 @@ int main(int argc, char *argv[])
                              attributes:nil
                                   error:&dirError])
         {
-          fprintf(stderr, "Error: Failed to create output directory: %s\n",
-                  [[dirError localizedDescription] UTF8String]);
+          NSString *msg = [NSString stringWithFormat:@"Failed to create output directory: %@", [dirError localizedDescription]];
+          ShowErrorAlert(@"Error", msg);
           [pool release];
           exit(EXIT_FAILURE);
         }
@@ -594,7 +1332,8 @@ int main(int argc, char *argv[])
   // Check if desktop file exists
   if (![fm fileExistsAtPath:desktopFilePath])
     {
-      fprintf(stderr, "Error: Desktop file not found: %s\n", [desktopFilePath UTF8String]);
+      NSString *msg = [NSString stringWithFormat:@"Desktop file not found: %@", desktopFilePath];
+      ShowErrorAlert(@"Error", msg);
       [pool release];
       exit(EXIT_FAILURE);
     }
@@ -603,7 +1342,8 @@ int main(int argc, char *argv[])
   DesktopFileParser *parser = [[DesktopFileParser alloc] initWithFile:desktopFilePath];
   if (!parser)
     {
-      fprintf(stderr, "Error: Failed to parse desktop file\n");
+      NSString *msg = [NSString stringWithFormat:@"Failed to parse desktop file: %@", desktopFilePath];
+      ShowErrorAlert(@"Error", msg);
       [pool release];
       exit(EXIT_FAILURE);
     }
@@ -613,7 +1353,8 @@ int main(int argc, char *argv[])
 
   if (!appName)
     {
-      fprintf(stderr, "Error: Desktop file has no Name field\n");
+      NSString *msg = @"Desktop file has no Name field";
+      ShowErrorAlert(@"Error", msg);
       [pool release];
       exit(EXIT_FAILURE);
     }
@@ -647,8 +1388,8 @@ int main(int argc, char *argv[])
       NSError *error = nil;
       if (![fm removeItemAtPath:bundlePath error:&error])
         {
-          fprintf(stderr, "Error: Failed to remove existing bundle: %s\n",
-                  [[error localizedDescription] UTF8String]);
+          NSString *msg = [NSString stringWithFormat:@"Failed to remove existing bundle: %@", [error localizedDescription]];
+          ShowErrorAlert(@"Error", msg);
           [pool release];
           exit(EXIT_FAILURE);
         }

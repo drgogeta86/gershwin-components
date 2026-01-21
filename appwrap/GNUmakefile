@@ -15,7 +15,7 @@ CC ?= $(shell command -v clang19 2>/dev/null || command -v clang 2>/dev/null || 
 ADDITIONAL_OBJCFLAGS += -Wall -Wextra -Werror -O2
 
 # Link GNUstep Foundation (and GUI if needed)
-ADDITIONAL_LDFLAGS += -lgnustep-base
+ADDITIONAL_LDFLAGS += -lgnustep-base -lgnustep-gui
 
 -include GNUmakefile.preamble
 
