@@ -1,0 +1,15 @@
+{
+    ApplicationDescription = "Process monitor";
+    ApplicationIcon = "Processes.png";
+    ApplicationName = Processes;
+    ApplicationRelease = "1.0";
+    Authors = (
+        "Simon Peter"
+    );
+    Copyright = "Copyright (C) 2026";
+    FullVersionID = "1.0";
+    NSExecutable = Processes;
+    NSIcon = "Processes.png";
+    NSPrincipalClass = NSApplication;
+    NSRole = Application;
+}
