@@ -17,6 +17,7 @@
 @class RoundedCornersView;
 @class ActionSearchMenuView;
 @class StatusItemManager;
+@class WindowMonitor;
 
 @interface MenuController : NSObject <NSApplicationDelegate>
 
@@ -36,11 +37,7 @@
 @property (nonatomic, strong) NSTimer *timeUpdateTimer;
 @property (nonatomic, strong) NSDateFormatter *timeFormatter;
 @property (nonatomic, strong) NSDateFormatter *dateFormatter;
-@property (nonatomic, assign) Display *display;
-@property (nonatomic, assign) Window rootWindow;
-@property (nonatomic, assign) Atom netActiveWindowAtom;
-@property (nonatomic, strong) NSThread *x11Thread;
-@property (nonatomic, assign) BOOL shouldStopMonitoring;
+@property (nonatomic, strong) WindowMonitor *windowMonitor;
 @property (nonatomic, assign) int dbusFileDescriptor;
 @property (nonatomic, strong) NSFileHandle *dbusFileHandle;
 @property (nonatomic, assign) Display *strutDisplay;
@@ -65,7 +62,6 @@
 - (void)announceGlobalMenuSupport;
 - (void)scanForNewMenus;
 - (AppMenuWidget *)appMenuWidget;
-- (void)x11ActiveWindowMonitor;
 
 - (void)createTimeMenu;
 - (void)updateTimeMenu;

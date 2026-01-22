@@ -176,6 +176,9 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         self.currentWindowId = 0;
         self.currentMenu = nil;
         self.fallbackTimers = [NSMutableDictionary dictionary];
+        self.cachedIsWaitingForMenu = YES;
+        self.cachedHasMenu = NO;
+        self.needsRedraw = YES;
         
         // Register this widget for X11 error handling
         [AppMenuWidget setCurrentWidget:self];
@@ -374,6 +377,7 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     }
     
     // Mark that we're waiting for a new menu - don't clear visuals yet
+    BOOL previousWaiting = self.isWaitingForMenu;
     self.isWaitingForMenu = YES;
     NSLog(@"AppMenuWidget: Marked as waiting for menu");
     
@@ -385,10 +389,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         self.systemMenu = nil;
     }
     
-    // Trigger redraw to reflect the waiting state
-    // Only do this if we're not in a half-finished state
-    if (self.window) {
-        [self setNeedsDisplay:YES];
+    // Only redraw if the waiting state actually changed
+    if (previousWaiting != self.isWaitingForMenu) {
+        self.needsRedraw = YES;
+        if (self.window) {
+            [self setNeedsDisplay:YES];
+        }
     }
 }
 
@@ -671,18 +677,28 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         }
         
         // Add comprehensive logging to each menu item
-        // DON'T override target/action for GNUStep menus - they handle their own actions
+        // DON'T override target/action for items that already have proper actions set
         for (NSUInteger i = 0; i < [items count]; i++) {
             NSMenuItem *item = [items objectAtIndex:i];
             NSLog(@"AppMenuWidget: Setting up item %lu: '%@' (submenu: %@, target: %@, action: %@)", 
                   i, [item title], [item hasSubmenu] ? @"YES" : @"NO",
                   [item target], NSStringFromSelector([item action]));
             
-            // Only override target/action for non-GNUStep menus (DBus, GTK)
+            // Skip items that already have a target (they have proper action handlers)
+            // Skip items with submenus (NSMenuView handles their display)
+            // Only set placeholder actions for items without handlers
             if (!isGNUStepMenu && ![item hasSubmenu]) {
-                [item setTarget:self];
-                [item setAction:@selector(menuItemClicked:)];
-                NSLog(@"AppMenuWidget: Set click action for non-submenu item: '%@'", [item title]);
+                if (![item target]) {
+                    // This item doesn't have an action - set our placeholder
+                    NSLog(@"AppMenuWidget: Item '%@' has NO target - setting placeholder action", [item title]);
+                    [item setTarget:self];
+                    [item setAction:@selector(menuItemClicked:)];
+                    NSLog(@"AppMenuWidget: Set placeholder action for item without handler: '%@'", [item title]);
+                } else {
+                    // Item already has a target - preserve it
+                    NSLog(@"AppMenuWidget: Item '%@' already has target '%@' with action '%@' - PRESERVING", 
+                          [item title], [item target], NSStringFromSelector([item action]));
+                }
             }
         }
         
@@ -709,16 +725,22 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     BOOL hasMenu = (self.currentMenu && [[self.currentMenu itemArray] count] > 0);
     BOOL isLoading = self.isWaitingForMenu;
     
-    NSLog(@"AppMenuWidget: drawRect called - hasMenu=%@, isLoading=%@, currentMenu=%@", 
-          hasMenu ? @"YES" : @"NO", isLoading ? @"YES" : @"NO", self.currentMenu);
+    // Check if state changed since last draw
+    if (!self.needsRedraw && self.cachedHasMenu == hasMenu && self.cachedIsWaitingForMenu == isLoading) {
+        // State hasn't changed - skip redraw
+        return;
+    }
+    
+    // Update cache and mark as drawn
+    self.needsRedraw = NO;
+    self.cachedHasMenu = hasMenu;
+    self.cachedIsWaitingForMenu = isLoading;
     
     // If we're waiting for a menu but don't have one yet, keep the old menu visible
     if (!hasMenu && !isLoading) {
         // No menu to display and not waiting - clear the background completely
-        NSLog(@"AppMenuWidget: No menus - clearing background");
         [[NSColor clearColor] set];
         NSRectFill([self bounds]);
-        NSLog(@"AppMenuWidget: Background cleared");
         
         // Hide the menu view when there's no menu
         if (self.menuView) {
@@ -729,8 +751,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     // If waiting for menu, show placeholder or old menu
     if (isLoading && !hasMenu) {
-        NSLog(@"AppMenuWidget: Waiting for real menu content, showing placeholder");
-        
         // Show the placeholder menu if it exists
         if (self.menuView) {
             [self.menuView setHidden:NO];
@@ -739,21 +759,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     }
     
     // Show new menu
-    NSLog(@"AppMenuWidget: Drawing background and content");
-    
     // Show the menu view when there's a menu
     if (self.menuView) {
         [self.menuView setHidden:NO];
     }
     // Don't fill background - let the MenuBarView background show through
     // The menu items themselves will be drawn by the menuView
-    
-    // Draw application name if we have one
-        // We no longer draw the application name text here
-        // It has been replaced by the "Command" menu item
-    
-    NSLog(@"AppMenuWidget: drawRect completed");
-
 }
 
 - (void)checkAndDisplayMenuForNewlyRegisteredWindow:(unsigned long)windowId
@@ -1103,15 +1114,24 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     NSLog(@"AppMenuWidget: Clicked menu item: '%@'", [sender title]);
     NSLog(@"AppMenuWidget: Item tag: %ld", (long)[sender tag]);
     NSLog(@"AppMenuWidget: Item has submenu: %@", [sender hasSubmenu] ? @"YES" : @"NO");
-    NSLog(@"AppMenuWidget: ===== END MENU ITEM CLICKED =====");
     
-    // Forward to the original action if it exists
-    if ([sender respondsToSelector:@selector(representedObject)] && [sender representedObject]) {
-        id originalTarget = [sender representedObject];
-        if ([originalTarget respondsToSelector:@selector(performSelector:withObject:)]) {
-            NSLog(@"AppMenuWidget: Forwarding to original target: %@", originalTarget);
+    // If this item has representedObject data (from protocol handler), try to trigger the action
+    if ([sender representedObject]) {
+        NSLog(@"AppMenuWidget: Item has representedObject: %@", [sender representedObject]);
+        
+        // If the item's original target is set, call its action
+        if ([sender target]) {
+            SEL action = [sender action];
+            if (action && [sender.target respondsToSelector:action]) {
+                NSLog(@"AppMenuWidget: Forwarding action %@ to target: %@", NSStringFromSelector(action), [sender target]);
+                [sender.target performSelector:action withObject:sender];
+                return;
+            }
         }
     }
+    
+    NSLog(@"AppMenuWidget: No action handler found for menu item: '%@'", [sender title]);
+    NSLog(@"AppMenuWidget: ===== END MENU ITEM CLICKED =====");
 }
 
 - (void)debugLogCurrentMenuState
@@ -1404,8 +1424,10 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     NSLog(@"AppMenuWidget: Loading menu for window %lu", windowId);
     
     // Clear the waiting flag - we have a new menu
+    BOOL previousWaiting = self.isWaitingForMenu;
     self.isWaitingForMenu = NO;
     self.currentMenu = menu;
+    self.needsRedraw = YES;  // Mark that we need to redraw with new menu
     
     NSLog(@"AppMenuWidget: ===== MENU LOADED, SETTING UP VIEW =====");
     NSLog(@"AppMenuWidget: Menu has %lu top-level items", (unsigned long)[[menu itemArray] count]);

@@ -18,6 +18,8 @@
 #import "MenuUtils.h"
 #import "StatusItemManager.h"
 #import "StatusItemsView.h"
+#import "WindowMonitor.h"
+#import "AppMenuImporter.h"
 #import "GNUstepGUI/GSTheme.h"
 #import <X11/Xlib.h>
 #import <X11/Xatom.h>
@@ -97,6 +99,11 @@
     if (self) {
         // Initialize trailing-edge debounce properties to prevent infinite loops
         self.lastActiveWindowScanTime = 0;
+        
+        // Initialize window monitor
+        self.windowMonitor = [WindowMonitor sharedMonitor];
+        self.windowMonitor.delegate = (id<WindowMonitorDelegate>)self;
+        
         NSLog(@"MenuController: Controller initialized successfully");
     }
     return self;
@@ -201,31 +208,28 @@
     
     // Register D-Bus service immediately - run loop is active
     NSLog(@"MenuController: Registering D-Bus service now...");
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self registerDBusServiceWhenReady];
-    });
+    
+    // Call directly instead of using dispatch_async - the main queue might not process async blocks reliably
+    [self registerDBusServiceWhenReady];
 }
 
 - (void)registerDBusServiceWhenReady
 {
-    NSLog(@"MenuController: ===== REGISTERING D-BUS SERVICE NOW =====");
+    NSLog(@"MenuController: ===== Registering D-BUS SERVICE =====");
     
     // Get the canonical handler
     id<MenuProtocolHandler> canonicalHandler = [[MenuProtocolManager sharedManager] handlerForType:MenuProtocolTypeCanonical];
     
-    // Register the D-Bus service name immediately - this makes us visible to other applications
-    // No need to process messages first - the file descriptor monitoring handles it
-    NSLog(@"MenuController: Registering D-Bus service name (making Menu visible to clients)...");
     if (canonicalHandler && [canonicalHandler respondsToSelector:@selector(registerService)]) {
-        if ([(id)canonicalHandler registerService]) {
+        BOOL result = [(id)canonicalHandler registerService];
+        
+        if (result) {
             NSLog(@"MenuController: ===== Successfully registered D-Bus service - Menu is now VISIBLE =====");
-            
-            // DO NOT scan for menus here - it causes 15 seconds of blocking!
-            // Menus will be discovered on-demand when windows become active
-            NSLog(@"MenuController: Skipping menu scan at startup - menus discovered on-demand");
         } else {
             NSLog(@"MenuController: Warning - failed to register D-Bus service");
         }
+    } else {
+        NSLog(@"MenuController: WARNING - canonical handler not available or doesn't have registerService");
     }
 }
 
@@ -244,20 +248,10 @@
     NSLog(@"MenuController: Cleaning up global shortcuts...");
     [[X11ShortcutManager sharedManager] cleanup];
     
-    // Signal the X11 monitoring thread to stop
-    self.shouldStopMonitoring = YES;
-    
-    // Wait for the thread to finish (with timeout to avoid hanging)
-    if (self.x11Thread && ![self.x11Thread isFinished]) {
-        // Give the thread a chance to exit gracefully
-        [NSThread sleepForTimeInterval:0.1];
-        
-        if (![self.x11Thread isFinished]) {
-            NSLog(@"MenuController: X11 thread did not exit gracefully");
-        }
-    }
-    
-    self.x11Thread = nil;
+    // Stop window monitoring
+    NSLog(@"MenuController: Stopping window monitoring...");
+    [self.windowMonitor stopMonitoring];
+    self.windowMonitor = nil;
     
     // Clean up persistent strut window
     if (self.strutWindow != None && self.strutDisplay) {
@@ -269,12 +263,6 @@
     if (self.strutDisplay) {
         XCloseDisplay(self.strutDisplay);
         self.strutDisplay = NULL;
-    }
-    
-    // Close X11 display
-    if (self.display) {
-        XCloseDisplay(self.display);
-        self.display = NULL;
     }
     
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -539,42 +527,20 @@
 
 - (void)setupWindowMonitoring
 {
-    // Prevent setting up monitoring multiple times
-    if (self.x11Thread && ![self.x11Thread isFinished]) {
-        NSLog(@"MenuController: X11 monitoring already set up, skipping");
+    NSLog(@"MenuController: Setting up window monitoring");
+    
+    // Start GCD-based window monitoring (event-driven, zero-polling)
+    if ([self.windowMonitor startMonitoring]) {
+        NSLog(@"MenuController: Window monitoring started successfully (GCD-based, event-driven)");
+    } else {
+        NSLog(@"MenuController: ERROR - Failed to start window monitoring");
         return;
     }
     
-    NSLog(@"MenuController: Setting up X11 _NET_ACTIVE_WINDOW monitoring");
+    // Announce global menu support
+    [self announceGlobalMenuSupport];
     
-    // Initialize monitoring flag
-    self.shouldStopMonitoring = NO;
-    
-    // Open X11 display connection
-    self.display = XOpenDisplay(NULL);
-    if (!self.display) {
-        NSLog(@"MenuController: Cannot open X11 display for window monitoring");
-        return;
-    }
-    
-    self.rootWindow = DefaultRootWindow(self.display);
-    self.netActiveWindowAtom = XInternAtom(self.display, "_NET_ACTIVE_WINDOW", False);
-    
-    // Select PropertyNotify events on the root window to detect active window changes
-    XSelectInput(self.display, self.rootWindow, PropertyChangeMask);
-    
-    NSLog(@"MenuController: X11 display opened, monitoring _NET_ACTIVE_WINDOW property changes");
-    
-    // Start X11 event loop in a separate NSThread
-    self.x11Thread = [[NSThread alloc] initWithTarget:self
-                                         selector:@selector(x11ActiveWindowMonitor)
-                                           object:nil];
-    [self.x11Thread setName:@"X11ActiveWindowMonitor"];
-    [self.x11Thread start];
-    
-    NSLog(@"MenuController: X11 monitoring thread started successfully");
-    
-    // Perform initial active window update
+    // Perform initial update
     [self updateActiveWindow];
     
     NSLog(@"MenuController: Window monitoring setup complete");
@@ -661,69 +627,25 @@
     }
 }
 
-- (void)x11ActiveWindowMonitor
+#pragma mark - WindowMonitorDelegate
+
+- (void)activeWindowChanged:(unsigned long)windowId
 {
-    NSLog(@"MenuController: X11 _NET_ACTIVE_WINDOW monitor thread started");
+    NSLog(@"MenuController: Active window changed to 0x%lx", windowId);
     
-    @autoreleasepool {
-        // DO NOT scan for menus at startup - it causes 15 seconds of high CPU usage
-        // Menus will be discovered on-demand when windows become active
-        // This makes startup instant instead of blocking for 15 seconds
+    // Update app menu widget on main thread
+    if (self.appMenuWidget) {
+        [self.appMenuWidget updateForActiveWindow];
         
-        // Schedule desktop menu load on main thread (lightweight operation)
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self loadDesktopMenuIfAvailable];
-        });
-        
-        // Get X11 connection file descriptor
-        int x11_fd = ConnectionNumber(self.display);
-        NSLog(@"MenuController: X11 file descriptor: %d", x11_fd);
-        NSLog(@"MenuController: NOTE - DBus is handled separately via main thread file descriptor monitoring");
-        NSLog(@"MenuController: NOTE - Menu scanning skipped at startup for instant launch");
-        
-        while (!self.shouldStopMonitoring) {
-            // Process X11 events - simpler approach from working commit
-            if (XPending(self.display) > 0) {
-                XEvent event;
-                XNextEvent(self.display, &event);
-                
-                // Check if this is a PropertyNotify event for _NET_ACTIVE_WINDOW
-                if (event.type == PropertyNotify && 
-                    event.xproperty.window == self.rootWindow &&
-                    event.xproperty.atom == self.netActiveWindowAtom) {
-                    
-                    NSLog(@"MenuController: _NET_ACTIVE_WINDOW property changed - active window changed");
-                    
-                    // Update the app menu widget for the new active window
-                    // IMPORTANT: Perform UI updates on main thread to avoid race conditions
-                    if (self.appMenuWidget) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [self.appMenuWidget updateForActiveWindow];
-                            
-                            // After updating for active window, scan for menus
-                            // Applications may register menus after window activation
-                            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-                            if ((now - self.lastActiveWindowScanTime) > 3.0) { // Only scan once every 3 seconds max
-                                NSLog(@"MenuController: Active window changed, triggering scan to discover new menus");
-                                self.lastActiveWindowScanTime = now;
-                                [[MenuProtocolManager sharedManager] scanForExistingMenuServices];
-                            }
-                        });
-                    }
-                }
-            }
-            
-            // D-Bus is handled completely separately via main thread file descriptor monitoring
-            // DO NOT process D-Bus messages here - it causes blocking and high CPU usage
-            // The dbusFileDescriptorReady: notification handler on main thread handles all D-Bus traffic
-            
-            // Always sleep briefly to avoid busy waiting
-            // This prevents 100% CPU usage from the monitoring loop
-            [NSThread sleepForTimeInterval:0.01];
+        // After updating for active window, scan for menus (debounced)
+        // Applications may register menus after window activation
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if ((now - self.lastActiveWindowScanTime) > 3.0) { // Only scan once every 3 seconds max
+            NSLog(@"MenuController: Active window changed, triggering scan to discover new menus");
+            self.lastActiveWindowScanTime = now;
+            [[MenuProtocolManager sharedManager] scanForExistingMenuServices];
         }
     }
-    
-    NSLog(@"MenuController: X11 monitor thread exiting");
 }
 
 - (void)createTimeMenu

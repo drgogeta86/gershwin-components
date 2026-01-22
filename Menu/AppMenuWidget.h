@@ -21,6 +21,9 @@
 @property (nonatomic, strong) NSMenu *currentMenu;
 @property (nonatomic, strong) NSTimer *updateTimer;
 @property (nonatomic, assign) BOOL isWaitingForMenu;
+@property (nonatomic, assign) BOOL cachedIsWaitingForMenu;
+@property (nonatomic, assign) BOOL cachedHasMenu;
+@property (nonatomic, assign) BOOL needsRedraw;
 
 // Delayed fallback timers keyed by window id -> NSTimer
 @property (nonatomic, strong) NSMutableDictionary *fallbackTimers;
