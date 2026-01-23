@@ -23,6 +23,7 @@
     
     NSArray *_sortDescriptors;
     NSMutableDictionary *_prevCpuTimes; // pid -> NSDictionary with keys: @"totalTicks", @"time"
+    BOOL _isRefreshing;
 }
 
 @property (nonatomic, strong) NSMutableArray *processes;
@@ -33,6 +34,9 @@
 - (void)refreshProcesses;
 - (void)startMonitoring;
 - (void)stopMonitoring;
+
+// Returns whether a refresh is currently running
+- (BOOL)isRefreshing;
 
 // UI Actions
 - (IBAction)forceQuitProcess:(id)sender;

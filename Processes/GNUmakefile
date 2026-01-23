@@ -25,7 +25,7 @@ Processes_INFO_PLIST = ProcessesInfo.plist
 Processes_APPLICATION_ICON = Processes.icns
 
 Processes_OBJCFLAGS = -Wall -O2
-Processes_LDFLAGS = -lgnustep-base -lgnustep-gui -Wl,-rpath,/System/Library/Libraries
+Processes_LDFLAGS = -lgnustep-base -lgnustep-gui -ldispatch -Wl,-rpath,/System/Library/Libraries
 
 # Enable ARC for implementation files in this target
 ProcessInfo.m_FILE_FLAGS += -DGS_WITH_ARC=1 -fobjc-arc -fobjc-arc-exceptions

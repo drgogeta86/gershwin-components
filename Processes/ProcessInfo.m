@@ -60,7 +60,11 @@
 - (void)updateCPUAndMemoryWithTotalMemory:(long)totalMemory numCPUs:(int)numCPUs
 {
     // Update CPU percentage from /proc/[pid]/stat on Linux or via sysctl on BSD
+#ifdef __linux__
     unsigned long utime = 0, stime = 0;
+#else
+    (void)0;
+#endif
     
 #ifdef __linux__
     // Linux: Read from /proc/[pid]/stat

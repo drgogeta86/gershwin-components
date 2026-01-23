@@ -11,10 +11,32 @@
 #include <stdint.h>
 #ifndef __linux__
 #import <sys/sysctl.h>
+#ifdef __FreeBSD__
+#import <sys/user.h>
+#endif
 #endif
 #import <unistd.h>
 #import <errno.h>
 #import <sys/wait.h>
+#import <string.h>
+
+// Simple logging macro for this module
+// Logging macros: PC_INFO is always enabled; PC_DBG is enabled only when PROCESSES_DEBUG is set to 1
+#ifndef PROCESSES_DEBUG
+#define PROCESSES_DEBUG 0
+#endif
+
+#ifndef PC_INFO
+#define PC_INFO(fmt, ...) NSLog((@"[Processes] " fmt), ##__VA_ARGS__)
+#endif
+
+#ifndef PC_DBG
+#if PROCESSES_DEBUG
+#define PC_DBG(fmt, ...) NSLog((@"[Processes] " fmt), ##__VA_ARGS__)
+#else
+#define PC_DBG(fmt, ...) ((void)0)
+#endif
+#endif
 
 // Helper function to get total system memory in KB
 static long getTotalSystemMemoryKB(void) {
@@ -131,155 +153,408 @@ static ProcessesController *sharedController = nil;
     }
 }
 
+- (BOOL)isRefreshing
+{
+    return _isRefreshing;
+}
+
 - (void)refreshProcesses
 {
-    [_processesLock lock];
-    [_processes removeAllObjects];
-    
-    // Get system info for calculations
-    long totalMemory = getTotalSystemMemoryKB();
-    
-    DIR *procDir = opendir("/proc");
-    if (procDir) {
-        struct dirent *entry;
-        while ((entry = readdir(procDir)) != NULL) {
-            // Check if entry is a number (PID)
-            char *endptr;
-            int pid = (int)strtol(entry->d_name, &endptr, 10);
-            if (*endptr == '\0' && pid > 0) {
-                // Read /proc/pid/stat
-                char statPath[256];
-                snprintf(statPath, sizeof(statPath), "/proc/%d/stat", pid);
-                
-                FILE *statFile = fopen(statPath, "r");
-                if (statFile) {
-                    char statLine[1024];
-                    if (fgets(statLine, sizeof(statLine), statFile)) {
-                        ProcessInfo *info = [[ProcessInfo alloc] init];
-                        info.pid = pid;
-                        
-                        // Parse stat line: pid (comm) state ppid ... uid vsize rss ...
-                        char comm[256];
-                        
-                        // Simplified parsing - find the fields we need
-                        int parsedPid, parsedPpid;
-                        unsigned long parsedVsize, parsedRss;
-                        char parsedState;
-                        sscanf(statLine, "%d (%[^)]) %c %d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*d %*d %*d %*d %*d %*d %*u %*u %*d %*u %lu %lu", 
-                               &parsedPid, comm, &parsedState, &parsedPpid, &parsedVsize, &parsedRss);
-                        
-                        info.pid = parsedPid;
-                        info.ppid = parsedPpid;
-                        info.state = [NSString stringWithFormat:@"%c", parsedState];
-                        // Parse fields after the closing parenthesis in /proc/[pid]/stat
-                        char *rparen = strrchr(statLine, ')');
-                        unsigned long utime = 0, stime = 0;
-                        unsigned long parsedVsizeUL = 0;
-                        long parsedRssLong = 0;
-                        int parsedPpidLocal = 0;
-                        if (rparen) {
-                            char *rest = rparen + 2; // skip ") "
-                            int field = 1;
-                            char *saveptr = NULL;
-                            char *token = strtok_r(rest, " ", &saveptr);
-                            while (token) {
-                                if (field == 1) {
-                                    // state
-                                } else if (field == 2) {
-                                    parsedPpidLocal = atoi(token);
-                                } else if (field == 12) {
-                                    utime = strtoul(token, NULL, 10);
-                                } else if (field == 13) {
-                                    stime = strtoul(token, NULL, 10);
-                                } else if (field == 21) {
-                                    parsedVsizeUL = strtoul(token, NULL, 10);
-                                } else if (field == 22) {
-                                    parsedRssLong = atol(token);
-                                    break; // we have what we need
-                                }
-                                token = strtok_r(NULL, " ", &saveptr);
-                                field++;
-                            }
-                        }
+    // Don't re-enter a refresh if one is already running
+    if (_isRefreshing) {
+        return;
+    }
+    _isRefreshing = YES;
+    PC_INFO(@"refreshProcesses entered");
 
-                        info.pid = parsedPid;
-                        info.ppid = parsedPpidLocal ? parsedPpidLocal : parsedPpid;
-                        info.state = [NSString stringWithFormat:@"%c", parsedState];
-                        long pageSize = sysconf(_SC_PAGESIZE);
-                        info.virtualMemory = parsedVsizeUL / 1024; // KB
-                        info.residentMemory = (parsedRssLong * pageSize) / 1024; // convert pages -> KB
-                        
-                        // Read command line
-                        char cmdPath[256];
-                        snprintf(cmdPath, sizeof(cmdPath), "/proc/%d/cmdline", pid);
-                        FILE *cmdFile = fopen(cmdPath, "r");
-                        if (cmdFile) {
-                            char cmdLine[1024];
-                            size_t len = fread(cmdLine, 1, sizeof(cmdLine) - 1, cmdFile);
-                            if (len > 0) {
-                                cmdLine[len] = '\0';
-                                // Replace null bytes with spaces
-                                for (size_t i = 0; i < len; i++) {
-                                    if (cmdLine[i] == '\0') cmdLine[i] = ' ';
+    // Snapshot previous CPU times safely
+    NSMutableDictionary *prevCpuSnapshot = nil;
+    [_processesLock lock];
+    prevCpuSnapshot = [NSMutableDictionary dictionaryWithDictionary:_prevCpuTimes];
+    [_processesLock unlock];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        PC_DBG(@"background worker started");
+        PC_DBG(@"background refresh starting");
+        NSMutableArray *newProcesses = [[NSMutableArray alloc] init];
+        NSMutableDictionary *updatedCpuTimes = [NSMutableDictionary dictionaryWithDictionary:prevCpuSnapshot];
+
+        // Get system info for calculations
+        long totalMemory = getTotalSystemMemoryKB();
+        PC_DBG(@"totalMemoryKB=%ld", totalMemory);
+
+        DIR *procDir = opendir("/proc");
+        if (procDir) {
+            PC_DBG(@"Using /proc for enumeration");
+            struct dirent *entry;
+            int procDirEntries = 0;
+            int procAdded = 0;
+#if !PROCESSES_DEBUG
+            (void)procDirEntries; (void)procAdded;
+#endif
+            NSTimeInterval startTime = [[NSDate date] timeIntervalSince1970];
+            double maxDuration = 3.0; // seconds
+            while ((entry = readdir(procDir)) != NULL) {
+                procDirEntries++;
+                // Stop if we've been running for too long to avoid pegging CPU
+                if (([[NSDate date] timeIntervalSince1970] - startTime) > maxDuration) {
+                    break;
+                }
+                // Check if entry is a number (PID)
+                char *endptr;
+                int pid = (int)strtol(entry->d_name, &endptr, 10);
+                if (*endptr == '\0' && pid > 0) {
+                    // Read /proc/pid/stat
+                    char statPath[256];
+                    snprintf(statPath, sizeof(statPath), "/proc/%d/stat", pid);
+
+                    FILE *statFile = fopen(statPath, "r");
+                    if (statFile) {
+                        char statLine[1024];
+                        if (fgets(statLine, sizeof(statLine), statFile)) {
+                            ProcessInfo *info = [[ProcessInfo alloc] init];
+                            info.pid = pid;
+
+                            // Parse stat line: pid (comm) state ppid ... uid vsize rss ...
+                            char comm[256];
+
+                            // Simplified parsing - find the fields we need
+                            int parsedPid, parsedPpid;
+                            unsigned long parsedVsize, parsedRss;
+                            char parsedState;
+                            sscanf(statLine, "%d (%[^)]) %c %d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*d %*d %*d %*d %*d %*d %*u %*u %*d %*u %lu %lu", 
+                                   &parsedPid, comm, &parsedState, &parsedPpid, &parsedVsize, &parsedRss);
+
+                            info.pid = parsedPid;
+                            info.ppid = parsedPpid;
+                            info.state = [NSString stringWithFormat:@"%c", parsedState];
+                            // Parse fields after the closing parenthesis in /proc/[pid]/stat
+                            char *rparen = strrchr(statLine, ')');
+                            unsigned long utime = 0, stime = 0;
+                            unsigned long parsedVsizeUL = 0;
+                            long parsedRssLong = 0;
+                            int parsedPpidLocal = 0;
+                            if (rparen) {
+                                char *rest = rparen + 2; // skip ") "
+                                int field = 1;
+                                char *saveptr = NULL;
+                                char *token = strtok_r(rest, " ", &saveptr);
+                                while (token) {
+                                    if (field == 1) {
+                                        // state
+                                    } else if (field == 2) {
+                                        parsedPpidLocal = atoi(token);
+                                    } else if (field == 12) {
+                                        utime = strtoul(token, NULL, 10);
+                                    } else if (field == 13) {
+                                        stime = strtoul(token, NULL, 10);
+                                    } else if (field == 21) {
+                                        parsedVsizeUL = strtoul(token, NULL, 10);
+                                    } else if (field == 22) {
+                                        parsedRssLong = atol(token);
+                                        break; // we have what we need
+                                    }
+                                    token = strtok_r(NULL, " ", &saveptr);
+                                    field++;
                                 }
-                                info.command = [NSString stringWithUTF8String:cmdLine];
                             }
-                            fclose(cmdFile);
-                        }
-                        
-                        if (!info.command || [info.command length] == 0) {
-                            info.command = [NSString stringWithUTF8String:comm];
-                        }
-                        
-                        // Compute CPU% using previous samples
-                        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-                        unsigned long totalTicks = utime + stime;
-                        NSString *pidKey = [NSString stringWithFormat:@"%d", info.pid];
-                        NSDictionary *prev = [_prevCpuTimes objectForKey:pidKey];
-                        float cpuPercent = 0.0;
-                        long ticksPerSec = sysconf(_SC_CLK_TCK);
-                        if (prev) {
-                            unsigned long prevTicks = [[prev objectForKey:@"totalTicks"] unsignedLongValue];
-                            NSTimeInterval prevTime = [[prev objectForKey:@"time"] doubleValue];
-                            NSTimeInterval dt = now - prevTime;
-                            if (dt > 0 && totalTicks >= prevTicks) {
-                                double dTicks = (double)(totalTicks - prevTicks);
-                                double dSeconds = dTicks / (double)ticksPerSec;
-                                cpuPercent = (float)((dSeconds / dt) * 100.0);
-                                if (cpuPercent < 0) cpuPercent = 0.0;
+
+                            info.pid = parsedPid;
+                            info.ppid = parsedPpidLocal ? parsedPpidLocal : parsedPpid;
+                            info.state = [NSString stringWithFormat:@"%c", parsedState];
+                            long pageSize = sysconf(_SC_PAGESIZE);
+                            info.virtualMemory = parsedVsizeUL / 1024; // KB
+                            info.residentMemory = (parsedRssLong * pageSize) / 1024; // convert pages -> KB
+
+                            // Read command line
+                            char cmdPath[256];
+                            snprintf(cmdPath, sizeof(cmdPath), "/proc/%d/cmdline", pid);
+                            FILE *cmdFile = fopen(cmdPath, "r");
+                            if (cmdFile) {
+                                char cmdLine[1024];
+                                size_t len = fread(cmdLine, 1, sizeof(cmdLine) - 1, cmdFile);
+                                if (len > 0) {
+                                    cmdLine[len] = '\0';
+                                    // Replace null bytes with spaces
+                                    for (size_t i = 0; i < len; i++) {
+                                        if (cmdLine[i] == '\0') cmdLine[i] = ' ';
+                                    }
+                                    info.command = [NSString stringWithUTF8String:cmdLine];
+                                }
+                                fclose(cmdFile);
                             }
+
+                            if (!info.command || [info.command length] == 0) {
+                                info.command = [NSString stringWithUTF8String:comm];
+                            }
+
+                            // Compute CPU% using previous samples
+                            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                            unsigned long totalTicks = utime + stime;
+                            NSString *pidKey = [NSString stringWithFormat:@"%d", info.pid];
+                            NSDictionary *prev = [prevCpuSnapshot objectForKey:pidKey];
+                            float cpuPercent = 0.0;
+                            long ticksPerSec = sysconf(_SC_CLK_TCK);
+                            if (prev) {
+                                unsigned long prevTicks = [[prev objectForKey:@"totalTicks"] unsignedLongValue];
+                                NSTimeInterval prevTime = [[prev objectForKey:@"time"] doubleValue];
+                                NSTimeInterval dt = now - prevTime;
+                                if (dt > 0 && totalTicks >= prevTicks) {
+                                    double dTicks = (double)(totalTicks - prevTicks);
+                                    double dSeconds = dTicks / (double)ticksPerSec;
+                                    cpuPercent = (float)((dSeconds / dt) * 100.0);
+                                    if (cpuPercent < 0) cpuPercent = 0.0;
+                                }
+                            }
+                            NSDictionary *sample = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithUnsignedLong:totalTicks], @"totalTicks", [NSNumber numberWithDouble:now], @"time", nil];
+                            [updatedCpuTimes setObject:sample forKey:pidKey];
+                            info.cpu = cpuPercent;
+
+                            // Memory percentage
+                            if (totalMemory > 0) {
+                                long rss_kb = info.residentMemory; // already KB
+                                info.memory = (float)(rss_kb * 100.0 / totalMemory);
+                            } else {
+                                info.memory = 0.0;
+                            }
+
+                            info.user = @"unknown"; // Would need to read uid and map to username
+
+                            [newProcesses addObject:info];
+                            procAdded++;
                         }
-                        // Store this sample for next round
-                        NSDictionary *sample = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithUnsignedLong:totalTicks], @"totalTicks", [NSNumber numberWithDouble:now], @"time", nil];
-                        [_prevCpuTimes setObject:sample forKey:pidKey];
-                        info.cpu = cpuPercent;
-                        
-                        // Memory percentage
-                        if (totalMemory > 0) {
-                            long rss_kb = info.residentMemory; // already KB
-                            info.memory = (float)(rss_kb * 100.0 / totalMemory);
-                        } else {
-                            info.memory = 0.0;
-                        }
-                        
-                        info.user = @"unknown"; // Would need to read uid and map to username
-                        
-                        [_processes addObject:info];
+                        fclose(statFile);
                     }
-                    fclose(statFile);
                 }
             }
-        }
-        closedir(procDir);
-    }
-    
-    [_processesLock unlock];
-    
+            PC_DBG(@"/proc scanned entries=%d added=%d", procDirEntries, procAdded);
+            if ([newProcesses count] == 0) {
+                PC_INFO(@"/proc scan yielded no processes; attempting sysctl fallback");
+                // Fall back to sysctl on FreeBSD when /proc yields nothing
+#if defined(__FreeBSD__)
+                int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+                size_t len2 = 0;
+                if (sysctl(mib, 4, NULL, &len2, NULL, 0) == 0 && len2 > 0) {
+                    struct kinfo_proc *procs2 = malloc(len2);
+                    if (procs2) {
+                        if (sysctl(mib, 4, procs2, &len2, NULL, 0) == 0) {
+                            int count2 = (int)(len2 / sizeof(struct kinfo_proc));
+                            PC_DBG(@"sysctl returned %d entries (fallback)", count2);
+                            long pageSize2 = sysconf(_SC_PAGESIZE);
+                            long ticksPerSec2 = sysconf(_SC_CLK_TCK);
+                            for (int i = 0; i < count2; i++) {
+                                struct kinfo_proc *p = &procs2[i];
+                                ProcessInfo *info = [[ProcessInfo alloc] init];
+                                info.pid = p->ki_pid;
+                                info.ppid = p->ki_ppid;
+                                info.command = (p->ki_comm[0] != '\0') ? [NSString stringWithUTF8String:p->ki_comm] : @"";
+                                struct passwd *pw = getpwuid(p->ki_uid);
+                                if (pw) info.user = [NSString stringWithUTF8String:pw->pw_name]; else info.user = @"unknown";
+                                info.residentMemory = (long)((long)p->ki_rssize * pageSize2 / 1024); // KB
+                                info.virtualMemory = (long)(p->ki_size / 1024);
+                                // CPU
+                                unsigned long utime_ticks = (unsigned long)(p->ki_rusage.ru_utime.tv_sec * ticksPerSec2 + p->ki_rusage.ru_utime.tv_usec * ticksPerSec2 / 1000000);
+                                unsigned long stime_ticks = (unsigned long)(p->ki_rusage.ru_stime.tv_sec * ticksPerSec2 + p->ki_rusage.ru_stime.tv_usec * ticksPerSec2 / 1000000);
+                                unsigned long totalTicks = utime_ticks + stime_ticks;
+                                NSTimeInterval now2 = [[NSDate date] timeIntervalSince1970];
+                                NSString *pidKey2 = [NSString stringWithFormat:@"%d", info.pid];
+                                NSDictionary *prev2 = [prevCpuSnapshot objectForKey:pidKey2];
+                                float cpuPercent2 = 0.0;
+                                if (prev2) {
+                                    unsigned long prevTicks = [[prev2 objectForKey:@"totalTicks"] unsignedLongValue];
+                                    NSTimeInterval prevTime = [[prev2 objectForKey:@"time"] doubleValue];
+                                    NSTimeInterval dt = now2 - prevTime;
+                                    if (dt > 0 && totalTicks >= prevTicks) {
+                                        double dTicks = (double)(totalTicks - prevTicks);
+                                        double dSeconds = dTicks / (double)ticksPerSec2;
+                                        cpuPercent2 = (float)((dSeconds / dt) * 100.0);
+                                        if (cpuPercent2 < 0) cpuPercent2 = 0.0;
+                                    }
+                                }
+                                NSDictionary *sample2 = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithUnsignedLong:totalTicks], @"totalTicks", [NSNumber numberWithDouble:now2], @"time", nil];
+                                [updatedCpuTimes setObject:sample2 forKey:pidKey2];
+                                info.cpu = cpuPercent2;
+                                if (totalMemory > 0) info.memory = (float)(info.residentMemory * 100.0 / totalMemory); else info.memory = 0.0;
+                                [newProcesses addObject:info];
+                            }
+                        } else {
+                            PC_INFO(@"sysctl second call failed (fallback)");
+                        }
+                        free(procs2);
+                    } else {
+                        PC_INFO(@"Failed to allocate memory for process list (fallback)");
+                    }
+                } else {
+                    PC_INFO(@"Failed to get process buffer size via sysctl or no processes found (fallback)");
+                }
+#endif
+            }
 
-    
+            // If both /proc and sysctl fail to yield processes, fallback to parsing `ps aux`
+            if ([newProcesses count] == 0) {
+                PC_INFO(@"Falling back to parsing `ps aux`");
+                FILE *ps = popen("ps aux", "r");
+                if (ps) {
+                    char line[2048];
+                    // Skip header
+                    if (fgets(line, sizeof(line), ps)) {
+                        // header line skipped
+                    }
+                    while (fgets(line, sizeof(line), ps)) {
+                        // Trim newline
+                        size_t l = strlen(line);
+                        if (l > 0 && line[l-1] == '\n') line[l-1] = '\0';
+                        @autoreleasepool {
+                            NSString *s = [NSString stringWithUTF8String:line];
+                            ProcessInfo *pi = [[ProcessInfo alloc] initWithPsLine:s];
+                            if (pi && pi.pid > 0) {
+                                [newProcesses addObject:pi];
+                            }
+                        }
+                    }
+                    pclose(ps);
+                    PC_INFO(@"ps aux fallback added %lu processes", (unsigned long)[newProcesses count]);
+                } else {
+                    PC_INFO(@"ps aux popen failed");
+                }
+            }
+
+            closedir(procDir);
+        } else {
+#if defined(__FreeBSD__)
+            // /proc not available - use sysctl on FreeBSD
+            PC_DBG(@"/proc not available - attempting sysctl KERN_PROC_ALL");
+            int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+            size_t len = 0;
+            if (sysctl(mib, 4, NULL, &len, NULL, 0) == 0 && len > 0) {
+                struct kinfo_proc *procs = malloc(len);
+                if (procs) {
+                    if (sysctl(mib, 4, procs, &len, NULL, 0) == 0) {
+                        int count = (int)(len / sizeof(struct kinfo_proc));
+                        PC_DBG(@"sysctl returned %d entries", count);
+                        long pageSize = sysconf(_SC_PAGESIZE);
+                        long ticksPerSec = sysconf(_SC_CLK_TCK);
+                        for (int i = 0; i < count; i++) {
+                            struct kinfo_proc *p = &procs[i];
+                            ProcessInfo *info = [[ProcessInfo alloc] init];
+                            info.pid = p->ki_pid;
+                            info.ppid = p->ki_ppid;
+
+                            // Command
+                            if (p->ki_comm[0] != '\0') {
+                                info.command = [NSString stringWithUTF8String:p->ki_comm];
+                            } else {
+                                info.command = @"";
+                            }
+
+                            // User
+                            struct passwd *pw = getpwuid(p->ki_uid);
+                            if (pw) info.user = [NSString stringWithUTF8String:pw->pw_name];
+                            else info.user = @"unknown";
+
+                            // Memory
+                            info.residentMemory = (long)((long)p->ki_rssize * pageSize / 1024); // KB
+                            info.virtualMemory = (long)(p->ki_size / 1024);
+
+                            // State
+                            char stateChar = '?';
+                            switch (p->ki_stat) {
+                                case SZOMB: stateChar = 'Z'; break;
+                                case SSTOP: stateChar = 'T'; break;
+                                case SRUN: stateChar = 'R'; break;
+                                case SSLEEP: stateChar = 'S'; break;
+                                default: stateChar = 'R'; break;
+                            }
+                            info.state = [NSString stringWithFormat:@"%c", stateChar];
+
+                            // CPU: use ki_rusage (utime + stime)
+                            unsigned long utime_ticks = (unsigned long)(p->ki_rusage.ru_utime.tv_sec * ticksPerSec + p->ki_rusage.ru_utime.tv_usec * ticksPerSec / 1000000);
+                            unsigned long stime_ticks = (unsigned long)(p->ki_rusage.ru_stime.tv_sec * ticksPerSec + p->ki_rusage.ru_stime.tv_usec * ticksPerSec / 1000000);
+                            unsigned long totalTicks = utime_ticks + stime_ticks;
+
+                            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                            NSString *pidKey = [NSString stringWithFormat:@"%d", info.pid];
+                            NSDictionary *prev = [prevCpuSnapshot objectForKey:pidKey];
+                            float cpuPercent = 0.0;
+                            if (prev) {
+                                unsigned long prevTicks = [[prev objectForKey:@"totalTicks"] unsignedLongValue];
+                                NSTimeInterval prevTime = [[prev objectForKey:@"time"] doubleValue];
+                                NSTimeInterval dt = now - prevTime;
+                                if (dt > 0 && totalTicks >= prevTicks) {
+                                    double dTicks = (double)(totalTicks - prevTicks);
+                                    double dSeconds = dTicks / (double)ticksPerSec;
+                                    cpuPercent = (float)((dSeconds / dt) * 100.0);
+                                    if (cpuPercent < 0) cpuPercent = 0.0;
+                                }
+                            }
+                            NSDictionary *sample = [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithUnsignedLong:totalTicks], @"totalTicks", [NSNumber numberWithDouble:now], @"time", nil];
+                            [updatedCpuTimes setObject:sample forKey:pidKey];
+                            info.cpu = cpuPercent;
+
+                            // Memory percentage
+                            if (totalMemory > 0) {
+                                info.memory = (float)(info.residentMemory * 100.0 / totalMemory);
+                            } else {
+                                info.memory = 0.0;
+                            }
+
+                            [newProcesses addObject:info];
+                        }
+                    } else {
+                        PC_INFO(@"sysctl second call failed");
+                    }
+                    free(procs);
+                } else {
+                    PC_INFO(@"Failed to allocate memory for process list");
+                }
+            } else {
+                PC_INFO(@"Failed to get process buffer size via sysctl or no processes found");
+            }
+#endif
+        }
+
+        // Apply results on main thread (or directly if app not running)
+        if ([NSApp isRunning]) {
+            PC_DBG(@"scheduling apply-results on main thread newProcesses=%lu", (unsigned long)[newProcesses count]);
+            NSDictionary *payload = [NSDictionary dictionaryWithObjectsAndKeys:newProcesses, @"new", updatedCpuTimes, @"updated", nil];
+            [self performSelectorOnMainThread:@selector(_applyResultsOnMainThread:) withObject:payload waitUntilDone:NO];
+        } else {
+            // No runloop -> apply synchronously
+            [_processesLock lock];
+            PC_DBG(@"applying results synchronously (no runloop) newProcesses=%lu", (unsigned long)[newProcesses count]);
+            [_processes removeAllObjects];
+            [_processes addObjectsFromArray:newProcesses];
+            _prevCpuTimes = updatedCpuTimes;
+            [_processesLock unlock];
+
+            [_processesTableView reloadData];
+
+            [self sortProcesses];
+
+            _isRefreshing = NO;
+        }
+    });
+}
+
+- (void)_applyResultsOnMainThread:(NSDictionary *)payload
+{
+    NSArray *newProcesses = [payload objectForKey:@"new"];
+    NSDictionary *updatedCpuTimes = [payload objectForKey:@"updated"];
+    PC_DBG(@"_applyResultsOnMainThread entered newProcesses=%lu", (unsigned long)[newProcesses count]);
+
+    [_processesLock lock];
+    [_processes removeAllObjects];
+    [_processes addObjectsFromArray:newProcesses];
+    _prevCpuTimes = [NSMutableDictionary dictionaryWithDictionary:updatedCpuTimes];
+    [_processesLock unlock];
+
     [_processesTableView reloadData];
-    
+
+    PC_INFO(@"applied newProcesses count=%lu (from _applyResultsOnMainThread)", (unsigned long)[_processes count]);
+
     [self sortProcesses];
+
+    _isRefreshing = NO;
 }
 
 - (IBAction)forceQuitProcess:(id)sender
@@ -335,6 +610,7 @@ static ProcessesController *sharedController = nil;
     [_processesLock lock];
     NSInteger count = [_processes count];
     [_processesLock unlock];
+    PC_DBG(@"numberOfRowsInTableView returning %ld", (long)count);
     return count;
 }
 
@@ -450,12 +726,18 @@ static ProcessesController *sharedController = nil;
 // NSApplicationDelegate
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
+    PC_INFO(@"applicationDidFinishLaunching start");
     [self createUI];
+    PC_INFO(@"created UI");
     [self startMonitoring];
+    PC_INFO(@"started monitoring");
     [_mainWindow makeKeyAndOrderFront:self];
     
-    // Delay refresh to avoid race conditions
-    [self performSelector:@selector(refreshProcesses) withObject:nil afterDelay:0.5];
+    // Force a couple of refresh attempts to ensure background worker runs
+    [self performSelector:@selector(refreshProcesses) withObject:nil afterDelay:0.1];
+    [self performSelector:@selector(refreshProcesses) withObject:nil afterDelay:1.0];
+    // Also call refresh synchronously once as a last resort
+    [self refreshProcesses];
 }
 
 - (void)createUI
@@ -519,7 +801,16 @@ static ProcessesController *sharedController = nil;
     
     [scrollView setDocumentView:_processesTableView];
     [[_mainWindow contentView] addSubview:scrollView];
-    
+
+#if PROCESSES_DEBUG
+    // Diagnostic: log frames and column count to ensure table is visible and sized correctly
+    NSString *svFrameStr = NSStringFromRect([scrollView frame]);
+    NSString *tvFrameStr = NSStringFromRect([_processesTableView frame]);
+    PC_DBG(@"createUI: scrollView frame=%s table frame=%s columns=%lu", [svFrameStr UTF8String], [tvFrameStr UTF8String], (unsigned long)[[_processesTableView tableColumns] count]);
+#else
+    (void)scrollView; (void)_processesTableView;
+#endif
+
     // Buttons removed as requested
     
     // Create drawer - temporarily disabled to debug crash
