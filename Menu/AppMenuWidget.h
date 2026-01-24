@@ -36,7 +36,9 @@
 @property (nonatomic, assign) NSTimeInterval lastSystemMenuUpdateTime;
 
 - (void)updateForActiveWindow;
+- (void)updateForActiveWindowId:(unsigned long)windowId;
 - (void)clearMenu;
+- (void)clearMenuAndHideView;
 - (void)displayMenuForWindow:(unsigned long)windowId;
 - (void)setupMenuViewWithMenu:(NSMenu *)menu;
 - (void)loadMenu:(NSMenu *)menu forWindow:(unsigned long)windowId;

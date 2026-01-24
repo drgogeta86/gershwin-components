@@ -104,7 +104,7 @@
         self.windowMonitor = [WindowMonitor sharedMonitor];
         self.windowMonitor.delegate = (id<WindowMonitorDelegate>)self;
         
-        NSLog(@"MenuController: Controller initialized successfully");
+        NSLog(@"MenuController: Controller initialized successfully. Active window: 0x%lx", (unsigned long)[self.windowMonitor currentActiveWindow]);
     }
     return self;
 }
@@ -225,6 +225,13 @@
         
         if (result) {
             NSLog(@"MenuController: ===== Successfully registered D-Bus service - Menu is now VISIBLE =====");
+            // Advertise global menu support via X11 so applications know to register their menus
+            BOOL advertised = [MenuUtils advertiseGlobalMenuSupport];
+            if (advertised) {
+                NSLog(@"MenuController: Advertised global menu support on X11 root window");
+            } else {
+                NSLog(@"MenuController: Failed to advertise global menu support on X11 root window");
+            }
         } else {
             NSLog(@"MenuController: Warning - failed to register D-Bus service");
         }
@@ -388,7 +395,6 @@
     // Finally add rounded corners on top of everything
     [[self.menuBar contentView] addSubview:self.roundedCornersView];
 
-    
     // Show the window and slide it in from above with animation
     [self.menuBar makeKeyAndOrderFront:self];
     [self.menuBar orderFront:self];
@@ -537,13 +543,128 @@
         return;
     }
     
-    // Announce global menu support
+        // Observe active window changes via notification as a robust fallback
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                                                         selector:@selector(activeWindowChangedNotification:)
+                                                                                                 name:WindowMonitorActiveWindowChangedNotification
+                                                                                             object:nil];
+
+        // Announce global menu support
     [self announceGlobalMenuSupport];
     
     // Perform initial update
     [self updateActiveWindow];
+
+    // Initialize clear/last-cleared tracking to throttle repeated clears
+    self.lastClearedWindowId = 0;
+    self.lastClearedTime = 0;
+
+    // Start watchdog timer to validate active window and clear menus for closed windows
+    // Use a less aggressive interval to reduce spurious exception noise when underlying queries misbehave
+self.windowValidationTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                                  target:self
+                                                                selector:@selector(windowValidationTick:)
+                                                                userInfo:nil
+                                                                 repeats:YES];
     
     NSLog(@"MenuController: Window monitoring setup complete");
+}
+
+- (void)activeWindowChangedNotification:(NSNotification *)notification
+{
+    NSNumber *lostIdNum = notification.userInfo[@"lostWindowId"];
+    if (lostIdNum) {
+        unsigned long lostId = [lostIdNum unsignedLongValue];
+        if (self.appMenuWidget && self.appMenuWidget.currentWindowId == lostId) {
+            NSLog(@"MenuController: Currently shown window 0x%lx was explicitly lost (destroyed/unmapped) - clearing menu", lostId);
+            [self.appMenuWidget clearMenuAndHideView];
+        }
+    }
+
+    // Check if we are currently showing a menu for a window that is no longer mapped.
+    // This handles the case where a window closes but the active window property hasn't updated yet.
+    if (self.appMenuWidget && self.appMenuWidget.currentWindowId != 0) {
+        if (![MenuUtils isWindowMapped:self.appMenuWidget.currentWindowId]) {
+            NSLog(@"MenuController: Currently shown window 0x%lx is no longer mapped - clearing menu", self.appMenuWidget.currentWindowId);
+            [self.appMenuWidget clearMenuAndHideView];
+        }
+    }
+
+    NSNumber *windowIdNum = notification.userInfo[@"windowId"];
+    unsigned long windowId = windowIdNum ? [windowIdNum unsignedLongValue] : 0;
+    
+    self.lastProcessedWindowId = windowId;
+    self.lastProcessedTime = [[NSDate date] timeIntervalSince1970];
+
+    // If there is no active window (0),
+    // clear and hide the menu immediately to avoid showing stale menus.
+    if (windowId == 0) {
+        NSLog(@"MenuController: Active window is nil (0x0) - clearing menu and hiding view");
+        if (self.appMenuWidget) {
+            [self.appMenuWidget clearMenuAndHideView];
+            // Record last cleared info
+            self.lastClearedWindowId = windowId;
+            self.lastClearedTime = [[NSDate date] timeIntervalSince1970];
+            self.lastClearSuppressUntil = 0; // Disable suppression
+        }
+        return;
+    }
+
+    NSLog(@"MenuController: Active window changed (notification) to 0x%lx", windowId);
+
+    if (self.appMenuWidget) {
+        [self.appMenuWidget updateForActiveWindowId:windowId];
+    }
+}
+
+- (void)windowValidationTick:(NSTimer *)timer
+{
+    @try {
+        // Safety watchdog running on main thread to ensure menus are hidden when their windows disappear
+        unsigned long activeWindow = 0;
+        // Prefer asking the WindowMonitor for the active window (safe, single-threaded X11 access)
+        if ([[WindowMonitor sharedMonitor] respondsToSelector:@selector(getActiveWindow)]) {
+            @try {
+                activeWindow = [[WindowMonitor sharedMonitor] getActiveWindow];
+            }
+            @catch (NSException *ex) {
+                NSLog(@"MenuController: WindowMonitor getActiveWindow threw exception: %@ - treating as no active window", ex);
+                activeWindow = 0;
+            }
+        } else {
+            NSDebugLog(@"MenuController: WindowMonitor does not implement getActiveWindow - falling back to 0");
+        }
+
+        if (!self.appMenuWidget) return;
+
+        unsigned long shownWindow = self.appMenuWidget.currentWindowId;
+        if (shownWindow == 0) return; // no menu shown
+
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+        // If the shown window is no longer valid or no longer mapped, clear and hide the menu
+        if (![MenuUtils isWindowValid:shownWindow] || ![MenuUtils isWindowMapped:shownWindow]) {
+            NSLog(@"MenuController: Watchdog detected invalid/closed window 0x%lx - clearing menu", shownWindow);
+            [self.appMenuWidget clearMenuAndHideView];
+            self.lastClearedWindowId = shownWindow;
+            self.lastClearedTime = now;
+            self.lastClearSuppressUntil = 0;
+            return;
+        }
+
+        // If the system reports no active window, but we have a menu for one, hide it
+        if (activeWindow == 0 && shownWindow != 0) {
+            NSLog(@"MenuController: Active window is 0 but menu shown for 0x%lx - clearing menu", shownWindow);
+            [self.appMenuWidget clearMenuAndHideView];
+            self.lastClearedWindowId = shownWindow;
+            self.lastClearedTime = now;
+            self.lastClearSuppressUntil = 0;
+            return;
+        }
+    }
+    @catch (NSException *ex) {
+        NSLog(@"MenuController: Exception in windowValidationTick: %@", ex);
+    }
 }
 
 - (void)announceGlobalMenuSupport
@@ -635,7 +756,7 @@
     
     // Update app menu widget on main thread
     if (self.appMenuWidget) {
-        [self.appMenuWidget updateForActiveWindow];
+        [self.appMenuWidget updateForActiveWindowId:windowId];
         
         // After updating for active window, scan for menus (debounced)
         // Applications may register menus after window activation
@@ -650,7 +771,8 @@
 
 - (void)createTimeMenu
 {
-    NSLog(@"MenuController: createTimeMenu - ENTRY");
+    NSLog(@"MenuController: createTimeMenu - DISABLED (bundles only)");
+    return;
     
     NSLog(@"MenuController: Creating time menu");
     

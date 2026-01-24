@@ -8,6 +8,7 @@
 #import "MenuProtocolManager.h"
 #import "AppMenuWidget.h"
 #import "DBusConnection.h"
+#import <dispatch/dispatch.h>
 
 @implementation MenuProtocolManager {
     __weak AppMenuWidget *_appMenuWidget;
@@ -153,6 +154,13 @@
             MenuProtocolType protocolType = [protocolTypeNum integerValue];
             id<MenuProtocolHandler> handler = [self handlerForType:protocolType];
             if (handler) {
+                NSString *protoName = @"Unknown";
+                if (protocolType == 0) protoName = @"Canonical/DBus";
+                else if (protocolType == 1) protoName = @"GTK";
+                else if (protocolType == 2) protoName = @"GNUstep";
+                
+                NSLog(@"MenuProtocolManager: Window %lu handled by protocol: %@ (Type %lu) [Cached]", windowId, protoName, (unsigned long)protocolType);
+
                 return [handler getMenuForWindow:windowId];
             }
         }
@@ -165,13 +173,23 @@
                 if (menu) {
                     // Cache which protocol handles this window
                     [self.windowToProtocolMap setObject:[NSNumber numberWithUnsignedLong:i] forKey:windowKey];
-                    NSLog(@"MenuProtocolManager: Window %lu handled by protocol %lu", windowId, (unsigned long)i);
+                    
+                    NSString *protoName = @"Unknown";
+                    if (i == 0) protoName = @"Canonical/DBus";
+                    else if (i == 1) protoName = @"GTK";
+                    else if (i == 2) protoName = @"GNUstep";
+                    
+                    NSLog(@"MenuProtocolManager: Window %lu handled by protocol: %@ (Type %lu)", windowId, protoName, (unsigned long)i);
                     return menu;
                 }
             }
         }
         
-        NSLog(@"MenuProtocolManager: No protocol could provide menu for window %lu", windowId);
+        static unsigned long lastFailedWindowId = 0;
+        if (lastFailedWindowId != windowId) {
+            NSLog(@"MenuProtocolManager: No protocol could provide menu for window %lu", windowId);
+            lastFailedWindowId = windowId;
+        }
         return nil;
     }
     @catch (NSException *exception) {
@@ -272,6 +290,14 @@
     }
     
     NSLog(@"MenuProtocolManager: Unregistered window %lu", windowId);
+
+    // If the unregistered window is currently displayed, force a menu refresh
+    if (_appMenuWidget && _appMenuWidget.currentWindowId == windowId) {
+        NSLog(@"MenuProtocolManager: Current menu window %lu unregistered - refreshing menu", windowId);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [_appMenuWidget updateForActiveWindow];
+        });
+    }
 }
 
 #pragma mark - Protocol Detection

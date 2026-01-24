@@ -4,10 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-// Compile-time configuration for fallback menus
-// Set to 1 to enable fallback File->Close menus when no DBus menu is available
-// Set to 0 to disable fallback menus completely
-#define ENABLE_FALLBACK_MENUS 0
+// Runtime behavior: built-in file/placeholder fallbacks removed. Desktop menus will be used as the FALLBACK when available.
 
 #import "AppMenuWidget.h"
 #import "MenuProtocolManager.h"
@@ -15,7 +12,6 @@
 #import "X11ShortcutManager.h"
 #import "GTKActionHandler.h"
 #import "DBusMenuActionHandler.h"
-#import "MenuCacheManager.h"
 #import "ActionSearch.h"
 #import <X11/Xlib.h>
 #import <X11/Xutil.h>
@@ -128,6 +124,15 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 
 @end
 
+@interface AppMenuWidget ()
+@property (nonatomic, strong) NSTimer *clearMenuTimer;
+
+- (unsigned long)findDesktopWindowId;
+- (BOOL)displayDesktopMenuIfAvailableWithReason:(NSString *)reason;
+- (void)clearMenuAndHideView;
+
+@end
+
 @implementation AppMenuWidget
 
 // Called when the system submenu begins tracking (is about to be shown)
@@ -176,7 +181,7 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         self.currentWindowId = 0;
         self.currentMenu = nil;
         self.fallbackTimers = [NSMutableDictionary dictionary];
-        self.cachedIsWaitingForMenu = YES;
+        self.cachedIsWaitingForMenu = NO;
         self.cachedHasMenu = NO;
         self.needsRedraw = YES;
         
@@ -186,8 +191,8 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSLog(@"AppMenuWidget: Initialized with frame %.0f,%.0f %.0fx%.0f", 
               frameRect.origin.x, frameRect.origin.y, frameRect.size.width, frameRect.size.height);
         
-        // Mark that we're waiting for real menu content - don't set up placeholder yet
-        self.isWaitingForMenu = YES;
+        // Disable "waiting" state - we clear everything immediately
+        self.isWaitingForMenu = NO;
         
         // Defer placeholder menu setup until after initialization completes
         // This ensures the view is fully ready before we try to set up and draw the menu
@@ -242,7 +247,16 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSLog(@"AppMenuWidget: No protocol manager available");
         return;
     }
-    
+
+    // Defensive validation: if our current tracked window is gone, clear the menu immediately
+    if (self.currentWindowId != 0 && ![AppMenuWidget isWindowStillValid:self.currentWindowId]) {
+        NSLog(@"AppMenuWidget: Current tracked window %lu is no longer valid - clearing menu and re-evaluating active window", self.currentWindowId);
+        [self clearMenuAndHideView];
+        self.currentWindowId = 0;
+        self.currentApplicationName = nil;
+        self.currentMenu = nil;
+    }
+
     // Get the active window using X11
     Display *display = XOpenDisplay(NULL);
     if (!display) {
@@ -277,69 +291,80 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     });
     
     XCloseDisplay(display);
-    
-    // If no active window (or activeWindow is 0), try to load Desktop/Workspace menu
+
+    [self updateForActiveWindowId:activeWindow];
+}
+
+- (void)updateForActiveWindowId:(unsigned long)windowId
+{
+    if (!self.protocolManager) {
+        NSLog(@"AppMenuWidget: No protocol manager available (updateForActiveWindowId)");
+        return;
+    }
+
+    NSLog(@"AppMenuWidget: updateForActiveWindowId called with 0x%lx", windowId);
+
+    unsigned long activeWindow = windowId;
+
+    // Validate active window; if invalid, treat as no focused window
+    if (activeWindow != 0 && ![AppMenuWidget isWindowStillValid:activeWindow]) {
+        NSLog(@"AppMenuWidget: Active window %lu is invalid - treating as no focused window", activeWindow);
+        activeWindow = 0;
+    }
+
+    // If no active window (0), do not attempt a Desktop/Workspace fallback (no built-in fallbacks)
     if (activeWindow == 0) {
-        NSLog(@"AppMenuWidget: No active window - looking for Desktop/Workspace menu...");
-        
-        // Get all windows and find the desktop window
-        NSArray *windows = [MenuUtils getAllWindows];
-        unsigned long desktopWindowId = 0;
-        
-        for (NSNumber *windowNum in windows) {
-            unsigned long windowId = [windowNum unsignedLongValue];
-            if ([MenuUtils isDesktopWindow:windowId]) {
-                desktopWindowId = windowId;
-                NSLog(@"AppMenuWidget: Found Desktop window: 0x%lx", desktopWindowId);
-                break;
-            }
+        // Debounce: don't clear immediately. Wait 0.2s.
+        if (self.clearMenuTimer && [self.clearMenuTimer isValid]) {
+             return; // Already scheduled
         }
         
-        if (desktopWindowId != 0) {
-            // Use the desktop window as the active window
-            activeWindow = desktopWindowId;
-            NSLog(@"AppMenuWidget: Using Desktop window 0x%lx for menu", activeWindow);
-        } else {
-            NSLog(@"AppMenuWidget: No Desktop window found");
+        // Only schedule if we actually have something to clear
+        if (self.currentWindowId != 0 || self.menuView.menu != nil) {
+            NSLog(@"AppMenuWidget: Active window is 0 - scheduling clear in 0.2s (anti-flicker)");
+            self.clearMenuTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(clearMenuTimerFired:) userInfo:nil repeats:NO];
         }
+        return;
     }
     
-    if (activeWindow != self.currentWindowId) {
-        NSLog(@"AppMenuWidget: Active window changed from %lu to %lu", self.currentWindowId, activeWindow);
-        
-        // Notify cache manager about window changes
-        MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-        if (self.currentWindowId != 0) {
-            [cacheManager windowBecameInactive:self.currentWindowId];
+    // Valid window: Cancel any pending clear
+    if (self.clearMenuTimer) {
+        [self.clearMenuTimer invalidate];
+        self.clearMenuTimer = nil;
+    }
+
+    BOOL shouldUpdate = (activeWindow != self.currentWindowId);
+    if (!shouldUpdate && activeWindow != 0) {
+        // Force a refresh if menu is missing or we don't have a current menu
+        if (!self.currentMenu || ![self.protocolManager hasMenuForWindow:activeWindow]) {
+            NSLog(@"AppMenuWidget: Active window unchanged (%lu) but menu missing - forcing refresh", activeWindow);
+            shouldUpdate = YES;
         }
-        if (activeWindow != 0) {
-            [cacheManager windowBecameActive:activeWindow];
-        }
-        
-        // Check if this is a different application by comparing application names
-        // Use @try/@catch to prevent crashes when accessing window properties of invalid/transitioning windows
+    }
+
+    if (shouldUpdate) {
+        // Calculate newAppName first
         NSString *newAppName = nil;
         if (activeWindow != 0) {
             @try {
                 newAppName = [MenuUtils getApplicationNameForWindow:activeWindow];
             }
             @catch (NSException *exception) {
-                NSLog(@"AppMenuWidget: Exception getting app name for window %lu: %@", activeWindow, exception);
+                // Suppress excessive logging here if needed, but keeping for now as errors are important
                 newAppName = nil;
             }
-        } else {
-            NSLog(@"AppMenuWidget: Active window is 0 (no window), skipping app name lookup");
-            newAppName = nil;
+        }
+
+        // Log detection only when the window ID actually changes to reduce log spam during retries
+        static unsigned long lastDetectedWindowId = 0;
+        if (activeWindow != lastDetectedWindowId) {
+            NSLog(@"AppMenuWidget: Detected new active window: %lu (App: %@)", activeWindow, newAppName ?: @"Unknown");
+            lastDetectedWindowId = activeWindow;
         }
 
         BOOL isDifferentApp = !self.currentApplicationName ||
                              ![self.currentApplicationName isEqualToString:newAppName];
-        
-        // Notify cache manager about application switch
-        if (isDifferentApp && newAppName && self.currentApplicationName) {
-            [cacheManager applicationSwitched:self.currentApplicationName toApp:newAppName];
-        }
-        
+
         self.currentWindowId = activeWindow;
 
         // Use @try/@catch to prevent crashes during menu setup for invalid/transitioning windows
@@ -349,15 +374,71 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         @catch (NSException *exception) {
             NSLog(@"AppMenuWidget: Exception displaying menu for window %lu: %@", activeWindow, exception);
             // Clear menu on exception to prevent further issues
-            [self clearMenu];
+            [self clearMenuAndHideView];
         }
-        
-        // For complex applications, try to pre-warm cache for other windows of same app
-        if (newAppName && [cacheManager isComplexApplication:newAppName]) {
-            [self performSelector:@selector(preWarmCacheForApplication:) 
-                       withObject:newAppName 
-                       afterDelay:0.5]; // Delay to avoid blocking current menu load
-        }
+    } else if (activeWindow == 0) {
+        // No active window and no Desktop menu - ensure view is hidden
+        [self clearMenuAndHideView];
+    }
+}
+
+- (void)clearMenuTimerFired:(NSTimer *)timer
+{
+    // Re-check: if active window is still 0 (or invalid), clear.
+    // We can't easily check actual active window here without X11 call, 
+    // but the fact the timer fired means no new valid window canceled it.
+    NSLog(@"AppMenuWidget: No active window persist - clearing menu");
+    [self clearMenuAndHideView];
+    self.clearMenuTimer = nil;
+}
+
+- (unsigned long)findDesktopWindowId
+{
+    return [MenuUtils findDesktopWindow];
+}
+
+- (BOOL)displayDesktopMenuIfAvailableWithReason:(NSString *)reason
+{
+    if (!self.protocolManager) {
+        NSLog(@"AppMenuWidget: Cannot display Desktop menu (%@) - no protocol manager", reason);
+        return NO;
+    }
+
+    unsigned long desktopWindowId = [self findDesktopWindowId];
+    if (desktopWindowId == 0) {
+        NSLog(@"AppMenuWidget: Desktop menu not available (%@) - no Desktop window", reason);
+        return NO;
+    }
+
+    if (![self.protocolManager hasMenuForWindow:desktopWindowId]) {
+        NSLog(@"AppMenuWidget: Desktop window 0x%lx has no registered menu (%@)", desktopWindowId, reason);
+        return NO;
+    }
+
+    NSString *desktopAppName = nil;
+    @try {
+        desktopAppName = [MenuUtils getApplicationNameForWindow:desktopWindowId];
+    }
+    @catch (NSException *exception) {
+        NSLog(@"AppMenuWidget: Exception getting Desktop app name for window 0x%lx: %@", desktopWindowId, exception);
+        desktopAppName = nil;
+    }
+
+    BOOL isDifferentApp = !self.currentApplicationName || !desktopAppName || ![self.currentApplicationName isEqualToString:desktopAppName];
+    NSLog(@"AppMenuWidget: Switching to Desktop menu 0x%lx (%@)", desktopWindowId, reason);
+    self.currentWindowId = desktopWindowId;
+    [self displayMenuForWindow:desktopWindowId isDifferentApp:isDifferentApp];
+    return YES;
+}
+
+- (void)clearMenuAndHideView
+{
+    [self clearMenu:YES];
+    self.currentMenu = nil;
+    self.currentWindowId = 0; // Ensure we stop showing menus for this window
+    self.needsRedraw = YES;
+    if (self.menuView) {
+        [self.menuView setHidden:YES];
     }
 }
 
@@ -376,10 +457,10 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         NSLog(@"AppMenuWidget: Keeping shortcuts registered (same application)");
     }
     
-    // Mark that we're waiting for a new menu - don't clear visuals yet
-    BOOL previousWaiting = self.isWaitingForMenu;
-    self.isWaitingForMenu = YES;
-    NSLog(@"AppMenuWidget: Marked as waiting for menu");
+    // Core fix: Remove "waiting" state and anti-flickering.
+    // When clearing, we should actually clear NOW.
+    self.isWaitingForMenu = NO;
+    NSLog(@"AppMenuWidget: Clearing menu immediately (anti-flicker disabled)");
     
     self.currentApplicationName = nil;
     // Remove observer and clear any cached reference to the system submenu when clearing the menu
@@ -389,12 +470,19 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         self.systemMenu = nil;
     }
     
-    // Only redraw if the waiting state actually changed
-    if (previousWaiting != self.isWaitingForMenu) {
-        self.needsRedraw = YES;
-        if (self.window) {
-            [self setNeedsDisplay:YES];
-        }
+    // Always clear visual states immediately
+    self.currentMenu = nil;
+    self.currentWindowId = 0;
+    self.needsRedraw = YES;
+    
+    if (self.menuView) {
+        // Clear out the menu view completely
+        [self.menuView setMenu:nil];
+        [self.menuView setHidden:YES];
+    }
+
+    if (self.window) {
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -413,10 +501,34 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     [self clearMenu:isDifferentApp];
     
+    // If no window specified, always try Desktop fallback first; if not available, clear immediately
     if (windowId == 0) {
+        NSLog(@"AppMenuWidget: displayMenuForWindow called with 0 - attempting Desktop fallback");
+        if ([self displayDesktopMenuIfAvailableWithReason:@"no focused window"]) {
+            return; // Desktop menu displayed
+        }
+        [self clearMenuAndHideView];
         return;
     }
-    
+
+    // Defensive check: ensure the window still exists (it may have been closed since the event)
+    BOOL windowValid = [AppMenuWidget isWindowStillValid:windowId];
+    if (!windowValid) {
+        NSLog(@"AppMenuWidget: Window %lu validity check failed - may be closing or not yet mapped", windowId);
+        // Try Desktop fallback immediately; if not available clear the menu instantly
+        if ([self displayDesktopMenuIfAvailableWithReason:@"window invalid/closing"]) {
+            return;
+        }
+
+        // If a menu is registered for this window despite validation failure, attempt to load it
+        if ([self.protocolManager hasMenuForWindow:windowId]) {
+            NSLog(@"AppMenuWidget: Menu is registered for window %lu - attempting to load despite validation failure", windowId);
+        } else {
+            [self clearMenuAndHideView];
+            return;
+        }
+    }
+
     // Get application name for this window
     NSString *appName = nil;
     @try {
@@ -427,7 +539,27 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         appName = nil;
     }
 
+    // Verify the application still has at least one visible window before showing its menu
     if (appName && [appName length] > 0) {
+        BOOL appHasWindows = NO;
+        NSDictionary *windowApps = [MenuUtils getAllVisibleWindowApplications];
+        for (NSString *visibleApp in [windowApps allValues]) {
+            if ([visibleApp isEqualToString:appName]) {
+                appHasWindows = YES;
+                break;
+            }
+        }
+
+        if (!appHasWindows) {
+            NSLog(@"AppMenuWidget: Application %@ has no visible windows - not displaying its menu", appName);
+            if (![MenuUtils isDesktopWindow:windowId] &&
+                [self displayDesktopMenuIfAvailableWithReason:@"application has no visible windows"]) {
+                return;
+            }
+            [self clearMenuAndHideView];
+            return;
+        }
+
         self.currentApplicationName = appName;
         NSLog(@"AppMenuWidget: Window %lu belongs to application: %@", windowId, appName);
     }
@@ -437,30 +569,35 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     // Check if this window has a DBus menu registered
     @try {
         if (![self.protocolManager hasMenuForWindow:windowId]) {
-            NSLog(@"AppMenuWidget: No registered menu for window %lu yet", windowId);
+            static unsigned long lastMissingMenuWindowId = 0;
+            if (lastMissingMenuWindowId != windowId) {
+                NSLog(@"AppMenuWidget: No registered menu for window %lu yet", windowId);
+                lastMissingMenuWindowId = windowId;
+            }
 
             // DON'T trigger immediate scan here - it can interfere with app startup
             // The periodic scanning will pick it up safely
-            // [self.protocolManager scanForExistingMenuServices];
 
-            // Check if we should wait a moment for menu to appear
-            if (![self.protocolManager hasMenuForWindow:windowId]) {
-                // Prevent fallback menu for desktop windows
-                if ([MenuUtils isDesktopWindow:windowId]) {
-                    NSLog(@"AppMenuWidget: Suppressing fallback menu for desktop window %lu", windowId);
+            // If it's the Desktop window and it has no menu, clear immediately
+            if ([MenuUtils isDesktopWindow:windowId]) {
+                NSLog(@"AppMenuWidget: Desktop window %lu has no menu registered yet", windowId);
+                if ([self displayDesktopMenuIfAvailableWithReason:@"desktop has no menu"]) {
                     return;
                 }
-
-#if ENABLE_FALLBACK_MENUS
-                // Schedule a delayed fallback (200ms) to avoid showing fallback immediately
-                [self scheduleFallbackMenuForWindow:windowId delay:0.2];
-#else
-                NSLog(@"AppMenuWidget: Fallback menus disabled at compile time");
-#endif
+                [self clearMenuAndHideView];
                 return;
             }
+
+            // Try Desktop fallback for active window with no registered menu
+            if ([self displayDesktopMenuIfAvailableWithReason:@"active window has no menu"]) {
+                return;
+            }
+
+            // No Desktop fallback; clear immediately (no built-in fallback menus)
+            [self clearMenuAndHideView];
+            return;
         } else {
-            // If we already have a menu, cancel any scheduled fallback
+            // If we already have a menu, ensure we don't have any scheduled fallback (no-op in current flow)
             [self cancelScheduledFallbackForWindow:windowId];
         }
     }
@@ -469,6 +606,11 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         // Prevent fallback menu for desktop windows
         if ([MenuUtils isDesktopWindow:windowId]) {
             NSLog(@"AppMenuWidget: Suppressing fallback menu for desktop window %lu on exception", windowId);
+            [self clearMenuAndHideView];
+            return;
+        }
+
+        if ([self displayDesktopMenuIfAvailableWithReason:@"exception during menu protocol check"]) {
             return;
         }
 #if ENABLE_FALLBACK_MENUS
@@ -477,6 +619,7 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         [self loadMenu:fallbackMenu forWindow:windowId];
 #else
         NSLog(@"AppMenuWidget: Exception occurred but fallback menus disabled at compile time");
+        [self clearMenuAndHideView];
 #endif
         return;
     }
@@ -495,18 +638,24 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     }
 
     if (!menu) {
-        NSLog(@"AppMenuWidget: Failed to get menu for window %lu (protocol manager), will provide fallback after short delay", windowId);
+        NSLog(@"AppMenuWidget: Failed to get menu for window %lu (protocol manager)", windowId);
         // Prevent fallback menu for desktop windows
         if ([MenuUtils isDesktopWindow:windowId]) {
-            NSLog(@"AppMenuWidget: Suppressing fallback menu for desktop window %lu", windowId);
+            NSLog(@"AppMenuWidget: Desktop window %lu has no menu from protocol manager", windowId);
+            if ([self displayDesktopMenuIfAvailableWithReason:@"desktop protocol returned nil"]) {
+                return;
+            }
+            [self clearMenuAndHideView];
             return;
         }
-#if ENABLE_FALLBACK_MENUS
-        // Schedule delayed fallback to allow menu to arrive (200ms)
-        [self scheduleFallbackMenuForWindow:windowId delay:0.2];
-#else
-        NSLog(@"AppMenuWidget: Fallback menus disabled at compile time, no menu available for window %lu", windowId);
-#endif
+
+        // Try desktop fallback first
+        if ([self displayDesktopMenuIfAvailableWithReason:@"protocol manager returned nil menu"]) {
+            return;
+        }
+
+        // Otherwise clear and hide - no built-in fallbacks
+        [self clearMenuAndHideView];
         return;
     }
     
@@ -520,23 +669,26 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     BOOL isPlaceholder = [self isPlaceholderMenu:menu];
     NSLog(@"AppMenuWidget: isPlaceholderMenu: %@", isPlaceholder ? @"YES" : @"NO");
     
-    // If this is a placeholder menu, replace it with a functional File menu
+    // If this is a placeholder menu, prefer Desktop fallback; otherwise clear immediately
     if (isPlaceholder) {
         // Prevent fallback menu for desktop windows
         if ([MenuUtils isDesktopWindow:windowId]) {
-            NSLog(@"AppMenuWidget: Suppressing fallback menu for desktop window %lu (placeholder menu)", windowId);
+            NSLog(@"AppMenuWidget: Desktop window %lu provided placeholder menu", windowId);
+            [self clearMenuAndHideView];
             return;
         }
-#if ENABLE_FALLBACK_MENUS
-        NSLog(@"AppMenuWidget: Replacing placeholder menu with File menu containing Close for window %lu", windowId);
-        menu = [self createFileMenuWithClose:windowId];
-#else
-        NSLog(@"AppMenuWidget: Placeholder menu detected but fallback menus disabled at compile time");
+
+        if ([self displayDesktopMenuIfAvailableWithReason:@"placeholder menu for active window"]) {
+            return;
+        }
+
+        NSLog(@"AppMenuWidget: Placeholder menu detected and no Desktop fallback available - clearing");
+        [self clearMenuAndHideView];
         return;
-#endif
     }
     
     [self loadMenu:menu forWindow:windowId];
+    NSLog(@"AppMenuWidget: Imported %lu menu items for window %lu", (unsigned long)[[menu itemArray] count], windowId);
 }
 
 - (void)setupMenuViewWithMenu:(NSMenu *)menu
@@ -723,22 +875,10 @@ static int handleX11Error(Display *display, XErrorEvent *event)
 {
     // Only draw if we have menu items to display
     BOOL hasMenu = (self.currentMenu && [[self.currentMenu itemArray] count] > 0);
-    BOOL isLoading = self.isWaitingForMenu;
     
-    // Check if state changed since last draw
-    if (!self.needsRedraw && self.cachedHasMenu == hasMenu && self.cachedIsWaitingForMenu == isLoading) {
-        // State hasn't changed - skip redraw
-        return;
-    }
-    
-    // Update cache and mark as drawn
-    self.needsRedraw = NO;
-    self.cachedHasMenu = hasMenu;
-    self.cachedIsWaitingForMenu = isLoading;
-    
-    // If we're waiting for a menu but don't have one yet, keep the old menu visible
-    if (!hasMenu && !isLoading) {
-        // No menu to display and not waiting - clear the background completely
+    // Core fix: simplify state. If we have a menu, show it. Otherwise hide it.
+    if (!hasMenu) {
+        // No menu to display - clear the background completely
         [[NSColor clearColor] set];
         NSRectFill([self bounds]);
         
@@ -749,17 +889,7 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         return;
     }
     
-    // If waiting for menu, show placeholder or old menu
-    if (isLoading && !hasMenu) {
-        // Show the placeholder menu if it exists
-        if (self.menuView) {
-            [self.menuView setHidden:NO];
-        }
-        return;
-    }
-    
     // Show new menu
-    // Show the menu view when there's a menu
     if (self.menuView) {
         [self.menuView setHidden:NO];
     }
@@ -809,13 +939,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     // If the newly registered window is the currently active window, display its menu immediately
     if (activeWindow == windowId) {
-        NSLog(@"AppMenuWidget: Newly registered window %lu is currently active, displaying menu immediately", windowId);
-        self.currentWindowId = activeWindow;
+        NSLog(@"AppMenuWidget: Newly registered window %lu is currently active, updating menu immediately", windowId);
         @try {
-            [self displayMenuForWindow:activeWindow isDifferentApp:YES];
+            [self updateForActiveWindowId:activeWindow];
         }
         @catch (NSException *exception) {
-            NSLog(@"AppMenuWidget: Exception displaying menu for newly registered window %lu: %@", windowId, exception);
+            NSLog(@"AppMenuWidget: Exception updating menu for newly registered window %lu: %@", windowId, exception);
         }
     } else {
         NSLog(@"AppMenuWidget: Newly registered window %lu is not currently active (active: %lu)", windowId, activeWindow);
@@ -1124,7 +1253,10 @@ static int handleX11Error(Display *display, XErrorEvent *event)
             SEL action = [sender action];
             if (action && [sender.target respondsToSelector:action]) {
                 NSLog(@"AppMenuWidget: Forwarding action %@ to target: %@", NSStringFromSelector(action), [sender target]);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 [sender.target performSelector:action withObject:sender];
+#pragma clang diagnostic pop
                 return;
             }
         }
@@ -1331,85 +1463,7 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     XCloseDisplay(display);
 }
 
-- (void)preWarmCacheForApplication:(NSString *)applicationName
-{
-    NSLog(@"AppMenuWidget: Pre-warming cache for complex application: %@", applicationName);
-    
-    // Find all windows belonging to this application that aren't cached yet
-    Display *display = XOpenDisplay(NULL);
-    if (!display) {
-        NSLog(@"AppMenuWidget: Cannot open X11 display for cache pre-warming");
-        return;
-    }
-    
-    Window root = DefaultRootWindow(display);
-    Atom clientListAtom = XInternAtom(display, "_NET_CLIENT_LIST", False);
-    
-    Atom actualType;
-    int actualFormat;
-    unsigned long numWindows, bytesAfter;
-    Window *windows = NULL;
-    
-    SAFE_X11_CALL(display, {
-        if (XGetWindowProperty(display, root, clientListAtom, 0, 1024, False, XA_WINDOW,
-                              &actualType, &actualFormat, &numWindows, &bytesAfter,
-                              (unsigned char**)&windows) == Success && windows) {
-            
-            NSUInteger warmedCount = 0;
-            MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-            
-            for (unsigned long i = 0; i < numWindows && warmedCount < 3; i++) {
-            Window window = windows[i];
-            
-            // Skip current window (already loaded)
-            if (window == self.currentWindowId) {
-                continue;
-            }
-            
-            // Check if this window belongs to the same application
-            NSString *windowAppName = [MenuUtils getApplicationNameForWindow:(unsigned long)window];
-            if (!windowAppName || ![windowAppName isEqualToString:applicationName]) {
-                continue;
-            }
-            
-            // Check if we already have this window cached
-            if ([cacheManager getCachedMenuForWindow:(unsigned long)window]) {
-                continue;
-            }
-            
-            // Check if protocol manager has a menu for this window
-            if ([self.protocolManager hasMenuForWindow:(unsigned long)window]) {
-                NSLog(@"AppMenuWidget: Pre-warming cache for window %lu (%@)", 
-                      (unsigned long)window, applicationName);
-                
-                // Load menu in background (this will cache it)
-                NSMenu *menu = [self.protocolManager getMenuForWindow:(unsigned long)window];
-                if (menu) {
-                    warmedCount++;
-                    NSLog(@"AppMenuWidget: Successfully pre-warmed cache for window %lu", 
-                          (unsigned long)window);
-                } else {
-                    NSLog(@"AppMenuWidget: Failed to pre-warm cache for window %lu", 
-                          (unsigned long)window);
-                }
-            }
-        }
-        
-        XFree(windows);
-        NSLog(@"AppMenuWidget: Pre-warmed cache for %lu windows of application %@", 
-              (unsigned long)warmedCount, applicationName);
-        }
-    }, {
-        // Cleanup on error
-        if (windows) {
-            XFree(windows);
-            windows = NULL;
-        }
-        NSLog(@"AppMenuWidget: Failed to get client list for cache pre-warming due to X11 error");
-    });
-    
-    XCloseDisplay(display);
-}
+// preWarmCacheForApplication removed
 
 - (void)loadMenu:(NSMenu *)menu forWindow:(unsigned long)windowId
 {
@@ -1424,7 +1478,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     NSLog(@"AppMenuWidget: Loading menu for window %lu", windowId);
     
     // Clear the waiting flag - we have a new menu
-    BOOL previousWaiting = self.isWaitingForMenu;
     self.isWaitingForMenu = NO;
     self.currentMenu = menu;
     self.needsRedraw = YES;  // Mark that we need to redraw with new menu
@@ -1743,11 +1796,16 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     BOOL isValid = NO;
     
-    // Try to get window attributes to check if window still exists
+    // Try to get window attributes to check if window still exists and is mapped
     SAFE_X11_CALL(display, {
         XWindowAttributes attrs;
-        if (XGetWindowAttributes(display, windowId, &attrs) != BadWindow) {
-            isValid = YES;
+        // XGetWindowAttributes returns non-zero on success
+        if (XGetWindowAttributes(display, windowId, &attrs)) {
+            if (attrs.map_state == IsViewable) {
+                isValid = YES;
+            } else {
+                NSDebugLog(@"AppMenuWidget: Window %lu is valid but not mapped (map_state: %d)", windowId, attrs.map_state);
+            }
         }
     }, {
         // Error occurred - window is invalid
@@ -1799,21 +1857,16 @@ static int handleX11Error(Display *display, XErrorEvent *event)
             self.systemMenu = nil;
         }
         
-        // Force cleanup of menu views with exception handling
-        @try {
-            if (self.menuView) {
-                if ([self.menuView respondsToSelector:@selector(setMenu:)]) {
-                    [self.menuView setMenu:nil];
-                }
-                self.menuView = nil;
-            }
-            
-            [self setNeedsDisplay:YES];
+        // Hide menu view and force redraw
+        if (self.menuView) {
+            self.menuView.hidden = YES;
         }
-        @catch (NSException *exception) {
-            NSLog(@"AppMenuWidget: Exception during emergency cleanup: %@", exception);
-            // Force clear all references
-            self.menuView = nil;
+        self.needsRedraw = YES;
+        self.currentMenu = nil;
+
+        // Try to switch to Desktop menu if available
+        if (![self displayDesktopMenuIfAvailableWithReason:@"current window disappeared"]) {
+            NSLog(@"AppMenuWidget: Desktop menu not available after window disappearance");
         }
     }
 }

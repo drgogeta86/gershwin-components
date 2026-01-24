@@ -10,42 +10,88 @@
 #import <X11/Xutil.h>
 #import <X11/Xatom.h>
 
-static Display *g_display = NULL;
-static NSLock *g_displayLock = nil;
-
-static Display* getSharedDisplay(void) {
-    if (g_displayLock == nil) {
-        g_displayLock = [[NSLock alloc] init];
-    }
-    
-    [g_displayLock lock];
-    if (g_display == NULL) {
-        g_display = XOpenDisplay(NULL);
-    }
-    [g_displayLock unlock];
-    
-    return g_display;
-}
+@interface MenuUtils (Private)
++ (NSString *)_getApplicationNameForWindow:(unsigned long)windowId display:(Display *)display;
++ (NSString *)_normalizeAppName:(NSString *)title;
+@end
 
 @implementation MenuUtils
 
-+ (NSString *)getApplicationNameForWindow:(unsigned long)windowId
+static Display *_sharedDisplay = NULL;
+
++ (Display *)sharedDisplay
 {
-    // Validate window ID - 0 means no window
-    if (windowId == 0) {
-        NSLog(@"MenuUtils: Window ID is 0 (no active window), returning nil");
-        return nil;
+    if (!_sharedDisplay) {
+        _sharedDisplay = XOpenDisplay(NULL);
+    }
+    return _sharedDisplay;
+}
+
++ (void)cleanup
+{
+    if (_sharedDisplay) {
+        XCloseDisplay(_sharedDisplay);
+        _sharedDisplay = NULL;
+    }
+}
+
++ (Display *)openDisplay
+{
+    return [self sharedDisplay];
+}
+
++ (void)closeDisplay:(Display *)display
+{
+    // If we're using sharedDisplay, we don't close it until cleanup
+}
+
++ (unsigned long)getActiveWindow
+{
+    Display *display = [self sharedDisplay];
+    if (!display) return 0;
+
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+    unsigned long activeWindow = 0;
+
+    Atom atom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    if (XGetWindowProperty(display, DefaultRootWindow(display), atom,
+                          0, 1, False, XA_WINDOW,
+                          &actualType, &actualFormat, &nitems, &bytesAfter,
+                          &prop) == 0 && prop) {
+        if (nitems > 0) {
+            activeWindow = *(Window*)prop;
+        }
+        XFree(prop);
     }
 
-    Display *display = getSharedDisplay();
-    if (!display) {
-        return nil;
+    // Systematic fix: If the active window ID is reported but the window is NO LONGER VALID
+    // or NOT MAPPED, then it's effectively NOT the active window anymore.
+    if (activeWindow != 0) {
+        XWindowAttributes attrs;
+        // XGetWindowAttributes returns non-zero on success
+        if (XGetWindowAttributes(display, (Window)activeWindow, &attrs) == 0 ||
+            attrs.map_state != IsViewable) {
+            activeWindow = 0;
+        }
     }
+
+    return activeWindow;
+}
+
+// Internal helper that reuses an existing display connection
++ (NSString *)_getApplicationNameForWindow:(unsigned long)windowId display:(Display *)display
+{
+    if (!display || windowId == 0) return nil;
 
     // First validate that the window still exists before accessing properties
     XWindowAttributes attrs;
+    // Set an error handler? XGetWindowAttributes is reasonably safe if we check return,
+    // but a global error handler might be needed if we were really paranoid.
     if (XGetWindowAttributes(display, (Window)windowId, &attrs) != Success) {
-        NSLog(@"MenuUtils: Window %lu no longer exists, skipping property access", windowId);
+        // NSLog(@"MenuUtils: Window 0x%lx no longer exists, skipping name lookup", windowId);
         return nil;
     }
 
@@ -57,7 +103,6 @@ static Display* getSharedDisplay(void) {
         if (classHint.res_class != NULL) {
             className = [NSString stringWithUTF8String:classHint.res_class];
         }
-        // XFreeStringList handles both res_class and res_name properly
         if (classHint.res_class != NULL || classHint.res_name != NULL) {
             char *strings[3] = {classHint.res_class, classHint.res_name, NULL};
             XFreeStringList(strings);
@@ -65,7 +110,6 @@ static Display* getSharedDisplay(void) {
     }
 
     if (className && [className length] > 0) {
-        // Normalize application names for better cache consistency
         NSString *normalizedName = [className lowercaseString];
         if ([normalizedName isEqualToString:@"gimp"] ||
             [normalizedName hasPrefix:@"gimp-"]) {
@@ -74,11 +118,34 @@ static Display* getSharedDisplay(void) {
             return @"Inkscape";
         } else if ([normalizedName isEqualToString:@"libreoffice"]) {
             return @"LibreOffice";
+        } else if ([normalizedName isEqualToString:@"systempreferences"]) {
+            return @"System Preferences";
+        } else if ([normalizedName isEqualToString:@"textedit"]) {
+            return @"TextEdit";
         }
         return className;
     }
 
-    // Fallback to window title, try to extract application name
+    // Fallback to _NET_WM_NAME (preferred for UTF-8)
+    Atom netWmName = XInternAtom(display, "_NET_WM_NAME", False);
+    Atom utf8String = XInternAtom(display, "UTF8_STRING", False);
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+
+    if (XGetWindowProperty(display, (Window)windowId, netWmName,
+                          0, 1024, False, utf8String,
+                          &actualType, &actualFormat, &nitems, &bytesAfter,
+                          &prop) == Success && prop) {
+        NSString *title = [NSString stringWithUTF8String:(char *)prop];
+        XFree(prop);
+        if (title && [title length] > 0) {
+            return [self _normalizeAppName:title];
+        }
+    }
+
+    // Fallback to WM_NAME
     XTextProperty windowName;
     if (XGetWMName(display, (Window)windowId, &windowName) == Success) {
         NSString *title = nil;
@@ -87,40 +154,93 @@ static Display* getSharedDisplay(void) {
             XFree(windowName.value);
         }
 
-        // Extract application name from window title
         if (title && [title length] > 0) {
-            // Special handling for GIMP windows
-            if ([title containsString:@"GIMP"] || [title containsString:@"GNU Image Manipulation Program"]) {
-                return @"GIMP";
-            }
-
-            // Look for patterns like "Document - AppName" or "Title - AppName"
-            NSRange dashRange = [title rangeOfString:@" - " options:NSBackwardsSearch];
-            if (dashRange.location != NSNotFound) {
-                NSString *appName = [title substringFromIndex:dashRange.location + 3];
-                if ([appName length] > 0) {
-                    return appName;
-                }
-            }
-            // If no dash pattern, return the whole title as fallback
-            return title;
+            return [self _normalizeAppName:title];
         }
     }
     
     return nil;
 }
 
++ (NSString *)_normalizeAppName:(NSString *)title
+{
+    if ([title containsString:@"GIMP"] || [title containsString:@"GNU Image Manipulation Program"]) {
+        return @"GIMP";
+    }
+    if ([title containsString:@"System Preferences"]) {
+        return @"System Preferences";
+    }
+    NSRange dashRange = [title rangeOfString:@" - " options:NSBackwardsSearch];
+    if (dashRange.location != NSNotFound) {
+        NSString *appName = [title substringFromIndex:dashRange.location + 3];
+        if ([appName length] > 0) {
+            return appName;
+        }
+    }
+    return title;
+}
+
++ (NSString *)getApplicationNameForWindow:(unsigned long)windowId
+{
+    // Validate window ID - 0 means no window
+    if (windowId == 0) {
+        NSLog(@"MenuUtils: Window ID is 0 (no active window), returning nil");
+        return nil;
+    }
+
+    Display *display = [self openDisplay];
+    if (!display) {
+        return nil;
+    }
+
+    NSString *name = [self _getApplicationNameForWindow:windowId display:display];
+    
+    [self closeDisplay:display];
+    return name;
+}
+
 + (BOOL)isWindowValid:(unsigned long)windowId
 {
-    Display *display = getSharedDisplay();
+    if (windowId == 0) return NO;
+
+    Display *display = [self openDisplay];
     if (!display) {
         return NO;
     }
     
     XWindowAttributes attrs;
-    BOOL valid = (XGetWindowAttributes(display, (Window)windowId, &attrs) == Success);
+    if (XGetWindowAttributes(display, (Window)windowId, &attrs) == Success) {
+        return YES;
+    }
     
-    return valid;
+    // Low-level check if the window exists using XQueryTree might be more robust
+    // but XGetWindowAttributes is usually sufficient.
+    NSLog(@"MenuUtils: XGetWindowAttributes failed for 0x%lx", windowId);
+    return NO;
+}
+
++ (BOOL)isWindowMapped:(unsigned long)windowId
+{
+    if (windowId == 0) return NO;
+
+    Display *display = [self openDisplay];
+    if (!display) {
+        return NO;
+    }
+    
+    XWindowAttributes attrs;
+    BOOL mapped = NO;
+    if (XGetWindowAttributes(display, (Window)windowId, &attrs) == Success) {
+        mapped = (attrs.map_state != IsUnmapped);
+        if (!mapped) {
+            NSLog(@"MenuUtils: Window 0x%lx is unmapped (state %d)", windowId, attrs.map_state);
+        }
+    } else {
+        NSLog(@"MenuUtils: Failed to get attributes for window 0x%lx", windowId);
+    }
+    
+    [self closeDisplay:display];
+    return mapped;
 }
 
 + (BOOL)isDesktopWindow:(unsigned long)windowId
@@ -129,7 +249,7 @@ static Display* getSharedDisplay(void) {
         return NO;
     }
     
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
         return NO;
     }
@@ -141,8 +261,8 @@ static Display* getSharedDisplay(void) {
     unsigned char *prop = NULL;
     BOOL isDesktop = NO;
     
-    Atom windowTypeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
     Atom desktopTypeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+    Atom windowTypeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
     
     if (XGetWindowProperty(display, (Window)windowId, windowTypeAtom,
                           0, (~0L), False, XA_ATOM,
@@ -158,12 +278,13 @@ static Display* getSharedDisplay(void) {
         XFree(prop);
     }
     
+    [self closeDisplay:display];
     return isDesktop;
 }
 
 + (NSArray *)getAllWindows
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
         return [NSArray array];
     }
@@ -186,66 +307,189 @@ static Display* getSharedDisplay(void) {
         XFree(children);
     }
     
+    [self closeDisplay:display]; // Fixed leak
     return windows;
 }
 
-+ (unsigned long)getActiveWindow
++ (NSDictionary *)getAllVisibleWindowApplications
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
+    if (!display) {
+        return [NSDictionary dictionary];
+    }
+    
+    Window root = DefaultRootWindow(display);
+    NSMutableDictionary *windowApps = [NSMutableDictionary dictionary];
+    
+    // Use _NET_CLIENT_LIST to get all managed windows across the whole tree
+    Atom clientListAtom = XInternAtom(display, "_NET_CLIENT_LIST", False);
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+    
+    // Read up to 1024 windows
+    if (XGetWindowProperty(display, root, clientListAtom, 0, 1024, False, XA_WINDOW,
+                          &actualType, &actualFormat, &nitems, &bytesAfter, &prop) == 0 && prop) {
+        Window *winList = (Window *)prop;
+        for (unsigned long i = 0; i < nitems; i++) {
+            Window w = winList[i];
+            XWindowAttributes attrs;
+            if (XGetWindowAttributes(display, w, &attrs)) {
+                if (attrs.map_state == IsViewable) {
+                    NSNumber *key = [NSNumber numberWithUnsignedLong:w];
+                    NSString *appName = [self _getApplicationNameForWindow:w display:display];
+                    if (appName && [appName length] > 0) {
+                        [windowApps setObject:appName forKey:key];
+                    }
+                }
+            }
+        }
+        XFree(prop);
+    } else {
+        // Fallback to XQueryTree if _NET_CLIENT_LIST is not available
+        Window parent, *children;
+        unsigned int nchildren;
+        if (XQueryTree(display, root, &root, &parent, &children, &nchildren)) {
+            for (unsigned int i = 0; i < nchildren; i++) {
+                XWindowAttributes attrs;
+                if (XGetWindowAttributes(display, children[i], &attrs)) {
+                    if (attrs.map_state == IsViewable) {
+                        NSNumber *key = [NSNumber numberWithUnsignedLong:children[i]];
+                        NSString *appName = [self _getApplicationNameForWindow:children[i] display:display];
+                        if (appName && [appName length] > 0) {
+                            [windowApps setObject:appName forKey:key];
+                        }
+                    }
+                }
+            }
+            if (children) XFree(children);
+        }
+    }
+    
+    [self closeDisplay:display];
+    return windowApps;
+}
+
++ (unsigned long)findDesktopWindow
+{
+    Display *display = [self openDisplay];
     if (!display) {
         return 0;
     }
     
     Window root = DefaultRootWindow(display);
-    Window activeWindow = 0;
+    Window parent, *children;
+    unsigned int nchildren;
+    unsigned long desktopWindow = 0;
+    
+    // Atoms for checks
+    Atom desktopTypeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+    Atom windowTypeAtom = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    
+    if (XQueryTree(display, root, &root, &parent, &children, &nchildren) == Success) {
+        for (unsigned int i = 0; i < nchildren; i++) {
+            Window w = children[i];
+            
+            // Check properties
+            Atom actualType;
+            int actualFormat;
+            unsigned long nitems, bytesAfter;
+            unsigned char *prop = NULL;
+            
+            if (XGetWindowProperty(display, w, windowTypeAtom,
+                                  0, (~0L), False, XA_ATOM,
+                                  &actualType, &actualFormat, &nitems, &bytesAfter,
+                                  &prop) == Success && prop) {
+                Atom *types = (Atom *)prop;
+                for (unsigned long j = 0; j < nitems; j++) {
+                    if (types[j] == desktopTypeAtom) {
+                        desktopWindow = w;
+                        break;
+                    }
+                }
+                XFree(prop);
+                
+                if (desktopWindow != 0) {
+                    break;
+                }
+            }
+        }
+        XFree(children);
+    }
+    
+    [self closeDisplay:display];
+    return desktopWindow;
+}
+
++ (pid_t)getWindowPID:(unsigned long)windowId
+{
+    if (windowId == 0) return 0;
+
+    Display *display = [self openDisplay];
+    if (!display) return 0;
+
+    Atom pidAtom = XInternAtom(display, "_NET_WM_PID", False);
+    if (pidAtom == None) {
+        [self closeDisplay:display];
+        return 0;
+    }
+
     Atom actualType;
     int actualFormat;
     unsigned long nitems, bytesAfter;
     unsigned char *prop = NULL;
-    
-    Atom activeWindowAtom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
-    if (XGetWindowProperty(display, root, activeWindowAtom,
-                          0, 1, False, AnyPropertyType,
+    pid_t pid = 0;
+
+    if (XGetWindowProperty(display, (Window)windowId, pidAtom,
+                          0, 1, False, XA_CARDINAL,
                           &actualType, &actualFormat, &nitems, &bytesAfter,
                           &prop) == Success && prop) {
-        activeWindow = *(Window*)prop;
+        if (nitems >= 1) {
+            unsigned long val = *((unsigned long *)prop);
+            pid = (pid_t)val;
+        }
         XFree(prop);
     }
-    
-    return activeWindow;
-}
 
+    [self closeDisplay:display];
+    return pid;
+}
+        
 + (NSString *)getWindowProperty:(unsigned long)windowId atomName:(NSString *)atomName
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
         return nil;
     }
-    
+
     Atom atom = XInternAtom(display, [atomName UTF8String], False);
     if (atom == None) {
+        [self closeDisplay:display];
         return nil;
     }
-    
+
     Atom actualType;
     int actualFormat;
     unsigned long nitems, bytesAfter;
     unsigned char *prop = NULL;
-    
+
     if (XGetWindowProperty(display, (Window)windowId, atom,
                           0, 1024, False, AnyPropertyType,
                           &actualType, &actualFormat, &nitems, &bytesAfter,
                           &prop) == Success && prop) {
-        
+
         NSString *result = nil;
         if (actualType == XA_STRING || actualFormat == 8) {
             result = [NSString stringWithUTF8String:(char *)prop];
         }
-        
+
         XFree(prop);
+        [self closeDisplay:display];
         return result;
     }
-    
+
+    [self closeDisplay:display];
     return nil;
 }
 
@@ -261,9 +505,8 @@ static Display* getSharedDisplay(void) {
 
 + (BOOL)setWindowMenuService:(NSString*)service path:(NSString*)path forWindow:(unsigned long)windowId
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
-        NSLog(@"MenuUtils: Failed to open X11 display");
         return NO;
     }
     
@@ -298,14 +541,14 @@ static Display* getSharedDisplay(void) {
     }
     
     XFlush(display);
+    [self closeDisplay:display];
     return success;
 }
 
 + (BOOL)advertiseGlobalMenuSupport
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
-        NSLog(@"MenuUtils: Failed to open X11 display for advertising global menu support");
         return NO;
     }
     
@@ -371,13 +614,13 @@ static Display* getSharedDisplay(void) {
     XFlush(display);
     XSync(display, False);
     
-    NSLog(@"MenuUtils: Successfully advertised global menu support on root window");
+    [self closeDisplay:display];
     return success;
 }
 
 + (void)removeGlobalMenuSupport
 {
-    Display *display = getSharedDisplay();
+    Display *display = [self openDisplay];
     if (!display) {
         return;
     }
@@ -396,6 +639,7 @@ static Display* getSharedDisplay(void) {
     }
     
     XFlush(display);
+    [self closeDisplay:display];
     
     NSLog(@"MenuUtils: Removed global menu support properties from root window");
 }

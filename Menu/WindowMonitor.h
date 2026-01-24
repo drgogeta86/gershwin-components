@@ -12,6 +12,9 @@
 - (void)activeWindowChanged:(unsigned long)windowId;
 @end
 
+// Notification posted on main thread when active window changes
+extern NSString * const WindowMonitorActiveWindowChangedNotification;
+
 /**
  * WindowMonitor
  * 

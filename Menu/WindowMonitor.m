@@ -5,6 +5,10 @@
  */
 
 #import "WindowMonitor.h"
+#import "MenuUtils.h"
+#import "MenuController.h"
+#import <Foundation/Foundation.h>
+#import <X11/Xlib.h>
 #import <dispatch/dispatch.h>
 #import <X11/Xatom.h>
 #import <X11/Xutil.h>
@@ -20,9 +24,20 @@
     unsigned long _currentActiveWindow;
     BOOL _monitoring;
 }
+- (void)_postWindowNotification:(NSDictionary *)userInfo;
 @end
 
 @implementation WindowMonitor
+
+NSString * const WindowMonitorActiveWindowChangedNotification = @"WindowMonitorActiveWindowChangedNotification";
+
+- (void)_postWindowNotification:(NSDictionary *)userInfo
+{
+    [[NSNotificationCenter defaultCenter] 
+        postNotificationName:WindowMonitorActiveWindowChangedNotification
+        object:self
+        userInfo:userInfo];
+}
 
 + (instancetype)sharedMonitor
 {
@@ -46,7 +61,7 @@
         _currentActiveWindow = 0;
         _monitoring = NO;
         
-        // Create serial queue for X11 operations (all Xlib calls must be on same queue)
+        // Create serial queue for X11 operations
         _x11Queue = dispatch_queue_create("org.gnustep.menu.windowmonitor", DISPATCH_QUEUE_SERIAL);
         
         NSLog(@"WindowMonitor: Initialized");
@@ -59,14 +74,237 @@
     [self stopMonitoring];
 }
 
-- (Display *)display
+- (BOOL)startMonitoring
 {
-    return _display;
+    if (_monitoring) {
+        NSLog(@"WindowMonitor: Already monitoring");
+        return YES;
+    }
+
+    NSLog(@"WindowMonitor: Starting event-driven monitoring using GCD");
+
+    // Initialize all X11 operations on the dedicated serial queue to ensure
+    // the Display is only used from one thread (avoids Xlib thread-safety issues)
+    __block BOOL initSuccess = NO;
+    dispatch_sync(_x11Queue, ^{
+        // Open X11 display on the X11 queue thread
+        _display = XOpenDisplay(NULL);
+        if (!_display) {
+            NSLog(@"WindowMonitor: ERROR - Cannot open X11 display");
+            initSuccess = NO;
+            return;
+        }
+
+        _rootWindow = DefaultRootWindow(_display);
+
+        // Intern required atoms
+        _netActiveWindowAtom = XInternAtom(_display, "_NET_ACTIVE_WINDOW", False);
+        _gstepAppAtom = XInternAtom(_display, "_GNUSTEP_WM_ATTR", False);
+
+        // Select PropertyChange and Substructure (DestroyNotify) events on root window
+        XSelectInput(_display, _rootWindow, PropertyChangeMask | SubstructureNotifyMask);
+
+        int x11Fd = ConnectionNumber(_display);
+        NSLog(@"WindowMonitor: X11 file descriptor: %d", x11Fd);
+
+        // Create GCD dispatch source for X11 file descriptor on the same queue
+        _x11EventSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, x11Fd, 0, _x11Queue);
+        if (!_x11EventSource) {
+            NSLog(@"WindowMonitor: ERROR - Failed to create dispatch source");
+            XCloseDisplay(_display);
+            _display = NULL;
+            initSuccess = NO;
+            return;
+        }
+
+        // Set event handler
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(_x11EventSource, ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf processX11Events];
+        });
+
+        // Set cancel handler
+        dispatch_source_set_cancel_handler(_x11EventSource, ^{
+            NSLog(@"WindowMonitor: Dispatch source cancelled");
+        });
+
+        // Start monitoring
+        dispatch_resume(_x11EventSource);
+
+        initSuccess = YES;
+    });
+
+    if (!initSuccess) return NO;
+
+    _monitoring = YES;
+    NSLog(@"WindowMonitor: Monitoring started - event-driven, zero-polling");
+
+    // Get initial active window (runs on the X11 queue)
+    dispatch_async(_x11Queue, ^{
+        [self checkInitialActiveWindow];
+    });
+
+    return YES;
 }
 
-- (Window)rootWindow
+- (void)processX11Events
 {
-    return _rootWindow;
+    if (!_display) return;
+    
+    // Process all pending X11 events
+    while (XPending(_display) > 0) {
+        XEvent event;
+        XNextEvent(_display, &event);
+        
+        if (event.type == PropertyNotify && 
+            event.xproperty.window == _rootWindow &&
+            event.xproperty.atom == _netActiveWindowAtom) {
+            
+            [self checkActiveWindow];
+        } else if (event.type == DestroyNotify || event.type == UnmapNotify) {
+            Window affected = (event.type == DestroyNotify) ? event.xdestroywindow.window : event.xunmap.window;
+            if (affected != 0) {
+                // Core fix: immediately clear current active window track if any window is destroyed/unmapped
+                if (affected == _currentActiveWindow) {
+                    NSLog(@"WindowMonitor: Active window %lu destroyed/unmapped - clearing internal state", affected);
+                    _currentActiveWindow = 0;
+                }
+
+                // Notify that a window was lost, providing the windowId that was lost.
+                // We use performSelectorOnMainThread because GCD main queue might not be pumped in all environments.
+                NSDictionary *userInfo = @{ @"windowId": @(0), @"lostWindowId": @(affected) };
+                [self performSelectorOnMainThread:@selector(_postWindowNotification:)
+                                       withObject:userInfo
+                                    waitUntilDone:NO];
+
+                // Proactively re-check active window from root property in case it changed due to this window closing
+                [self checkActiveWindow];
+            }
+        }
+    }
+}
+
+- (void)checkInitialActiveWindow
+{
+    if (!_display) return;
+    
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+    unsigned long newActiveWindow = 0;
+    
+    if (XGetWindowProperty(_display, _rootWindow, _netActiveWindowAtom,
+                          0, 1, False, XA_WINDOW,
+                          &actualType, &actualFormat, &nitems, &bytesAfter,
+                          &prop) == 0 && prop) {
+        newActiveWindow = *(Window*)prop;
+        XFree(prop);
+    }
+
+    if (newActiveWindow != 0) {
+        XWindowAttributes attrs;
+        if (!XGetWindowAttributes(_display, (Window)newActiveWindow, &attrs) ||
+            attrs.map_state == IsUnmapped) {
+            newActiveWindow = 0;
+        } else {
+            // Select for destruction and unmap events on the client window itself
+            XSelectInput(_display, (Window)newActiveWindow, StructureNotifyMask | PropertyChangeMask);
+        }
+    }
+    
+    if (newActiveWindow != _currentActiveWindow) {
+        _currentActiveWindow = newActiveWindow;
+        
+        NSDictionary *userInfo = @{@"windowId": @(newActiveWindow)};
+        [self performSelectorOnMainThread:@selector(_postWindowNotification:)
+                               withObject:userInfo
+                            waitUntilDone:NO];
+    }
+}
+
+- (void)checkActiveWindow
+{
+    if (!_display) return;
+    
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+    unsigned long newActiveWindow = 0;
+    
+    if (XGetWindowProperty(_display, _rootWindow, _netActiveWindowAtom,
+                          0, 1, False, XA_WINDOW,
+                          &actualType, &actualFormat, &nitems, &bytesAfter,
+                          &prop) == 0 && prop) {
+        newActiveWindow = *(Window*)prop;
+        XFree(prop);
+    }
+
+    if (newActiveWindow != 0) {
+        XWindowAttributes attrs;
+        if (!XGetWindowAttributes(_display, (Window)newActiveWindow, &attrs) ||
+            attrs.map_state == IsUnmapped) {
+            newActiveWindow = 0;
+        } else {
+            // Select for destruction and unmap events on the client window itself
+            // to ensure we catch them instantly even in reparenting WMs.
+            XSelectInput(_display, (Window)newActiveWindow, StructureNotifyMask | PropertyChangeMask);
+        }
+    }
+    
+    if (newActiveWindow != _currentActiveWindow) {
+        NSLog(@"WindowMonitor: Active window changed from %lu to %lu", _currentActiveWindow, newActiveWindow);
+        _currentActiveWindow = newActiveWindow;
+        
+        NSDictionary *userInfo = @{@"windowId": @(newActiveWindow)};
+        [self performSelectorOnMainThread:@selector(_postWindowNotification:)
+                               withObject:userInfo
+                            waitUntilDone:NO];
+    }
+}
+
+- (void)stopMonitoring
+{
+    if (!_monitoring) return;
+    
+    if (_x11EventSource) {
+        dispatch_source_cancel(_x11EventSource);
+        _x11EventSource = NULL;
+    }
+    
+    if (_display) {
+        XCloseDisplay(_display);
+        _display = NULL;
+    }
+    
+    _monitoring = NO;
+    NSLog(@"WindowMonitor: Stopped monitoring");
+}
+
+// Compatibility Accessors
+- (Display *)display { return _display; }
+- (Window)rootWindow { return _rootWindow; }
+- (BOOL)isGNUstepWindow:(unsigned long)windowId {
+    if (!_display || windowId == 0) return NO;
+    
+    Atom actualType;
+    int actualFormat;
+    unsigned long nitems, bytesAfter;
+    unsigned char *prop = NULL;
+    BOOL isGNUstep = NO;
+    
+    if (XGetWindowProperty(_display, (Window)windowId, _gstepAppAtom,
+                          0, 1, False, AnyPropertyType,
+                          &actualType, &actualFormat, &nitems, &bytesAfter,
+                          &prop) == Success && prop) {
+        isGNUstep = YES;
+        XFree(prop);
+    }
+    
+    return isGNUstep;
 }
 
 - (unsigned long)currentActiveWindow
@@ -74,180 +312,9 @@
     return _currentActiveWindow;
 }
 
-- (BOOL)startMonitoring
-{
-    if (_monitoring) {
-        NSLog(@"WindowMonitor: Already monitoring");
-        return YES;
-    }
-    
-    NSLog(@"WindowMonitor: Starting event-driven monitoring using GCD");
-    
-    // Open X11 display
-    _display = XOpenDisplay(NULL);
-    if (!_display) {
-        NSLog(@"WindowMonitor: ERROR - Cannot open X11 display");
-        return NO;
-    }
-    
-    _rootWindow = DefaultRootWindow(_display);
-    
-    // Intern required atoms
-    _netActiveWindowAtom = XInternAtom(_display, "_NET_ACTIVE_WINDOW", False);
-    _gstepAppAtom = XInternAtom(_display, "_GNUSTEP_WM_ATTR", False);
-    
-    // Subscribe to PropertyNotify events on root window
-    XSelectInput(_display, _rootWindow, PropertyChangeMask);
-    XSync(_display, False);
-    
-    // Get X11 connection file descriptor
-    int xfd = ConnectionNumber(_display);
-    NSLog(@"WindowMonitor: X11 file descriptor: %d", xfd);
-    
-    // Create GCD dispatch source for X11 events (event-driven, zero-polling)
-    _x11EventSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, xfd, 0, _x11Queue);
-    
-    if (!_x11EventSource) {
-        NSLog(@"WindowMonitor: ERROR - Failed to create dispatch source");
-        XCloseDisplay(_display);
-        _display = NULL;
-        return NO;
-    }
-    
-    // Set up event handler
-    __weak typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(_x11EventSource, ^{
-        [weakSelf handleX11Events];
-    });
-    
-    // Set up cancellation handler
-    dispatch_source_set_cancel_handler(_x11EventSource, ^{
-        NSLog(@"WindowMonitor: Dispatch source cancelled");
-    });
-    
-    // Activate the dispatch source
-    dispatch_resume(_x11EventSource);
-    
-    _monitoring = YES;
-    NSLog(@"WindowMonitor: Monitoring started - event-driven, zero-polling");
-    
-    // Get initial active window and notify delegate
-    dispatch_async(dispatch_get_main_queue(), ^{
-        unsigned long initialWindow = [weakSelf getActiveWindow];
-        if (weakSelf.delegate && initialWindow != 0) {
-            [weakSelf.delegate activeWindowChanged:initialWindow];
-        }
-    });
-    
-    return YES;
-}
-
-- (void)stopMonitoring
-{
-    if (!_monitoring) {
-        return;
-    }
-    
-    NSLog(@"WindowMonitor: Stopping monitoring");
-    
-    _monitoring = NO;
-    
-    // Cancel and release dispatch source
-    if (_x11EventSource) {
-        dispatch_source_cancel(_x11EventSource);
-        _x11EventSource = NULL;
-    }
-    
-    // Close X11 display
-    if (_display) {
-        XCloseDisplay(_display);
-        _display = NULL;
-    }
-    
-    _rootWindow = 0;
-    _netActiveWindowAtom = 0;
-    _currentActiveWindow = 0;
-    
-    NSLog(@"WindowMonitor: Monitoring stopped");
-}
-
-- (void)handleX11Events
-{
-    // Process all pending X11 events
-    while (XPending(_display) > 0) {
-        XEvent event;
-        XNextEvent(_display, &event);
-        
-        if (event.type == PropertyNotify &&
-            event.xproperty.window == _rootWindow &&
-            event.xproperty.atom == _netActiveWindowAtom) {
-            
-            // Active window changed - read new value
-            unsigned long newActiveWindow = [self getActiveWindow];
-            
-            if (newActiveWindow != _currentActiveWindow) {
-                NSLog(@"WindowMonitor: Active window changed: 0x%lx -> 0x%lx", 
-                      _currentActiveWindow, newActiveWindow);
-                
-                _currentActiveWindow = newActiveWindow;
-                
-                // Notify delegate on main queue
-                if (self.delegate) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.delegate activeWindowChanged:newActiveWindow];
-                    });
-                }
-            }
-        }
-    }
-}
-
 - (unsigned long)getActiveWindow
 {
-    if (!_display) {
-        return 0;
-    }
-    
-    Atom actualType;
-    int actualFormat;
-    unsigned long nItems, bytesAfter;
-    unsigned char *prop = NULL;
-    unsigned long activeWindow = 0;
-    
-    int result = XGetWindowProperty(_display, _rootWindow, _netActiveWindowAtom,
-                                    0, 1, False, XA_WINDOW,
-                                    &actualType, &actualFormat, &nItems, &bytesAfter, &prop);
-    
-    if (result == Success && prop && nItems > 0) {
-        activeWindow = *(Window*)prop;
-        XFree(prop);
-    }
-    
-    return activeWindow;
-}
-
-- (BOOL)isGNUstepWindow:(unsigned long)windowId
-{
-    if (!_display || windowId == 0) {
-        return NO;
-    }
-    
-    // Check for _GNUSTEP_WM_ATTR property which identifies GNUstep windows
-    Atom actualType;
-    int actualFormat;
-    unsigned long nItems, bytesAfter;
-    unsigned char *prop = NULL;
-    
-    int result = XGetWindowProperty(_display, (Window)windowId, _gstepAppAtom,
-                                    0, 32, False, AnyPropertyType,
-                                    &actualType, &actualFormat, &nItems, &bytesAfter, &prop);
-    
-    if (result == Success && prop) {
-        XFree(prop);
-        return YES;
-    }
-    
-    return NO;
+    return _currentActiveWindow;
 }
 
 @end

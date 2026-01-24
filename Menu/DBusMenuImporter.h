@@ -21,6 +21,7 @@
 @property (nonatomic, strong) NSMutableDictionary *registeredWindows; // windowId -> service name
 @property (nonatomic, strong) NSMutableDictionary *windowMenuPaths;   // windowId -> object path
 @property (nonatomic, strong) NSMutableDictionary *menuCache;         // windowId -> NSMenu
+@property (nonatomic, strong) NSMutableDictionary *loadRetries;       // windowId -> retry count
 @property (nonatomic, strong) NSTimer *cleanupTimer;
 @property (nonatomic, weak) AppMenuWidget *appMenuWidget;  // Reference to AppMenuWidget for immediate menu display
 @property (atomic, assign) BOOL processingMessages;        // Guard to prevent re-entrant DBus processing

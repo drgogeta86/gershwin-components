@@ -20,4 +20,7 @@
 - (void)sendEvent:(NSEvent *)event;
 - (void)checkForExistingMenuApplicationAsync;
 
+// Expose global controller accessor for other modules to trigger handler directly (testing / fallback)
+MenuController *MenuControllerGlobal(void);
+
 @end

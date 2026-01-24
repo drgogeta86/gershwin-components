@@ -11,7 +11,6 @@
 #import "DBusSubmenuManager.h"
 #import "MenuUtils.h"
 #import "AppMenuWidget.h"
-#import "MenuCacheManager.h"
 #import <dbus/dbus.h>
 #import <dispatch/dispatch.h>
 
@@ -31,6 +30,7 @@
         self.registeredWindows = [[NSMutableDictionary alloc] init];
         self.windowMenuPaths = [[NSMutableDictionary alloc] init];
         self.menuCache = [[NSMutableDictionary alloc] init];
+        self.loadRetries = [[NSMutableDictionary alloc] init];
         self.processingMessages = NO;
         
         // Don't set up the cleanup timer during init - do it later when the run loop is ready
@@ -127,7 +127,25 @@
 - (BOOL)hasMenuForWindow:(unsigned long)windowId
 {
     NSNumber *windowKey = [NSNumber numberWithUnsignedLong:windowId];
-    return [self.registeredWindows objectForKey:windowKey] != nil;
+    if ([self.registeredWindows objectForKey:windowKey] != nil) {
+        return YES;
+    }
+    
+    // Check X11 properties as fallback - applications might have set them
+    // without registering through DBus yet
+    NSString *x11Service = [MenuUtils getWindowMenuService:windowId];
+    NSString *x11Path = [MenuUtils getWindowMenuPath:windowId];
+    
+    if (x11Service && x11Path) {
+        NSDebugLog(@"DBusMenuImporter: Found X11 properties for window %lu in hasMenu check: service=%@ path=%@", 
+              windowId, x11Service, x11Path);
+        
+        // Register this window with the discovered properties
+        [self registerWindow:windowId serviceName:x11Service objectPath:x11Path];
+        return YES;
+    }
+    
+    return NO;
 }
 
 - (NSMenu *)getMenuForWindow:(unsigned long)windowId
@@ -160,42 +178,8 @@
         legacyCachedMenu = [self.menuCache objectForKey:windowKey];
     }
     
-    // Check enhanced cache with service name validation (outside lock)
-    // This prevents returning stale menus when window IDs are reused
-    MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-    NSMenu *cachedMenu = [cacheManager getCachedMenuForWindow:windowId
-                                        validateServiceName:serviceName];
-    if (cachedMenu) {
-        NSDebugLog(@"DBusMenuImporter: Returning enhanced cached menu for window %lu - re-registering shortcuts", windowId);
-        
-        // Re-register shortcuts for cached menu since they may have been unregistered
-        // when the window lost focus
-        [self reregisterShortcutsForMenu:cachedMenu windowId:windowId];
-        
-        // Notify cache manager that window became active
-        [cacheManager windowBecameActive:windowId];
-        
-        return cachedMenu;
-    }
-    
-    // Fall back to legacy cache check for backward compatibility
     if (legacyCachedMenu) {
-        NSDebugLog(@"DBusMenuImporter: Found menu in legacy cache, migrating to enhanced cache");
-        
-        // Get application name for this window
-        NSString *appName = [MenuUtils getApplicationNameForWindow:windowId];
-        
-        // Migrate to enhanced cache
-        [cacheManager cacheMenu:legacyCachedMenu
-                      forWindow:windowId
-                    serviceName:serviceName
-                     objectPath:objectPath
-                applicationName:appName];
-        
-        // Remove from legacy cache (protected access)
-        @synchronized(_windowRegistryLock) {
-            [self.menuCache removeObjectForKey:windowKey];
-        }
+        NSDebugLog(@"DBusMenuImporter: Returning cached menu for window %lu", windowId);
         
         // Re-register shortcuts
         [self reregisterShortcutsForMenu:legacyCachedMenu windowId:windowId];
@@ -227,19 +211,9 @@
     NSDebugLog(@"DBusMenuImporter: Loading menu for window %lu from %@%@", windowId, serviceName, objectPath);
     
     // Get the menu layout from DBus
-    NSMenu *menu = [self loadMenuFromDBus:serviceName objectPath:objectPath];
+    NSMenu *menu = [self loadMenuFromDBusForWindow:windowId serviceName:serviceName objectPath:objectPath];
     if (menu) {
-        // Get application name for enhanced caching
-        NSString *appName = [MenuUtils getApplicationNameForWindow:windowId];
-        
-        // Cache in enhanced cache manager
-        [cacheManager cacheMenu:menu
-                      forWindow:windowId
-                    serviceName:serviceName
-                     objectPath:objectPath
-                applicationName:appName];
-        
-        NSDebugLog(@"DBusMenuImporter: Successfully loaded and cached menu with %lu items", 
+        NSDebugLog(@"DBusMenuImporter: Successfully loaded menu with %lu items", 
               (unsigned long)[[menu itemArray] count]);
     } else {
         NSDebugLog(@"DBusMenuImporter: Failed to load menu for registered window %lu from %@%@", windowId, serviceName, objectPath);
@@ -254,7 +228,7 @@
     return menu;
 }
 
-- (NSMenu *)loadMenuFromDBus:(NSString *)serviceName objectPath:(NSString *)objectPath
+- (NSMenu *)loadMenuFromDBusForWindow:(unsigned long)windowId serviceName:(NSString *)serviceName objectPath:(NSString *)objectPath
 {
     // Validate inputs before making DBus calls
     if (!serviceName || [serviceName length] == 0 || !objectPath || [objectPath length] == 0) {
@@ -282,6 +256,11 @@
     
         if (introspectResult) {
             NSDebugLog(@"DBusMenuImporter: Service introspection successful");
+            if ([introspectResult isKindOfClass:[NSString class]]) {
+                NSDebugLog(@"DBusMenuImporter: Introspection XML:\n%@", introspectResult);
+            } else {
+                NSDebugLog(@"DBusMenuImporter: Introspection result (non-string): %@", introspectResult);
+            }
         } else {
             NSDebugLog(@"DBusMenuImporter: Service introspection failed - service may not be available");
         }
@@ -306,7 +285,37 @@
             NSDebugLog(@"DBusMenuImporter: Failed to get menu layout from %@%@ - DBus call failed", serviceName, objectPath);
             NSDebugLog(@"DBusMenuImporter: Application registered for menus but GetLayout call failed");
             NSDebugLog(@"DBusMenuImporter: This may indicate a problem with the application's menu export");
-            return nil;
+
+            // Instead of immediately unregistering, allow the application a short time
+            // to export the expected interface. Retry a few times with exponential backoff
+            // before giving up. This addresses cases where applications set the X11
+            // properties early but only export DBus interfaces a short time later.
+            NSNumber *windowKey = [NSNumber numberWithUnsignedLong:windowId];
+            NSNumber *attemptNum = [self.loadRetries objectForKey:windowKey];
+            NSUInteger attempts = attemptNum ? [attemptNum unsignedIntegerValue] : 0;
+            const NSUInteger maxAttempts = 5;
+
+            if (attempts < maxAttempts) {
+                attempts++;
+                [self.loadRetries setObject:[NSNumber numberWithUnsignedInteger:attempts] forKey:windowKey];
+
+                // Exponential backoff: base 0.2s
+                NSTimeInterval delay = 0.2 * pow(2, attempts - 1);
+                NSDebugLog(@"DBusMenuImporter: Scheduling retry %lu for window %lu in %.2fs", (unsigned long)attempts, windowId, delay);
+
+                NSDictionary *userInfo = @{ @"windowId": windowKey };
+                [NSTimer scheduledTimerWithTimeInterval:delay
+                                                 target:self
+                                               selector:@selector(retryMenuLoad:)
+                                               userInfo:userInfo
+                                                repeats:NO];
+                return nil;
+            } else {
+                NSDebugLog(@"DBusMenuImporter: Exceeded retries for window %lu - unregistering", windowId);
+                // Exceeded retries - unregister this window and stop waiting
+                [self unregisterWindow:windowId];
+                return nil;
+            }
         }
     }
     @catch (NSException *exception) {
@@ -404,7 +413,6 @@
         // Clear cached menu for this window in both legacy and enhanced cache
         [self.menuCache removeObjectForKey:windowKey];
     }
-    [[MenuCacheManager sharedManager] invalidateCacheForWindow:windowId];
     
     // Set X11 properties for Chrome/Firefox compatibility
     // This is the key fix that was missing - these properties tell applications
@@ -485,8 +493,8 @@
             [self.registeredWindows removeObjectForKey:windowKey];
             [self.windowMenuPaths removeObjectForKey:windowKey];
             [self.menuCache removeObjectForKey:windowKey];
+            [self.loadRetries removeObjectForKey:windowKey];
         }
-        [[MenuCacheManager sharedManager] invalidateCacheForWindow:windowId];
         
         // Clean up submenu delegates associated with this service to prevent
         // crashes when trying to use stale DBus connections
@@ -495,6 +503,13 @@
         }
         
         NSDebugLog(@"DBusMenuImporter: Unregistered window %lu", windowId);
+
+        if (self.appMenuWidget && self.appMenuWidget.currentWindowId == windowId) {
+            NSDebugLog(@"DBusMenuImporter: Current menu window %lu unregistered - refreshing menu", windowId);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.appMenuWidget updateForActiveWindow];
+            });
+        }
     }
     @catch (NSException *exception) {
         NSDebugLog(@"DBusMenuImporter: Exception during unregisterWindow %lu: %@", windowId, exception);
@@ -734,6 +749,46 @@
 {
     // Get the menu object path from window properties
     return [MenuUtils getWindowProperty:windowId atomName:@"_KDE_NET_WM_APPMENU_OBJECT_PATH"];
+}
+
+- (void)retryMenuLoad:(NSTimer *)timer
+{
+    NSDictionary *userInfo = [timer userInfo];
+    if (!userInfo) return;
+
+    NSNumber *windowKey = [userInfo objectForKey:@"windowId"];
+    if (!windowKey) return;
+
+    unsigned long windowId = [windowKey unsignedLongValue];
+
+    // Re-check if window is still registered
+    NSString *svc = nil;
+    NSString *path = nil;
+    @synchronized(_windowRegistryLock) {
+        svc = [self.registeredWindows objectForKey:windowKey];
+        path = [self.windowMenuPaths objectForKey:windowKey];
+    }
+
+    if (!svc || !path) {
+        NSDebugLog(@"DBusMenuImporter: Retry for window %@ aborted - registration missing", windowKey);
+        [self.loadRetries removeObjectForKey:windowKey];
+        return;
+    }
+
+    NSDebugLog(@"DBusMenuImporter: Retry load for window %@ calling getMenuForWindow", windowKey);
+
+    // Attempt to get menu again; this will re-schedule retry on failure
+    NSMenu *menu = [self getMenuForWindow:windowId];
+    if (menu) {
+        NSDebugLog(@"DBusMenuImporter: Retry succeeded for window %@ - menu loaded", windowKey);
+        [self.loadRetries removeObjectForKey:windowKey];
+        // If this window is active, notify the app menu widget to display it
+        if (self.appMenuWidget) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.appMenuWidget checkAndDisplayMenuForNewlyRegisteredWindow:windowId];
+            });
+        }
+    }
 }
 
 - (NSMenu *)createTestMenu

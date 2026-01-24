@@ -38,6 +38,8 @@
 @property (nonatomic, strong) NSDateFormatter *timeFormatter;
 @property (nonatomic, strong) NSDateFormatter *dateFormatter;
 @property (nonatomic, strong) WindowMonitor *windowMonitor;
+@property (nonatomic, assign) unsigned long lastProcessedWindowId;
+@property (nonatomic, assign) NSTimeInterval lastProcessedTime;
 @property (nonatomic, assign) int dbusFileDescriptor;
 @property (nonatomic, strong) NSFileHandle *dbusFileHandle;
 @property (nonatomic, assign) Display *strutDisplay;
@@ -46,6 +48,14 @@
 @property (nonatomic, assign) NSTimeInterval slideInStartTime;
 @property (nonatomic, assign) CGFloat slideInStartY;
 @property (nonatomic, assign) NSTimeInterval lastActiveWindowScanTime;
+@property (nonatomic, strong) NSTimer *windowValidationTimer; // Watchdog timer to hide stale menus
+
+// Track the last-cleared window id and timestamp so we can throttle repeated clears
+@property (nonatomic, assign) unsigned long lastClearedWindowId;
+@property (nonatomic, assign) NSTimeInterval lastClearedTime;
+
+// Throttle window clear operations globally - when set prevents repeated clears for a short interval
+@property (nonatomic, assign) NSTimeInterval lastClearSuppressUntil;
 
 - (id)init;
 - (NSColor *)backgroundColor;
