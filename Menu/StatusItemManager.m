@@ -117,6 +117,9 @@
     
     NSLog(@"StatusItemManager: Loaded %lu status items", (unsigned long)[self.statusItems count]);
     
+    // No built-in provider instantiation — rely exclusively on bundle-provided status items
+
+
     // Layout items and create menu items
     [self layoutStatusItems];
     

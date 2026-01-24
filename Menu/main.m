@@ -13,6 +13,7 @@
 #import <sys/types.h>
 #import <unistd.h>
 #import <dirent.h>
+#import <X11/Xlib.h>
 
 // Function to resolve a symlink to its actual path
 static NSString *resolveSymlink(NSString *linkPath) {
@@ -97,6 +98,12 @@ static void killOtherInstances(void) {
 
 int main(int __attribute__((unused)) argc, const char * __attribute__((unused)) argv[])
 {
+    // Initialize X11 threading support
+    if (!XInitThreads()) {
+        fprintf(stderr, "Menu.app: Failed to initialize X11 threading support\n");
+        return 1;
+    }
+
     NSLog(@"Menu.app: Starting application initialization...");
     
     // Kill any other instances of Menu.app before proceeding

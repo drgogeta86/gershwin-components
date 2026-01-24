@@ -17,4 +17,10 @@
 @protocol GSGNUstepMenuClient
 - (oneway void)activateMenuItemAtPath:(NSArray *)indexPath
                             forWindow:(NSNumber *)windowId;
+
+// Request the client to push its current menu for the given X11 window ID.
+// This allows the server to import menus from already-mapped GNUstep windows
+// (for example the Desktop) by asking the client to send its menu via
+// updateMenuForWindow:menuData:clientName:.
+- (oneway void)requestMenuUpdateForWindow:(NSNumber *)windowId;
 @end

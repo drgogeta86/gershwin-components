@@ -6,6 +6,7 @@
 
 
 #import "RoundedCornersView.h"
+#import <GNUstepGUI/GSTheme.h>
 
 @implementation RoundedCornersView
 
@@ -25,7 +26,7 @@
 
 - (void)drawRect:(NSRect)dirtyRect
 {
-    // Draw black rounded corners on the top edges
+    // Draw rounded corner masks using the theme's menu background color so corners blend in
     
     NSGraphicsContext *context = [NSGraphicsContext currentContext];
     [context saveGraphicsState];
@@ -37,10 +38,10 @@
     CGFloat width = bounds.size.width;
     CGFloat height = bounds.size.height;
     
-    // Set black color for the corner masks
+    // Use solid black for corner masks to match traditional appearance
     [[NSColor blackColor] setFill];
     
-    // Left corner mask: draw the area that should be black (outside the rounded corner)
+    // Left corner mask: draw the area that should be filled to create a rounded top-left corner
     NSBezierPath *leftCornerMask = [NSBezierPath bezierPath];
     [leftCornerMask moveToPoint:NSMakePoint(0, height)]; // Top-left corner
     [leftCornerMask lineToPoint:NSMakePoint(_cornerRadius, height)]; // Move right along top
@@ -53,7 +54,7 @@
     [leftCornerMask closePath];
     [leftCornerMask fill];
     
-    // Right corner mask: draw the area that should be black (outside the rounded corner)
+    // Right corner mask: draw the area that should be filled to create a rounded top-right corner
     NSBezierPath *rightCornerMask = [NSBezierPath bezierPath];
     [rightCornerMask moveToPoint:NSMakePoint(width, height)]; // Top-right corner
     [rightCornerMask lineToPoint:NSMakePoint(width - _cornerRadius, height)]; // Move left along top

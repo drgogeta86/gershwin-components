@@ -12,7 +12,6 @@
 #import "DBusConnection.h"
 #import "AppMenuWidget.h"
 #import "MenuUtils.h"
-#import "MenuCacheManager.h"
 
 // X11 error handler to prevent crashes when querying invalid/stale windows
 static BOOL x11_error_occurred = NO;
@@ -120,6 +119,16 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     if ([_menuCache objectForKey:windowKey]) {
         return YES;
     }
+
+    // Try immediate scan for this specific window if not locally registered
+    // This handles race conditions where the window appears before we've had a chance to scan it
+    [self scanSpecificWindow:windowId];
+    
+    // Check if we have this window registered now after the scan
+    serviceName = [_registeredWindows objectForKey:windowKey];
+    if (serviceName) {
+        return YES;
+    }
     
     return NO;
 }
@@ -136,48 +145,17 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     NSString *menuPath = [_windowMenuPaths objectForKey:windowKey];
     NSString *actionPath = [_windowActionPaths objectForKey:windowKey];
     
-    // Check enhanced cache with service name validation
-    // This prevents returning stale menus when window IDs are reused
-    MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-    NSMenu *cachedMenu = [cacheManager getCachedMenuForWindow:windowId 
-                                        validateServiceName:serviceName];
-    if (cachedMenu) {
-        NSDebugLog(@"GTKMenuImporter: Returning enhanced cached GTK menu for window %lu - re-registering shortcuts", windowId);
+    // Check for cached menu
+    NSMenu *legacyCachedMenu = [_menuCache objectForKey:windowKey];
+    if (legacyCachedMenu) {
+        NSDebugLog(@"GTKMenuImporter: Returning cached GTK menu for window %lu", windowId);
         
         // Re-register shortcuts for cached menu since they may have been unregistered
         // when the window lost focus
-        [self reregisterShortcutsForMenu:cachedMenu windowId:windowId];
-        
-        // Notify cache manager that window became active
-        [cacheManager windowBecameActive:windowId];
-        
-        return cachedMenu;
-    }
-    
-    // Fall back to legacy cache check for backward compatibility
-    NSMenu *legacyCachedMenu = [_menuCache objectForKey:windowKey];
-    if (legacyCachedMenu) {
-        NSDebugLog(@"GTKMenuImporter: Found menu in legacy cache, migrating to enhanced cache");
-        
-        // Get application name for this window
-        NSString *appName = [MenuUtils getApplicationNameForWindow:windowId];
-        
-        // Migrate to enhanced cache
-        [cacheManager cacheMenu:legacyCachedMenu
-                      forWindow:windowId
-                    serviceName:serviceName
-                     objectPath:menuPath
-                applicationName:appName];
-        
-        // Remove from legacy cache
-        [_menuCache removeObjectForKey:windowKey];
-        
-        // Re-register shortcuts
         [self reregisterShortcutsForMenu:legacyCachedMenu windowId:windowId];
         
         return legacyCachedMenu;
     }
-    
     if (!serviceName || !menuPath) {
         // Try immediate scan for this specific window before giving up
         NSDebugLog(@"GTKMenuImporter: No service/menu path found for window %lu, trying immediate scan", windowId);
@@ -200,17 +178,7 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     // Load the menu using GTK protocol
     NSMenu *menu = [self loadGTKMenuFromDBus:serviceName menuPath:menuPath actionPath:actionPath];
     if (menu) {
-        // Get application name for enhanced caching
-        NSString *appName = [MenuUtils getApplicationNameForWindow:windowId];
-        
-        // Cache in enhanced cache manager
-        [cacheManager cacheMenu:menu
-                      forWindow:windowId
-                    serviceName:serviceName
-                     objectPath:menuPath
-                applicationName:appName];
-        
-        NSDebugLog(@"GTKMenuImporter: Successfully loaded and cached GTK menu with %lu items", 
+        NSDebugLog(@"GTKMenuImporter: Successfully loaded GTK menu with %lu items", 
               (unsigned long)[[menu itemArray] count]);
     } else {
         NSDebugLog(@"GTKMenuImporter: Failed to load GTK menu for window %lu", windowId);
@@ -292,7 +260,6 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     // Clear cached menu for this window in both legacy and enhanced cache
     [_menuCache removeObjectForKey:windowKey];
     [_actionGroupCache removeObjectForKey:windowKey];
-    [[MenuCacheManager sharedManager] invalidateCacheForWindow:windowId];
     
     NSDebugLog(@"GTKMenuImporter: Registered GTK window %lu with service=%@ menuPath=%@ actionPath=%@", 
           windowId, serviceName, objectPath, actionPath);
@@ -310,7 +277,6 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     [_windowActionPaths removeObjectForKey:windowKey];
     [_menuCache removeObjectForKey:windowKey];
     [_actionGroupCache removeObjectForKey:windowKey];
-    [[MenuCacheManager sharedManager] invalidateCacheForWindow:windowId];
     
     // Clean up submenu delegates associated with this service to prevent
     // crashes when trying to use stale DBus connections
@@ -319,6 +285,13 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     }
     
     NSDebugLog(@"GTKMenuImporter: Unregistered GTK window %lu", windowId);
+
+    if (self.appMenuWidget && self.appMenuWidget.currentWindowId == windowId) {
+        NSDebugLog(@"GTKMenuImporter: Current menu window %lu unregistered - refreshing menu", windowId);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.appMenuWidget updateForActiveWindow];
+        });
+    }
 }
 
 - (void)scanSpecificWindow:(unsigned long)windowId
@@ -341,8 +314,12 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
     x11_error_occurred = NO;  // Reset error state before checking
     XWindowAttributes attrs;
     if (XGetWindowAttributes(display, window, &attrs) == 0 || x11_error_occurred) {
-        NSDebugLog(@"GTKMenuImporter: Window %lu not ready/valid%s in immediate scan, skipping", 
+        static unsigned long lastLogWindow = 0;
+        if (lastLogWindow != windowId) {
+             NSLog(@"GTKMenuImporter: Window %lu not ready/valid%s in immediate scan, skipping", 
               windowId, x11_error_occurred ? " (X11 error)" : "");
+             lastLogWindow = windowId;
+        }
         XSetErrorHandler(oldHandler);
         XCloseDisplay(display);
         return;
@@ -392,7 +369,12 @@ static int x11ErrorHandler(Display *display, XErrorEvent *error) {
             NSDebugLog(@"GTKMenuImporter: Window %lu has bus name but no object path", windowId);
         }
     } else {
-        NSDebugLog(@"GTKMenuImporter: Window %lu has no GTK menu properties", windowId);
+        // Log this clearly so we know why GTK import for GIMP etc might fail
+        static unsigned long lastLogWindow = 0;
+        if (lastLogWindow != windowId) {
+             NSLog(@"GTKMenuImporter: Window %lu has no GTK menu properties (bus/path missing)", windowId);
+             lastLogWindow = windowId;
+        }
     }
     
     // DEFENSIVE: Only free if the properties were successfully retrieved

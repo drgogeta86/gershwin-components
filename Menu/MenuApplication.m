@@ -10,7 +10,6 @@
 #import "X11ShortcutManager.h"
 #import "DBusMenuParser.h"
 #import "DBusConnection.h"
-#import "MenuCacheManager.h"
 #import "CustomMenuPanel.h"
 #import "ActionSearch.h"
 #import <signal.h>
@@ -19,9 +18,16 @@
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
 
+// For crash backtraces
+#include <execinfo.h>
+#include <fcntl.h>
+
 // Global reference for cleanup in signal handlers
 static MenuController *g_controller = nil;
 static volatile sig_atomic_t cleanup_in_progress = 0;
+
+// Global accessor to retrieve the MenuController instance from other modules
+MenuController *MenuControllerGlobal(void) { return g_controller; }
 
 // Cleanup function for atexit
 static void cleanup_on_exit(void)
@@ -34,9 +40,6 @@ static void cleanup_on_exit(void)
     @try {
         [[X11ShortcutManager sharedManager] cleanup];
         [DBusMenuParser cleanup];
-        
-        // Log final cache statistics
-        [[MenuCacheManager sharedManager] logCacheStatistics];
     } @catch (NSException *exception) {
         NSLog(@"Menu.app: Exception during atexit cleanup: %@", exception);
     }
@@ -47,41 +50,48 @@ static void signalHandler(int sig)
 {
     if (cleanup_in_progress) return;
     cleanup_in_progress = 1;
-    
+
+    // SIGUSR1 is used as a non-fatal probe; log and continue
+    if (sig == SIGUSR1) {
+        NSLog(@"Menu.app: USR1 signal handled, continuing operation...");
+        cleanup_in_progress = 0; // reset flag since we aren't exiting
+        return;
+    }
+
     const char *signame = "UNKNOWN";
     switch(sig) {
         case SIGTERM: signame = "SIGTERM"; break;
         case SIGINT:  signame = "SIGINT"; break;
         case SIGHUP:  signame = "SIGHUP"; break;
-        case SIGUSR1: signame = "SIGUSR1"; break;
     }
-    
+
     NSLog(@"Menu.app: Received signal %d (%s), performing cleanup...", sig, signame);
-    
-    // For USR1, just log and return without exiting (it's often used for testing)
-    if (sig == SIGUSR1) {
-        NSLog(@"Menu.app: USR1 signal handled, continuing operation...");
-        cleanup_in_progress = 0;  // Reset cleanup flag
-        return;
-    }
-    
+
     @try {
         // Clean up global shortcuts
         [[X11ShortcutManager sharedManager] cleanup];
         [DBusMenuParser cleanup];
-        
-        // Log final cache statistics
-        [[MenuCacheManager sharedManager] logCacheStatistics];
     } @catch (NSException *exception) {
         NSLog(@"Menu.app: Exception during signal cleanup: %@", exception);
     }
-    
+
     // Reset signal handlers to default to avoid infinite loops
     signal(sig, SIG_DFL);
-    
+
     // Exit gracefully
     NSLog(@"Menu.app: Cleanup complete, exiting...");
     exit(0);
+}
+
+// Crash handler placed at file scope so it can be used in sigaction registrations
+static void crashHandler(int sig, siginfo_t *si, void *unused) {
+    int fd = open("/tmp/menu_crash_backtrace.log", O_CREAT|O_WRONLY|O_APPEND, 0644);
+    if (fd >= 0) {
+        dprintf(fd, "Menu.app CRASH: signal %d (si_code=%d, si_addr=%p) pid=%d\n", sig, si?si->si_code:0, si?si->si_addr:NULL, getpid());
+        // Backtrace unavailable on this platform without linking execinfo; keep minimal info.
+        close(fd);
+    }
+    _exit(128 + sig);
 }
 
 // Forward declare our custom drawRect function
@@ -266,9 +276,6 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     // Check for existing menu applications asynchronously (non-blocking)
     [self checkForExistingMenuApplicationAsync];
     
-    // Configure menu cache settings from command line arguments
-    [self configureCacheSettings];
-    
     // DON'T call super finishLaunching as it may be causing immediate termination
     // [super finishLaunching];
     NSLog(@"MenuApplication: Skipped super finishLaunching to prevent termination");
@@ -286,6 +293,8 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     NSLog(@"MenuApplication: Creating MenuController...");
     self.controller = [[MenuController alloc] init];
     g_controller = self.controller; // Store global reference for signal handlers
+    
+
     NSLog(@"MenuApplication: Created MenuController");
     
     // Set up signal handlers for graceful shutdown
@@ -329,7 +338,20 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     } else {
         NSLog(@"MenuApplication: atexit handler registered");
     }
-    
+
+    // Register crash handler (the handler is defined at file scope) for SIGSEGV and SIGBUS
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = crashHandler;
+        sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGBUS, &sa, NULL);
+
+        NSLog(@"MenuApplication: Crash handlers for SIGSEGV and SIGBUS registered (writing to /tmp/menu_crash_backtrace.log)");
+    }
+
     NSLog(@"MenuApplication: Starting DBus global menu bar");
     
     // Create protocol manager first
@@ -438,9 +460,6 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
         [[X11ShortcutManager sharedManager] cleanup];
         [DBusMenuParser cleanup];
         
-        // Log final cache statistics
-        [[MenuCacheManager sharedManager] logCacheStatistics];
-        
         NSLog(@"MenuApplication: Graceful cleanup completed");
     } @catch (NSException *exception) {
         NSLog(@"MenuApplication: Exception during graceful termination: %@", exception);
@@ -455,58 +474,5 @@ id menu_drawRectWithoutBottomLine(id self, SEL cmd __attribute__((unused)), NSRe
     return NO; // Menu app runs without visible windows
 }
 
-- (void)configureCacheSettings
-{
-    NSLog(@"MenuApplication: Configuring menu cache settings...");
-    
-    MenuCacheManager *cacheManager = [MenuCacheManager sharedManager];
-    NSArray *arguments = [[NSProcessInfo processInfo] arguments];
-    
-    // Parse command line arguments for cache configuration
-    for (NSUInteger i = 1; i < [arguments count]; i++) {
-        NSString *arg = [arguments objectAtIndex:i];
-        
-        if ([arg isEqualToString:@"--cache-size"]) {
-            if (i + 1 < [arguments count]) {
-                NSString *sizeStr = [arguments objectAtIndex:i + 1];
-                NSUInteger cacheSize = [sizeStr integerValue];
-                if (cacheSize > 0 && cacheSize <= 100) {
-                    [cacheManager setMaxCacheSize:cacheSize];
-                    NSLog(@"MenuApplication: Set cache size to %lu", (unsigned long)cacheSize);
-                } else {
-                    NSLog(@"MenuApplication: Invalid cache size %@, must be 1-100", sizeStr);
-                }
-                i++; // Skip next argument
-            }
-        } else if ([arg isEqualToString:@"--cache-age"]) {
-            if (i + 1 < [arguments count]) {
-                NSString *ageStr = [arguments objectAtIndex:i + 1];
-                NSTimeInterval maxAge = [ageStr doubleValue];
-                if (maxAge > 0 && maxAge <= 3600) {
-                    [cacheManager setMaxCacheAge:maxAge];
-                    NSLog(@"MenuApplication: Set cache max age to %.1fs", maxAge);
-                } else {
-                    NSLog(@"MenuApplication: Invalid cache age %@, must be 1-3600 seconds", ageStr);
-                }
-                i++; // Skip next argument
-            }
-        } else if ([arg isEqualToString:@"--cache-stats"]) {
-            // Enable periodic cache statistics logging
-            NSLog(@"MenuApplication: Enabled cache statistics logging");
-            // This will be logged automatically by the cache manager
-        } else if ([arg isEqualToString:@"--help"]) {
-            NSLog(@"MenuApplication: Usage: Menu.app [options]");
-            NSLog(@"MenuApplication:   --cache-size N    Set max cache size (1-100 windows, default: 20)");
-            NSLog(@"MenuApplication:   --cache-age N     Set max cache age (1-3600 seconds, default: 300)");
-            NSLog(@"MenuApplication:   --cache-stats     Enable periodic cache statistics logging");
-            NSLog(@"MenuApplication:   --help            Show this help");
-        }
-    }
-    
-    // Log current cache configuration
-    NSDictionary *stats = [cacheManager getCacheStatistics];
-    NSLog(@"MenuApplication: Cache configured - size: %@, max age: %.1fs", 
-          stats[@"maxCacheSize"], [stats[@"maxCacheAge"] doubleValue]);
-}
-
+// configureCacheSettings removed
 @end

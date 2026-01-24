@@ -38,12 +38,13 @@ Menu_OBJC_FILES = \
 	MenuUtils.m \
 	X11ShortcutManager.m \
 	RoundedCornersView.m \
-	MenuCacheManager.m \
 	ActionSearch.m \
 	StatusItemManager.m \
 	StatusItemsView.m \
 	WindowMonitor.m \
-	AppMenuImporter.m
+	AppMenuImporter.m \
+	StatusItems/TimeDisplay/TimeDisplayProvider.m \
+	StatusItems/SystemMonitor/SystemMonitorProvider.m
 
 # Header files
 Menu_HEADER_FILES = \
@@ -69,7 +70,6 @@ Menu_HEADER_FILES = \
 	MenuUtils.h \
 	X11ShortcutManager.h \
 	RoundedCornersView.h \
-	MenuCacheManager.h \
 	ActionSearch.h \
 	StatusItemProvider.h \
 	StatusItemManager.h \
@@ -131,15 +131,15 @@ custom-install: $(APP_NAME).app
 		cp -R StatusItems/TimeDisplay/TimeDisplay.bundle $(DESTDIR)/System/Library/Menu/StatusItems/ || true; \
 	else \
 		echo "Installing $(APP_NAME) to $(INSTALL_APPS_DIR)"; \
-		sudo -A rm -rf $(GNUSTEP_SYSTEM_APPS)/$(APP_NAME).app || true; \
-		sudo -A mkdir -p $(INSTALL_APPS_DIR); \
-		sudo -A cp -R $(APP_NAME).app $(INSTALL_APPS_DIR)/; \
-		sudo -A mkdir -p $(INSTALL_APPS_DIR)/$(APP_NAME).app/Resources; \
-		sudo -A cp Menu.png $(INSTALL_APPS_DIR)/$(APP_NAME).app/Resources/; \
+		rm -rf $(GNUSTEP_SYSTEM_APPS)/$(APP_NAME).app || true; \
+		mkdir -p $(INSTALL_APPS_DIR); \
+		cp -R $(APP_NAME).app $(INSTALL_APPS_DIR)/; \
+		mkdir -p $(INSTALL_APPS_DIR)/$(APP_NAME).app/Resources; \
+		cp Menu.png $(INSTALL_APPS_DIR)/$(APP_NAME).app/Resources/; \
 			echo "Installing status item bundles..."; \
-			sudo -A mkdir -p /System/Library/Menu/StatusItems; \
-			sudo -A cp -R StatusItems/SystemMonitor/SystemMonitor.bundle /System/Library/Menu/StatusItems/ || true; \
-			sudo -A cp -R StatusItems/TimeDisplay/TimeDisplay.bundle /System/Library/Menu/StatusItems/ || true; \
+			mkdir -p /System/Library/Menu/StatusItems; \
+			cp -R StatusItems/SystemMonitor/SystemMonitor.bundle /System/Library/Menu/StatusItems/ || true; \
+			cp -R StatusItems/TimeDisplay/TimeDisplay.bundle /System/Library/Menu/StatusItems/ || true; \
 	fi
 # Override uninstall target to properly support DESTDIR and PREFIX
 uninstall:: custom-uninstall
@@ -150,5 +150,5 @@ custom-uninstall:
 		rm -rf $(DESTDIR)$(INSTALL_APPS_DIR)/$(APP_NAME).app; \
 	else \
 		echo "Uninstalling $(APP_NAME) from $(INSTALL_APPS_DIR)"; \
-		sudo -A rm -rf $(INSTALL_APPS_DIR)/$(APP_NAME).app; \
+		rm -rf $(INSTALL_APPS_DIR)/$(APP_NAME).app; \
 	fi
