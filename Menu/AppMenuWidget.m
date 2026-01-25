@@ -1115,9 +1115,26 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     }
 
     // Directories to search for .app bundles (make robust to both plural/singular and common locations)
-    NSArray *dirs = @[[NSHomeDirectory() stringByAppendingPathComponent:@"Applications"], @"/Applications", @"/System/Applications", @"/System/Application", @"/Local/Applications", @"/Local/Application"];
+    NSArray *dirs = @[[NSHomeDirectory() stringByAppendingPathComponent:@"Applications"],
+                      @"/Local/Applications", @"/Local/Application",
+                      @"/Network/Applications", @"/Network/Application",
+                      @"/Applications",
+                      @"/System/Applications", @"/System/Application"];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSMutableArray *appPaths = [NSMutableArray array];
+
+    // Map of dedupeKey -> @{ "path": path, "title": title, "priority": @(priority) }
+    NSMutableDictionary *appsByKey = [NSMutableDictionary dictionary];
+
+    // Helper to compute a precedence score for a given path (higher wins)
+    NSInteger (^priorityForPath)(NSString *) = ^NSInteger(NSString *p) {
+        NSString *homePrefix = [NSHomeDirectory() stringByAppendingPathComponent:@"Applications"];
+        if ([p hasPrefix:homePrefix]) return 4; // ~/Applications (best)
+        if ([p hasPrefix:@"/Local/Applications"] || [p hasPrefix:@"/Local/Application"]) return 3; // /Local
+        if ([p hasPrefix:@"/Applications"]) return 2; // /Applications (root)
+        if ([p hasPrefix:@"/Network/Applications"] || [p hasPrefix:@"/Network/Application"]) return 1; // /Network
+        if ([p hasPrefix:@"/System/Applications"] || [p hasPrefix:@"/System/Application"]) return 0; // /System (fallback)
+        return 0;
+    };
 
     for (NSString *dir in dirs) {
         BOOL isDir = NO;
@@ -1126,18 +1143,46 @@ static int handleX11Error(Display *display, XErrorEvent *event)
             for (NSString *entry in contents) {
                 if ([[entry pathExtension] isEqualToString:@"app"]) {
                     NSString *fullPath = [dir stringByAppendingPathComponent:entry];
-                    [appPaths addObject:fullPath];
+
+                    // Try reading bundle identifier from Info.plist (Contents/Info.plist is common)
+                    NSString *infoPath = [fullPath stringByAppendingPathComponent:@"Contents/Info.plist"];
+                    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:infoPath];
+                    NSString *bundleID = info[@"CFBundleIdentifier"];
+
+                    // Dedupe key: CFBundleIdentifier when available, otherwise lowercased bundle name
+                    NSString *key = nil;
+                    if (bundleID && [bundleID length] > 0) {
+                        key = bundleID;
+                    } else {
+                        key = [[[entry stringByDeletingPathExtension] lowercaseString] copy];
+                    }
+
+                    NSInteger pri = priorityForPath(fullPath);
+
+                    NSDictionary *existing = appsByKey[key];
+                    NSString *displayName = [[fullPath lastPathComponent] stringByDeletingPathExtension];
+                    if (!existing) {
+                        appsByKey[key] = @{@"path": fullPath, @"title": displayName, @"priority": @(pri)};
+                    } else {
+                        NSInteger existingPri = [existing[@"priority"] integerValue];
+                        if (pri > existingPri) {
+                            // Current path has higher precedence - replace
+                            appsByKey[key] = @{@"path": fullPath, @"title": displayName, @"priority": @(pri)};
+                        } else {
+                            // Keep the higher-precedence existing entry
+                        }
+                    }
                 }
             }
         }
     }
 
-    NSLog(@"AppMenuWidget: Found %lu application bundles to list", (unsigned long)[appPaths count]);
+    NSLog(@"AppMenuWidget: Found %lu application bundles after dedupe", (unsigned long)[appsByKey count]);
 
     // Sort by display name
-    NSArray *sortedApps = [appPaths sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        NSString *na = [[[a lastPathComponent] stringByDeletingPathExtension] lowercaseString];
-        NSString *nb = [[[b lastPathComponent] stringByDeletingPathExtension] lowercaseString];
+    NSArray *sortedApps = [[appsByKey allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSString *na = [[a[@"title"] lowercaseString] copy];
+        NSString *nb = [[b[@"title"] lowercaseString] copy];
         return [na compare:nb];
     }];
 
@@ -1157,11 +1202,12 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     // Clear old submenu contents
     [appsSubmenu removeAllItems];
 
-    for (NSString *appPath in sortedApps) {
-        NSString *title = [[appPath lastPathComponent] stringByDeletingPathExtension];
+    for (NSDictionary *entry in sortedApps) {
+        NSString *path = entry[@"path"];
+        NSString *title = entry[@"title"];
         NSMenuItem *appItem = [[NSMenuItem alloc] initWithTitle:title action:@selector(openApplicationBundle:) keyEquivalent:@""];
         [appItem setTarget:self];
-        [appItem setRepresentedObject:appPath];
+        [appItem setRepresentedObject:path];
         [appsSubmenu addItem:appItem];
     }
 
