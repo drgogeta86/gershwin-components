@@ -402,14 +402,34 @@ void signalHandler(int sig) {
                             name = [line substringFromIndex:5];
                             NSLog(@"[DEBUG] Found Name: %@", name);
                         } else if ([line hasPrefix:@"Exec="]) {
-                            exec = [line substringFromIndex:5];
-                            NSLog(@"[DEBUG] Found Exec: %@", exec);
+                            // Extract the command portion (first token) and strip field codes
+                            NSString *rawExec = [line substringFromIndex:5];
+                            NSArray *components = [rawExec componentsSeparatedByString:@" "];
+                            if ([components count] > 0) {
+                                exec = [[components objectAtIndex:0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                                // Remove common desktop file field codes if accidentally part of the command
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%U" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%u" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%F" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%f" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%i" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByReplacingOccurrencesOfString:@"%c" withString:@"" options:NSLiteralSearch range:NSMakeRange(0, [exec length])];
+                                exec = [exec stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                            } else {
+                                exec = [rawExec stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                            }
+                            NSLog(@"[DEBUG] Found Exec (parsed): %@ (raw: %@)", exec, rawExec);
                         }
                     }
                     if (name && exec) {
-                        NSLog(@"[DEBUG] Adding session: %@ -> %@", name, exec);
-                        [sessions addObject:name];
-                        [execs addObject:exec];
+                        // Skip placeholder or invalid Exec entries (e.g., "default")
+                        if ([[exec lowercaseString] isEqualToString:@"default"] || [exec length] == 0) {
+                            NSLog(@"[DEBUG] Skipping session '%@' because Exec is a placeholder or empty: %@", name, exec);
+                        } else {
+                            NSLog(@"[DEBUG] Adding session: %@ -> %@", name, exec);
+                            [sessions addObject:name];
+                            [execs addObject:exec];
+                        }
                     }
                 }
             }
@@ -424,7 +444,7 @@ void signalHandler(int sig) {
         [execs addObject:@"/System/Library/Scripts/Gershwin.sh"];
     }
     
-    // Check if /System/Library/Scripts/Gershwin-X11 exists and add it if found
+    // Check if Gershwin.sh exists and add it if found
     if ([[NSFileManager defaultManager] fileExistsAtPath:@"/System/Library/Scripts/Gershwin.sh"]) {
         // Check if "Gershwin" is already in the list to avoid duplicates
         NSUInteger gershwinIndex = [sessions indexOfObject:@"Gershwin"];
@@ -2828,8 +2848,6 @@ void signalHandler(int sig) {
             rightFrame.origin.x += shakeDistance;
             [loginWindow setFrameOrigin:rightFrame.origin];
             [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-            
-            // Reduce shake distance
             shakeDistance *= 0.7;
         }
         
