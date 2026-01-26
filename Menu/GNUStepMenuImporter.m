@@ -21,6 +21,8 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
 @property (nonatomic, strong) NSMutableDictionary *lastMenuDataByWindow;
 @property (nonatomic, strong) NSMutableDictionary *lastMenuUpdateTimeByWindow;
 @property (nonatomic, strong) NSConnection *menuServerConnection;
+// Workaround: retry attempts when registering DO server fails
+@property (nonatomic) NSInteger registerRetryAttempts;
 @end
 
 @implementation GNUStepMenuImporter
@@ -50,26 +52,45 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
 
 - (BOOL)registerService
 {
-    if (self.menuServerConnection) {
+    if (self.menuServerConnection && [self.menuServerConnection isValid]) {
         return YES;
     }
 
     NSConnection *connection = [NSConnection defaultConnection];
     [connection setRootObject:self];
 
-    BOOL registered = [connection registerName:kGershwinMenuServerName];
+    BOOL registered = NO;
+    @try {
+        registered = [connection registerName:kGershwinMenuServerName];
+    } @catch (NSException *e) {
+        registered = NO;
+        NSLog(@"GNUStepMenuImporter: Exception while registering server name: %@", e);
+    }
+
+    // Keep the connection reference even if registration failed. We'll retry and use
+    // a polling fallback so menus can still be imported when we can't register the DO server.
+    self.menuServerConnection = connection;
+
     if (!registered) {
         NSLog(@"GNUStepMenuImporter: Failed to register GNUstep menu server name %@", kGershwinMenuServerName);
+        // Schedule retries with exponential backoff and proactively scan clients as a fallback
+        [self scheduleRegisterRetryWithAttempt:1];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self scanForExistingMenuServices];
+        });
         return NO;
     }
 
-    // CRITICAL: Add receive port to run loop so we can receive incoming messages
+    // Safely add receive port to run loop in common modes only (avoid adding many specific modes)
     NSPort *receivePort = [connection receivePort];
-    [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSDefaultRunLoopMode];
-    [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSModalPanelRunLoopMode];
-    [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSEventTrackingRunLoopMode];
+    if (receivePort && [receivePort isKindOfClass:[NSPort class]]) {
+        @try {
+            [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSRunLoopCommonModes];
+        } @catch (NSException *e) {
+            NSLog(@"GNUStepMenuImporter: Exception adding receive port to run loop: %@", e);
+        }
+    }
 
-    self.menuServerConnection = connection;
     NSLog(@"GNUStepMenuImporter: Registered GNUstep menu server as %@ with receive port added to run loop", kGershwinMenuServerName);
 
     // Immediately attempt to import menus for already-mapped windows (Desktop, etc.)
@@ -78,6 +99,92 @@ static NSString *const kGershwinMenuServerName = @"org.gnustep.Gershwin.MenuServ
     });
 
     return YES;
+}
+
+#pragma mark - Register retry fallback
+
+- (void)scheduleRegisterRetryWithAttempt:(NSInteger)attempt
+{
+    const NSInteger MAX_ATTEMPTS = 6;
+    if (attempt > MAX_ATTEMPTS) {
+        NSLog(@"GNUStepMenuImporter: Abandoning register retries after %ld attempts", (long)attempt - 1);
+        return;
+    }
+
+    NSTimeInterval delay = MIN(30.0, pow(2.0, attempt));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        [self attemptRegisterRetry:attempt];
+    });
+}
+
+- (void)attemptRegisterRetry:(NSInteger)attempt
+{
+    @try {
+        // If already have a valid connection, avoid re-registering
+        if (self.menuServerConnection && [self.menuServerConnection isValid]) {
+            // It may still not be registered; try a lightweight register to be safe
+            NSConnection *conn = self.menuServerConnection;
+            BOOL registered = NO;
+            @try {
+                registered = [conn registerName:kGershwinMenuServerName];
+            } @catch (NSException *e) {
+                registered = NO;
+            }
+            if (registered) {
+                // Add receive port on main thread
+                NSPort *receivePort = [conn receivePort];
+                if (receivePort && [receivePort isKindOfClass:[NSPort class]]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        @try {
+                            [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSRunLoopCommonModes];
+                        } @catch (NSException *ex) {
+                            NSLog(@"GNUStepMenuImporter: Exception adding receive port during retry: %@", ex);
+                        }
+                    });
+                }
+                NSLog(@"GNUStepMenuImporter: Successfully registered GNUstep menu server after %ld attempts", (long)attempt);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self scanForExistingMenuServices];
+                });
+                return;
+            }
+        }
+
+        NSConnection *connection = self.menuServerConnection ?: [NSConnection defaultConnection];
+        [connection setRootObject:self];
+
+        BOOL registered = NO;
+        @try {
+            registered = [connection registerName:kGershwinMenuServerName];
+        } @catch (NSException *e) {
+            registered = NO;
+            NSLog(@"GNUStepMenuImporter: Exception while retrying register: %@", e);
+        }
+
+        if (registered) {
+            self.menuServerConnection = connection;
+            NSPort *receivePort = [connection receivePort];
+            if (receivePort && [receivePort isKindOfClass:[NSPort class]]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    @try {
+                        [[NSRunLoop currentRunLoop] addPort:receivePort forMode:NSRunLoopCommonModes];
+                    } @catch (NSException *e) {
+                        NSLog(@"GNUStepMenuImporter: Exception adding receive port during retry: %@", e);
+                    }
+                });
+            }
+            NSLog(@"GNUStepMenuImporter: Successfully registered GNUstep menu server after %ld attempts", (long)attempt);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self scanForExistingMenuServices];
+            });
+            return;
+        } else {
+            [self scheduleRegisterRetryWithAttempt:attempt + 1];
+        }
+    } @catch (NSException *e) {
+        NSLog(@"GNUStepMenuImporter: Exception in attemptRegisterRetry: %@", e);
+        [self scheduleRegisterRetryWithAttempt:attempt + 1];
+    }
 }
 
 - (BOOL)hasMenuForWindow:(unsigned long)windowId
