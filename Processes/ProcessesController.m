@@ -740,6 +740,33 @@ static ProcessesController *sharedController = nil;
     [self refreshProcesses];
 }
 
+- (void)setupMenu
+{
+    NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@"Processes"];
+    NSMenuItem *appMenuItem = [mainMenu addItemWithTitle:@"Processes" action:NULL keyEquivalent:@""];
+    NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"Processes"];
+    
+    [appMenu addItemWithTitle:@"About Processes" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Hide Processes" action:@selector(hide:) keyEquivalent:@"h"];
+    [appMenu addItemWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@""];
+    [appMenu addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Quit Processes" action:@selector(terminate:) keyEquivalent:@"q"];
+    
+    [mainMenu setSubmenu:appMenu forItem:appMenuItem];
+    
+    // Window Menu
+    NSMenuItem *windowMenuItem = [mainMenu addItemWithTitle:@"Window" action:NULL keyEquivalent:@""];
+    NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+    [windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [windowMenu addItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""];
+    [mainMenu setSubmenu:windowMenu forItem:windowMenuItem];
+    [NSApp setWindowsMenu:windowMenu];
+    
+    [NSApp setMainMenu:mainMenu];
+}
+
 - (void)createUI
 {
     // Create main window
@@ -750,6 +777,8 @@ static ProcessesController *sharedController = nil;
     [_mainWindow setTitle:@"Processes"];
     [_mainWindow setDelegate:self];
     
+    [self setupMenu];
+    
     // Create scroll view for table
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:[[_mainWindow contentView] bounds]];
     [scrollView setHasVerticalScroller:YES];
@@ -759,6 +788,8 @@ static ProcessesController *sharedController = nil;
     
     // Create table view
     _processesTableView = [[NSTableView alloc] initWithFrame:[scrollView bounds]];
+    [_processesTableView setFont:[NSFont systemFontOfSize:[NSFont smallSystemFontSize]]];
+    [_processesTableView setRowHeight:[_processesTableView rowHeight] - 2.0];
     [_processesTableView setDataSource:self];
     [_processesTableView setDelegate:self];
     [_processesTableView setAllowsMultipleSelection:NO];

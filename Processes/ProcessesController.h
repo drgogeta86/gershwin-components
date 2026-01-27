@@ -39,6 +39,7 @@
 - (BOOL)isRefreshing;
 
 // UI Actions
+- (void)setupMenu;
 - (IBAction)forceQuitProcess:(id)sender;
 
 // Sorting
