@@ -104,8 +104,8 @@ static int LaunchApp(NSString *appPath) {
     const char *gsLibs = getenv("GNUSTEP_SYSTEM_LIBRARIES");
     NSString *systemLibsDir = gsLibs ? [NSString stringWithUTF8String:gsLibs] : @"/System/Library/Libraries";
     NSArray *candidatePaths = @[
-        [systemLibsDir stringByAppendingPathComponent:@"libUIBridgeAgent.so"],
         [[baseDir stringByAppendingPathComponent:@"../../Agent/obj/libUIBridgeAgent.so"] stringByStandardizingPath],
+        [systemLibsDir stringByAppendingPathComponent:@"libUIBridgeAgent.so"],
         @"/usr/lib/libUIBridgeAgent.so",
         @"/usr/local/lib/libUIBridgeAgent.so"
     ];
@@ -162,10 +162,245 @@ static void RedirectLogs(void) {
 
 @interface BridgeServer : NSObject
 @property (assign) int currentPID;
+@property (assign) BOOL isWatching;
+@property (retain) NSDictionary *lastFullTree;
 - (void)checkInput:(NSTimer *)timer;
+- (void)watchLoop:(NSTimer *)timer;
+- (id)findObjectInTree:(id)node class:(NSString *)cls title:(NSString *)title tag:(NSNumber *)tag;
 @end
 
 @implementation BridgeServer
+@synthesize currentPID, isWatching, lastFullTree;
+
+- (void)dealloc {
+    [lastFullTree release];
+    [super dealloc];
+}
+
+- (void)watchLoop:(NSTimer *)timer {
+    if (!self.isWatching || self.currentPID == 0) return;
+    
+    NSLog(@"[Server] watchLoop firing for PID %d", self.currentPID);
+    id<UIBridgeProtocol> agent = ConnectToAgent(self.currentPID);
+    if (!agent) {
+        NSLog(@"[Server] watchLoop: failed to connect to agent");
+        return;
+    }
+    
+    @try {
+        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+        if (!treeJSON) {
+            NSLog(@"[Server] watchLoop: agent returned nil tree");
+            return;
+        }
+        NSDictionary *newTree = ParseJSON(treeJSON);
+        if (!newTree) {
+            NSLog(@"[Server] watchLoop: failed to parse tree JSON (len: %lu)", (unsigned long)[treeJSON length]);
+            return;
+        }
+        
+        if (self.lastFullTree) {
+            NSMutableArray *changes = [NSMutableArray array];
+            [self diffNode:self.lastFullTree withNode:newTree path:@"" results:changes];
+            
+            NSLog(@"[Server] watchLoop: found %lu changes", (unsigned long)[changes count]);
+            if ([changes count] > 0) {
+                 NSDictionary *notification = @{
+                     @"jsonrpc": @"2.0",
+                     @"method": @"notifications/ui_event",
+                     @"params": @{
+                         @"events": changes
+                     }
+                 };
+                 SendJSON(notification);
+            }
+        }
+        
+        self.lastFullTree = newTree;
+
+    } @catch (NSException *e) {
+        NSLog(@"[Server] Exception in watchLoop: %@", e);
+    }
+}
+
+- (void)diffNode:(NSDictionary *)oldNode withNode:(NSDictionary *)newNode path:(NSString *)path results:(NSMutableArray *)results {
+    NSString *objID = newNode[@"object_id"];
+    NSString *cls = newNode[@"class"];
+    
+    // Check basic props
+    NSArray *props = @[@"enabled", @"hidden", @"title", @"string", @"frame"];
+    for (NSString *p in props) {
+        id oldVal = oldNode[p];
+        id newVal = newNode[p];
+        if (newVal && ![newVal isEqual:oldVal]) {
+            [results addObject:@{
+                @"type": @"property_change",
+                @"object_id": objID,
+                @"class": cls,
+                @"property": p,
+                @"old": oldVal ?: [NSNull null],
+                @"new": newVal
+            }];
+        }
+    }
+    
+    // Check windows (if root)
+    if (newNode[@"windows"]) {
+        NSArray *oldWins = oldNode[@"windows"] ?: @[];
+        NSArray *newWins = newNode[@"windows"] ?: @[];
+        [self diffCollection:oldWins new:newWins parentPath:path type:@"window" results:results];
+    }
+    
+    // Check subviews
+    if (newNode[@"subviews"]) {
+        NSArray *oldViews = oldNode[@"subviews"] ?: @[];
+        NSArray *newViews = newNode[@"subviews"] ?: @[];
+        [self diffCollection:oldViews new:newViews parentPath:path type:@"view" results:results];
+    }
+    
+    // Recurse subviews by matching object_ids
+    if (newNode[@"subviews"] && oldNode[@"subviews"]) {
+        for (NSDictionary *newSub in newNode[@"subviews"]) {
+            NSString *sid = newSub[@"object_id"];
+            for (NSDictionary *oldSub in oldNode[@"subviews"]) {
+                if ([oldSub[@"object_id"] isEqualToString:sid]) {
+                    [self diffNode:oldSub withNode:newSub path:[path stringByAppendingFormat:@"/%@", sid] results:results];
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Recurse windows
+    if (newNode[@"windows"] && oldNode[@"windows"]) {
+        for (NSDictionary *newWin in newNode[@"windows"]) {
+            NSString *wid = newWin[@"object_id"];
+            for (NSDictionary *oldWin in oldNode[@"windows"]) {
+                if ([oldWin[@"object_id"] isEqualToString:wid]) {
+                    [self diffNode:oldWin withNode:newWin path:[path stringByAppendingFormat:@"/%@", wid] results:results];
+                    break;
+                }
+            }
+        }
+    }
+
+    // Recurse contentView
+    if (newNode[@"contentView"] && oldNode[@"contentView"]) {
+        [self diffNode:oldNode[@"contentView"] withNode:newNode[@"contentView"] path:[path stringByAppendingString:@"/contentView"] results:results];
+    }
+}
+
+- (void)diffCollection:(NSArray *)oldArr new:(NSArray *)newArr parentPath:(NSString *)path type:(NSString *)type results:(NSMutableArray *)results {
+    NSMutableSet *oldIDs = [NSMutableSet set];
+    for (NSDictionary *d in oldArr) [oldIDs addObject:d[@"object_id"]];
+    
+    NSMutableSet *newIDs = [NSMutableSet set];
+    for (NSDictionary *d in newArr) [newIDs addObject:d[@"object_id"]];
+    
+    // New items
+    for (NSDictionary *d in newArr) {
+        if (![oldIDs containsObject:d[@"object_id"]]) {
+            [results addObject:@{
+                @"type": [NSString stringWithFormat:@"%@_added", type],
+                @"object": d
+            }];
+        }
+    }
+    
+    // Removed items
+    for (NSDictionary *d in oldArr) {
+        if (![newIDs containsObject:d[@"object_id"]]) {
+            [results addObject:@{
+                @"type": [NSString stringWithFormat:@"%@_removed", type],
+                @"object_id": d[@"object_id"],
+                @"class": d[@"class"],
+                @"title": d[@"title"] ?: @""
+            }];
+        }
+    }
+}
+
+- (id)findObjectInTree:(id)node class:(NSString *)cls title:(NSString *)title tag:(NSNumber *)tag {
+    if (![node isKindOfClass:[NSDictionary class]]) return nil;
+    
+    BOOL match = YES;
+    if (cls && [node[@"class"] rangeOfString:cls options:NSCaseInsensitiveSearch].location == NSNotFound) match = NO;
+    if (tag && (!node[@"tag"] || ![node[@"tag"] isEqual:tag])) match = NO;
+    if (title) {
+        NSString *nodeTitle = node[@"title"] ?: node[@"string"];
+        if (!nodeTitle || [nodeTitle rangeOfString:title options:NSCaseInsensitiveSearch].location == NSNotFound) match = NO;
+    }
+    
+    if (match && (cls || title || tag)) return node;
+    
+    // Recurse subviews
+    for (id sub in node[@"subviews"]) {
+        id found = [self findObjectInTree:sub class:cls title:title tag:tag];
+        if (found) return found;
+    }
+    // Recurse windows if node is root
+    for (id win in node[@"windows"]) {
+        id found = [self findObjectInTree:win class:cls title:title tag:tag];
+        if (found) return found;
+    }
+    // Recurse contentView
+    if (node[@"contentView"]) {
+        id found = [self findObjectInTree:node[@"contentView"] class:cls title:title tag:tag];
+        if (found) return found;
+    }
+    
+    return nil;
+}
+
+- (void)findWidgetsInTree:(id)node class:(NSString *)cls text:(NSString *)text tag:(NSNumber *)tag visibleOnly:(BOOL)visibleOnly into:(NSMutableArray *)results {
+    if (![node isKindOfClass:[NSDictionary class]]) return;
+    
+    if (visibleOnly && [node[@"hidden"] boolValue]) return;
+    
+    BOOL match = YES;
+    if (cls && [node[@"class"] rangeOfString:cls options:NSCaseInsensitiveSearch].location == NSNotFound) match = NO;
+    if (tag && (!node[@"tag"] || ![node[@"tag"] isEqual:tag])) match = NO;
+    if (text) {
+        NSString *nodeTitle = node[@"title"] ?: node[@"string"];
+        if (!nodeTitle || [nodeTitle rangeOfString:text options:NSCaseInsensitiveSearch].location == NSNotFound) match = NO;
+    }
+    
+    if (match && (cls || text || tag)) {
+        [results addObject:node];
+    }
+    
+    // Recurse
+    for (id sub in node[@"subviews"]) [self findWidgetsInTree:sub class:cls text:text tag:tag visibleOnly:visibleOnly into:results];
+    for (id win in node[@"windows"]) [self findWidgetsInTree:win class:cls text:text tag:tag visibleOnly:visibleOnly into:results];
+    if (node[@"contentView"]) [self findWidgetsInTree:node[@"contentView"] class:cls text:text tag:tag visibleOnly:visibleOnly into:results];
+}
+
+- (id)widgetAtPoint:(NSPoint)p inTree:(id)node {
+    if (![node isKindOfClass:[NSDictionary class]]) return nil;
+    if ([node[@"hidden"] boolValue]) return nil;
+    
+    NSString *frameStr = node[@"screen_frame"];
+    if (frameStr) {
+        NSRect r = NSRectFromString(frameStr);
+        if (NSPointInRect(p, r)) {
+            // Check sub-elements first for innermost match
+            for (id sub in node[@"subviews"]) {
+                id found = [self widgetAtPoint:p inTree:sub];
+                if (found) return found;
+            }
+            if (node[@"contentView"]) {
+                id found = [self widgetAtPoint:p inTree:node[@"contentView"]];
+                if (found) return found;
+            }
+            for (id win in node[@"windows"]) {
+                id found = [self widgetAtPoint:p inTree:win];
+                if (found) return found;
+            }
+            return node;
+        }
+    }
+    return nil;
+}
 
 - (void)checkInput:(NSTimer *)timer {
     NSFileHandle *stdinHandle = [NSFileHandle fileHandleWithStandardInput];
@@ -232,8 +467,8 @@ static void RedirectLogs(void) {
             },
             @"serverInfo": @{
                 @"name": @"uibridge", 
-                @"version": @"1.1.0",
-                @"description": @"UIBridge is a comprehensive automation and introspection server for GNUstep applications. It allows for deep inspection of Objective-C object trees, UI widget discovery, menu interaction, and raw X11 input simulation. Ideal for automated testing, debugging, and accessibility auditing."
+                @"version": @"1.4.0",
+                @"description": @"UIBridge is a comprehensive automation and introspection server for GNUstep applications. It features high-performance UI tree recursion with absolute screen coordinate tracking, autonomous real-time UI logging to /tmp/uibridge_live_ui.json (allowing the AI to 'see' UI changes live), and real-time 'watch' notifications for state changes. It provides intelligent widget discovery (regex matching, tag/coordinate lookup) and robust X11 input simulation. Designed for end-to-end GUI testing, accessibility auditing, layout analysis, and fully autonomous task execution even during modal alert sessions."
             }
         };
     } else if ([method isEqualToString:@"tools/list"] || [method isEqualToString:@"list_tools"]) {
@@ -257,12 +492,18 @@ static void RedirectLogs(void) {
 
         result = @{
             @"tools": @[
-                @{@"name": @"launch_app", @"description": @"Launches a GNUstep application with the UIBridge Agent automatically injected. This is usually the first tool you should call to start working with an app. It sets up the environment and allows subsequent tools to interact with the application's internal state (Objective-C objects).", @"inputSchema": @{@"type": @"object", @"properties": @{@"app_path": @{@"type": @"string", @"description": @"The absolute path to the .app bundle or its binary executable."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"launch_app", @"description": @"Launches a GNUstep application with the UIBridge Agent injected. This automatically enables real-time UI monitoring. The current full UI state is autonomously logged every second to /tmp/uibridge_live_ui.json - you should read this file frequently to 'see' new windows or modal alerts as they happen.", @"inputSchema": @{@"type": @"object", @"properties": @{@"app_path": @{@"type": @"string", @"description": @"The absolute path to the .app bundle or its binary executable."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"list_apps", @"description": @"Scans standard GNUstep application directories and returns a list of installed applications. Use this to discover which apps are available to be launched and tested on the current system.", @"inputSchema": @{@"type": @"object", @"properties": @{}}, @"outputSchema": contentSchema},
                 @{@"name": @"list_files", @"description": @"Lists files in a given directory path. Useful for exploring application resources, data bundles, or confirming the presence of specifically required files before or during testing.", @"inputSchema": @{@"type": @"object", @"properties": @{@"path": @{@"type": @"string", @"description": @"The directory path to list."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"read_file_content", @"description": @"Reads the full text content of a file. Use this to inspect configuration files, logs, or other text-based data within the application's environment.", @"inputSchema": @{@"type": @"object", @"properties": @{@"path": @{@"type": @"string", @"description": @"The path to the file to read."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"get_root", @"description": @"Retrieves the entry-level Objective-C objects for the currently running app: the NSApp instance and a list of all top-level windows. This provides the starting point for exploring the UI widget tree and application-wide state.", @"inputSchema": @{@"type": @"object", @"properties": @{}}, @"outputSchema": contentSchema},
-                @{@"name": @"get_object_details", @"description": @"Fetches comprehensive details about a specific Objective-C object within the target application. Returns its class name, window context, frame (for views/widgets), title/labels, and object pointers to children or subview components. Essential for verifying widget state in automated tests.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"The unique object identifier (e.g., 'objc:0x...') returned by other tools."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"get_object_details", @"description": @"Fetches comprehensive details about a specific Objective-C object within the target application. Returns its class name, window context, frame (relative), window_frame (relative to window), and screen_frame (absolute). Also lists direct child components. Essential for verifying widget state and position.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"The unique object identifier (e.g., 'objc:0x...') returned by other tools."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"get_full_tree", @"description": @"Recursively fetches the entire UI hierarchy starting from a specific object, or the whole app if no ID is provided. Each object in the tree includes 'frame' (relative), 'window_frame' (relative to window root), and 'screen_frame' (absolute screen coordinates). Use this sparingly for large apps; prefer checking /tmp/uibridge_live_ui.json for rapid state checks.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"Optional object identifier to start from. If omitted, starts from NSApp."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"find_widgets", @"description": @"Scans the UI tree for all widgets matching specific criteria. Now supports searching by 'tag'. This tool works even when modal alerts are active. If you can't find a button you expect (like 'Save'), ensure you've checked the latest /tmp/uibridge_live_ui.json for the alert's window.", @"inputSchema": @{@"type": @"object", @"properties": @{@"class": @{@"type": @"string", @"description": @"Class name to match (partial matches ok)."}, @"text": @{@"type": @"string", @"description": @"Text or title content to match (supports regex)."}, @"tag": @{@"type": @"integer", @"description": @"Tag value to match."}, @"visible_only": @{@"type": @"boolean", @"description": @"If true, only returns widgets that are not hidden."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"get_widget_at", @"description": @"Identifies the UI widget located at the specified absolute screen coordinates (x, y). Useful for mapping X11 events back to Objective-C objects.", @"inputSchema": @{@"type": @"object", @"properties": @{@"x": @{@"type": @"integer", @"description": @"X screen coordinate."}, @"y": @{@"type": @"integer", @"description": @"Y screen coordinate."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"watch_app", @"description": @"Starts or stops a live stream of UI changes. When enabled, the server will emit JSON-RPC notifications ('notifications/ui_event') whenever windows are opened/closed, widgets are added/removed, or properties change. Note: The autonomous file log (/tmp/uibridge_live_ui.json) runs independently of this setting.", @"inputSchema": @{@"type": @"object", @"properties": @{@"enabled": @{@"type": @"boolean", @"description": @"Set to true to start watching, false to stop."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"wait_for_text", @"description": @"A specialized version of wait_for_object that polls the entire application until the specified text appears. This tool is modal-resilient and will continue to work while alerts or save panels are open.", @"inputSchema": @{@"type": @"object", @"properties": @{@"text": @{@"type": @"string", @"description": @"The text string to wait for."}, @"timeout": @{@"type": @"integer", @"description": @"Maximum time to wait in seconds. Defaults to 10."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"wait_for_object", @"description": @"Polls the application until an object matching the specified class and/or title appears. Modal-resilient: safely waits for alerts or sub-windows that block the main event loop.", @"inputSchema": @{@"type": @"object", @"properties": @{@"class": @{@"type": @"string", @"description": @"The class name to look for (e.g., 'NSWindow', 'TextView')."}, @"title": @{@"type": @"string", @"description": @"The title or string content to match (supports partial matching)."}, @"timeout": @{@"type": @"integer", @"description": @"Maximum time to wait in seconds. Defaults to 10."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"invoke_selector", @"description": @"Dynamically calls an Objective-C selector (method) on a remote object in the target application. This allows directly manipulating application state, triggering internal workflows, or simulating events at the model/controller level. Support passing an array of primitive arguments.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"The object identifier to call the method on."}, @"selector": @{@"type": @"string", @"description": @"The Objective-C selector name (e.g., 'setTitle:')."}, @"args": @{@"type": @"array", @"description": @"Optional array of arguments to pass to the method.", @"items": @{}}}}, @"outputSchema": contentSchema},
                 // Menu Tools
                 @{@"name": @"list_menus", @"description": @"Provides a hierarchical view of the application's entire menu system. Use this to identify available actions and find the object_id of menu items for goal-oriented automation.", @"inputSchema": @{@"type": @"object", @"properties": @{}}, @"outputSchema": contentSchema},
@@ -293,6 +534,20 @@ static void RedirectLogs(void) {
                 @"description": @"Step-by-step assistant for automating a complex task within a GNUstep application using UIBridge tools.",
                 @"arguments": @[
                     @{@"name": @"task_description", @"description": @"Detailed description of the task to automate (e.g., 'Open TextEdit and type Hello World')", @"required": @YES}
+                ]
+            },
+            @{
+                @"name": @"debug_ui_flow",
+                @"description": @"Expert assistant for debugging UI flows, specifically for handling modal alerts or save dialogs that appear during automation. Tracks the live UI log to see buttons and text in modal windows as they appear.",
+                @"arguments": @[
+                    @{@"name": @"app_path", @"description": @"Absolute path to the .app bundle to debug", @"required": @YES}
+                ]
+            },
+            @{
+                @"name": @"test_layout",
+                @"description": @"Expert assistant for analyzing UI layout, detecting overlapping widgets, or verifying alignment and visibility of controls using absolute screen coordinates.",
+                @"arguments": @[
+                    @{@"name": @"app_path", @"description": @"Absolute path to the .app bundle to test", @"required": @YES}
                 ]
             }
         ]};
@@ -326,6 +581,20 @@ static void RedirectLogs(void) {
                     }
                 ]
             };
+        } else if ([name isEqualToString:@"test_layout"]) {
+            NSString *appPath = params[@"arguments"][@"app_path"];
+            result = @{
+                @"description": @"Layout Testing Assistant",
+                @"messages": @[
+                    @{
+                        @"role": @"user",
+                        @"content": @{
+                            @"type": @"text",
+                            @"text": [NSString stringWithFormat:@"I want to test the UI layout of the application at %@. Please launch it and use 'get_full_tree' to retrieve absolute screen coordinates for all widgets. Then, analyze the frames to check for any overlapping elements or controls that are clipped or off-screen.", appPath]
+                        }
+                    }
+                ]
+            };
         } else {
             errorMsg = @"Prompt not found";
         }
@@ -347,7 +616,14 @@ static void RedirectLogs(void) {
             if (path) {
                 self.currentPID = LaunchApp(path);
                 if (self.currentPID > 0) {
-                    result = @{@"pid": @(self.currentPID), @"status": @"launched"};
+                    // Automatically enable watch when a new app is launched
+                    self.isWatching = YES;
+                    result = @{
+                        @"pid": @(self.currentPID), 
+                        @"status": @"launched",
+                        @"live_ui_log": @"/tmp/uibridge_live_ui.json",
+                        @"observation": @"I have enabled real-time UI logging and watching. You can see live events via notifications/ui_event, or read /tmp/uibridge_live_ui.json at any time to get the current full state of the UI including all child widgets and their coordinates."
+                    };
                 } else {
                      errorMsg = @"Failed to launch";
                 }
@@ -505,6 +781,72 @@ static void RedirectLogs(void) {
                     } else if ([toolName isEqualToString:@"get_object_details"]) {
                         jsonResult = [agent detailsForObjectJSON:callParams[@"object_id"]];
                         if (!jsonResult) jsonResult = [agent detailsForObject:callParams[@"object_id"]];
+                    } else if ([toolName isEqualToString:@"get_full_tree"]) {
+                        jsonResult = [agent fullTreeForObjectJSON:callParams[@"object_id"]];
+                        if (!jsonResult) jsonResult = [agent fullTreeForObject:callParams[@"object_id"]];
+                    } else if ([toolName isEqualToString:@"watch_app"]) {
+                        self.isWatching = [callParams[@"enabled"] boolValue];
+                        if (self.isWatching) {
+                            // Clear last tree so it starts fresh
+                            self.lastFullTree = nil;
+                            result = @{@"status": @"watching"};
+                        } else {
+                            result = @{@"status": @"stopped"};
+                        }
+                    } else if ([toolName isEqualToString:@"wait_for_object"]) {
+                        NSString *cls = callParams[@"class"];
+                        NSString *title = callParams[@"title"];
+                        NSNumber *tag = callParams[@"tag"];
+                        int timeout = [callParams[@"timeout"] ?: @10 intValue];
+                        NSDate *expiry = [NSDate dateWithTimeIntervalSinceNow:timeout];
+                        while ([[NSDate date] compare:expiry] == NSOrderedAscending) {
+                            @try {
+                                NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                                id tree = ParseJSON(treeJSON);
+                                id found = [self findObjectInTree:tree class:cls title:title tag:tag];
+                                if (found) {
+                                    result = found;
+                                    break;
+                                }
+                            } @catch (NSException *e) {
+                                NSLog(@"[Server] Exception during wait_for_object poll: %@", e);
+                            }
+                            [NSThread sleepForTimeInterval:0.5];
+                        }
+                        if (!result) {
+                            errorMsg = [NSString stringWithFormat:@"Timed out waiting for object (class=%@, title=%@, tag=%@)", cls, title, tag];
+                        }
+                    } else if ([toolName isEqualToString:@"wait_for_text"]) {
+                        NSString *text = callParams[@"text"];
+                        int timeout = [callParams[@"timeout"] ?: @10 intValue];
+                        NSDate *expiry = [NSDate dateWithTimeIntervalSinceNow:timeout];
+                        while ([[NSDate date] compare:expiry] == NSOrderedAscending) {
+                             NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                             id tree = ParseJSON(treeJSON);
+                             id found = [self findObjectInTree:tree class:nil title:text tag:nil];
+                             if (found) {
+                                 result = found;
+                                 break;
+                             }
+                             [NSThread sleepForTimeInterval:0.5];
+                        }
+                        if (!result) errorMsg = [NSString stringWithFormat:@"Timed out waiting for text: %@", text];
+                    } else if ([toolName isEqualToString:@"find_widgets"]) {
+                        NSString *cls = callParams[@"class"];
+                        NSString *text = callParams[@"text"];
+                        NSNumber *tag = callParams[@"tag"];
+                        BOOL visibleOnly = [callParams[@"visible_only"] ?: @NO boolValue];
+                        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                        id tree = ParseJSON(treeJSON);
+                        NSMutableArray *foundArr = [NSMutableArray array];
+                        [self findWidgetsInTree:tree class:cls text:text tag:tag visibleOnly:visibleOnly into:foundArr];
+                        result = foundArr;
+                    } else if ([toolName isEqualToString:@"get_widget_at"]) {
+                        int x = [callParams[@"x"] intValue];
+                        int y = [callParams[@"y"] intValue];
+                        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                        id tree = ParseJSON(treeJSON);
+                        result = [self widgetAtPoint:NSMakePoint(x, y) inTree:tree] ?: @{};
                     } else if ([toolName isEqualToString:@"invoke_selector"]) {
                         jsonResult = [agent invokeSelectorJSON:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
                         if (!jsonResult) jsonResult = [agent invokeSelector:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
@@ -662,13 +1004,9 @@ int main(int argc, const char *argv[]) {
     // Use timer to poll for input.
     [NSTimer scheduledTimerWithTimeInterval:0.05 target:server selector:@selector(checkInput:) userInfo:nil repeats:YES];
     
-    // [[NSNotificationCenter defaultCenter] addObserver:server 
-    //                                          selector:@selector(handleInput:) 
-    //                                              name:NSFileHandleReadCompletionNotification 
-    //                                            object:inputHandle];
-    
-    // [inputHandle readInBackgroundAndNotify];
-    
+    // Watch timer for background observation
+    [NSTimer scheduledTimerWithTimeInterval:1.0 target:server selector:@selector(watchLoop:) userInfo:nil repeats:YES];
+
     NSLog(@"[Server] Starting RunLoop...");
     [[NSRunLoop currentRunLoop] run];
     

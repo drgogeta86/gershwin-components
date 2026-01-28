@@ -72,19 +72,53 @@
 
 #pragma mark - Initialization
 
+static void *LiveLogThread(void *arg) {
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSLog(@"[UIBridge] Live Log thread started");
+    UIBridgeAgent *agent = [UIBridgeAgent sharedAgent];
+    
+    while (1) {
+        NSAutoreleasePool *innerPool = [[NSAutoreleasePool alloc] init];
+        [NSThread sleepForTimeInterval:1.0];
+        @try {
+            // Snapshot the UI state autonomously. We use the modes that include modal dialogs.
+            NSDictionary *tree = [agent runOnMainThread:@selector(_main_fullTreeForObject:) withObject:nil];
+            if (tree) {
+                NSString *json = [agent jsonStringForObject:tree];
+                if (json) {
+                    [json writeToFile:@"/tmp/uibridge_live_ui.json" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                }
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[UIBridge] Exception in live log loop: %@", e);
+        }
+        [innerPool release];
+    }
+    [pool release];
+    return NULL;
+}
+
 static void *RegistrationThread(void *arg) {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     NSLog(@"[UIBridge] Registration thread started");
     
+    UIBridgeAgent *agent = [UIBridgeAgent sharedAgent];
+    
     // Poly indefinitely until successful
-    while (![[UIBridgeAgent sharedAgent] valueForKey:@"_connection"]) {
+    while (![agent valueForKey:@"_connection"]) {
         [NSThread sleepForTimeInterval:1.0];
-        [[UIBridgeAgent sharedAgent] performSelectorOnMainThread:@selector(startConnection) 
+        [agent performSelectorOnMainThread:@selector(startConnection) 
                                                  withObject:nil 
                                               waitUntilDone:NO];
     }
     
-    NSLog(@"[UIBridge] Background RunLoop starting...");
+    NSLog(@"[UIBridge] Background DO RunLoop starting...");
+    
+    // Spawn live log thread separately so it doesn't block the DO thread
+    pthread_t logThread;
+    pthread_create(&logThread, NULL, LiveLogThread, NULL);
+    pthread_detach(logThread);
+
     while (1) {
         NSDate *until = [NSDate dateWithTimeIntervalSinceNow:1.0];
         [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:until];
@@ -175,9 +209,38 @@ static void *RegistrationThread(void *arg) {
     dict[@"object_id"] = [self objectIDForObject:obj];
     dict[@"class"] = className;
     
+    if ([obj isKindOfClass:[NSView class]]) {
+        NSView *view = (NSView *)obj;
+        NSRect frame = [view frame];
+        dict[@"frame"] = NSStringFromRect(frame);
+        dict[@"hidden"] = @([view isHidden]);
+        
+        // Computed coordinates
+        @try {
+            if ([view window]) {
+                NSRect winRect = [view convertRect:[view bounds] toView:nil];
+                dict[@"window_frame"] = NSStringFromRect(winRect);
+                
+                NSRect screenRect = [[view window] convertRectToScreen:winRect];
+                dict[@"screen_frame"] = NSStringFromRect(screenRect);
+            }
+        } @catch (NSException *e) { }
+    }
+    
     if (detailed && [obj isKindOfClass:[NSView class]]) {
         NSView *view = (NSView *)obj;
-        dict[@"frame"] = NSStringFromRect([view frame]);
+        if ([view isKindOfClass:[NSControl class]]) {
+            NSControl *control = (NSControl *)view;
+            dict[@"enabled"] = @([control isEnabled]);
+            dict[@"tag"] = @([control tag]);
+        }
+        
+        if ([view isKindOfClass:[NSButton class]]) {
+            NSButton *button = (NSButton *)view;
+            dict[@"keyEquivalent"] = [button keyEquivalent] ?: @"";
+            dict[@"keyModifiers"] = @([button keyEquivalentModifierMask]);
+        }
+
         NSMutableArray *subviews = [NSMutableArray array];
         for (NSView *sub in [view subviews]) {
             [subviews addObject:[self serializeObject:sub detailed:NO]];
@@ -199,7 +262,17 @@ static void *RegistrationThread(void *arg) {
     if (detailed && [obj isKindOfClass:[NSWindow class]]) {
         NSWindow *win = (NSWindow *)obj;
         dict[@"title"] = [win title];
+        dict[@"frame"] = NSStringFromRect([win frame]);
+        dict[@"hidden"] = @(![win isVisible]);
         dict[@"contentView"] = [self serializeObject:[win contentView] detailed:NO];
+    }
+    if (detailed && [obj isKindOfClass:[NSApplication class]]) {
+        NSApplication *app = (NSApplication *)obj;
+        NSMutableArray *wins = [NSMutableArray array];
+        for (NSWindow *win in [app windows]) {
+            [wins addObject:[self serializeObject:win detailed:NO]];
+        }
+        dict[@"windows"] = wins;
     }
     if (detailed && [obj isKindOfClass:[NSMenu class]]) {
         NSMenu *menu = (NSMenu *)obj;
@@ -245,6 +318,56 @@ static void *RegistrationThread(void *arg) {
         }
     }
     return dict;
+}
+
+- (id)serializeObject:(id)obj recursiveWithDepth:(int)depth {
+    if (!obj || obj == [NSNull null] || depth < 0) return [NSNull null];
+    
+    // Base serialization with standard details
+    NSMutableDictionary *dict = [[self serializeObject:obj detailed:YES] mutableCopy];
+    
+    if ([obj isKindOfClass:[NSApplication class]]) {
+        NSApplication *app = (NSApplication *)obj;
+        NSMutableArray *fullWins = [NSMutableArray array];
+        for (NSWindow *win in [app windows]) {
+            [fullWins addObject:[self serializeObject:win recursiveWithDepth:depth - 1]];
+        }
+        dict[@"windows"] = fullWins;
+    }
+
+    if ([obj isKindOfClass:[NSView class]]) {
+        NSView *view = (NSView *)obj;
+        NSMutableArray *fullSubviews = [NSMutableArray array];
+        for (NSView *sub in [view subviews]) {
+            [fullSubviews addObject:[self serializeObject:sub recursiveWithDepth:depth - 1]];
+        }
+        dict[@"subviews"] = fullSubviews;
+    }
+    
+    if ([obj isKindOfClass:[NSWindow class]]) {
+        NSWindow *win = (NSWindow *)obj;
+        id cv = [win contentView];
+        if (cv) {
+            dict[@"contentView"] = [self serializeObject:cv recursiveWithDepth:depth - 1];
+        }
+    }
+
+    if ([obj isKindOfClass:[NSMenu class]]) {
+        NSMenu *menu = (NSMenu *)obj;
+        NSMutableArray *itemsArr = [NSMutableArray array];
+        for (NSMenuItem *item in [menu itemArray]) {
+            [itemsArr addObject:[self serializeObject:item recursiveWithDepth:depth - 1]];
+        }
+        dict[@"items"] = itemsArr;
+    }
+    if ([obj isKindOfClass:[NSMenuItem class]]) {
+        NSMenuItem *item = (NSMenuItem *)obj;
+        if ([item hasSubmenu]) {
+            dict[@"submenu"] = [self serializeObject:[item submenu] recursiveWithDepth:depth - 1];
+        }
+    }
+
+    return [dict autorelease];
 }
 
 // List all menus in the app (main menu and submenus)
@@ -318,7 +441,16 @@ static void *RegistrationThread(void *arg) {
 - (void)_main_invokeMenuItem:(NSDictionary *)params {
     UIBridgeResultContainer *container = params[@"container"];
     NSMenuItem *item = params[@"arg"];
-    [NSApp sendAction:[item action] to:[item target] from:item];
+    
+    SEL action = [item action];
+    id target = [item target];
+    
+    // Use dispatch_async to ensure we return the DO result to the server immediately,
+    // rather than waiting for the entire modal session (like an alert) to finish.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp sendAction:action to:target from:item];
+    });
+    
     [container setResult:@YES];
 }
 
@@ -367,7 +499,19 @@ static void *RegistrationThread(void *arg) {
 - (id)runOnMainThread:(SEL)sel withObject:(id)arg {
     UIBridgeResultContainer *container = [[UIBridgeResultContainer alloc] init];
     NSDictionary *params = arg ? @{@"container": container, @"arg": arg} : @{@"container": container};
-    [self performSelectorOnMainThread:sel withObject:params waitUntilDone:YES];
+    
+    // We must include NSModalPanelRunLoopMode and GSRunLoopModalMode so that 
+    // requests are processed even while the application is showing a modal 
+    // dialog (like a save alert) or tracking a menu.
+    NSArray *modes = @[NSDefaultRunLoopMode, NSModalPanelRunLoopMode, 
+                      NSEventTrackingRunLoopMode, @"GSRunLoopModalMode"];
+    
+    [self performSelector:sel 
+                 onThread:[NSThread mainThread] 
+               withObject:params 
+            waitUntilDone:YES 
+                    modes:modes];
+
     id res = [[container result] retain];
     [container release];
     return [res autorelease];
@@ -389,6 +533,15 @@ static void *RegistrationThread(void *arg) {
     id obj = [self objectForID:params[@"arg"]];
     id ser = [self serializeObject:obj detailed:YES];
     NSLog(@"[UIBridge] _main_detailsForObject returning class: %@", NSStringFromClass([ser class]));
+    [container setResult:ser];
+}
+
+- (void)_main_fullTreeForObject:(NSDictionary *)params {
+    UIBridgeResultContainer *container = params[@"container"];
+    id obj = [self objectForID:params[@"arg"]];
+    if (!obj) obj = NSApp;
+    id ser = [self serializeObject:obj recursiveWithDepth:15];
+    NSLog(@"[UIBridge] _main_fullTreeForObject returning class: %@", NSStringFromClass([ser class]));
     [container setResult:ser];
 }
 
@@ -433,6 +586,10 @@ static void *RegistrationThread(void *arg) {
     return [self jsonStringForObject:[self runOnMainThread:@selector(_main_detailsForObject:) withObject:objID]];
 }
 
+- (bycopy NSString *)fullTreeForObjectJSON:(NSString *)objID {
+     return [self jsonStringForObject:[self runOnMainThread:@selector(_main_fullTreeForObject:) withObject:objID]];
+}
+
 - (bycopy NSString *)invokeSelectorJSON:(NSString *)selectorName onObject:(NSString *)objID withArgs:(NSArray *)args {
     NSDictionary *p = @{@"selector": selectorName, @"object_id": objID, @"args": args};
     return [self jsonStringForObject:[self runOnMainThread:@selector(_main_invokeSelector:) withObject:p]];
@@ -446,6 +603,11 @@ static void *RegistrationThread(void *arg) {
 
 - (bycopy id)detailsForObject:(NSString *)objID {
     id raw = [self runOnMainThread:@selector(_main_detailsForObject:) withObject:objID];
+    return [self jsonSafeObject:raw];
+}
+
+- (bycopy id)fullTreeForObject:(NSString *)objID {
+    id raw = [self runOnMainThread:@selector(_main_fullTreeForObject:) withObject:objID];
     return [self jsonSafeObject:raw];
 }
 

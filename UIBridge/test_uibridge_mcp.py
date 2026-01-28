@@ -20,7 +20,7 @@ def send_request(proc, method, params=None, req_id=1):
     proc.stdin.write(line.encode('utf-8'))
     proc.stdin.flush()
 
-def read_response(proc, timeout=3):
+def read_response(proc, timeout=10):
     start = time.time()
     while time.time() - start < timeout:
         # Use select to wait for data on stdout
@@ -43,9 +43,10 @@ def read_response(proc, timeout=3):
     return None
 
 def test_uibridge():
-    server_path = "/System/Library/Tools/UIBridgeServer"
+    # Prioritize locally built server for testing changes
+    server_path = "/home/devuan/gershwin-build/repos/gershwin-components/UIBridge/Server/obj/UIBridgeServer"
     if not os.path.exists(server_path):
-        server_path = "/home/devuan/gershwin-build/repos/gershwin-components/UIBridge/Server/obj/UIBridgeServer"
+        server_path = "/System/Library/Tools/UIBridgeServer"
     
     log(f"Starting {server_path}...")
     proc = subprocess.Popen([server_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -80,8 +81,25 @@ def test_uibridge():
         root_data = json.loads(resp["result"]["content"][0]["text"])
         assert "windows" in root_data, "No windows in root_data"
 
-        # 6. list_menus (Moved up so we can use it in hierarchy exploration if needed, 
-        # and to avoid UnboundLocalError)
+        # 4a. get_full_tree
+        log("Testing: get_full_tree")
+        send_request(proc, "tools/call", {"name": "get_full_tree", "arguments": {}})
+        resp = read_response(proc)
+        assert resp and not resp.get("result", {}).get("isError"), f"get_full_tree failed or timed out: {resp}"
+        tree_data = json.loads(resp["result"]["content"][0]["text"])
+        assert "class" in tree_data, "Tree data should have a root class"
+        log("Full tree fetched successfully")
+
+        # 4b. wait_for_object
+        log("Testing: wait_for_object (TextView)")
+        send_request(proc, "tools/call", {"name": "wait_for_object", "arguments": {"class": "TextView"}})
+        resp = read_response(proc)
+        assert resp and not resp.get("result", {}).get("isError"), f"wait_for_object failed or timed out: {resp}"
+        found_obj = json.loads(resp["result"]["content"][0]["text"])
+        assert found_obj["class"] == "TextView" or "TextView" in found_obj["class"], f"Wait found wrong object: {found_obj['class']}"
+        log(f"wait_for_object successfully found TextView: {found_obj['object_id']}")
+
+        # 6. list_menus
         log("Testing: list_menus")
         send_request(proc, "tools/call", {"name": "list_menus", "arguments": {}})
         resp = read_response(proc)
