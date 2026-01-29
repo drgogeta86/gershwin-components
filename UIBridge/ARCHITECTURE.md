@@ -1,36 +1,37 @@
 # UIBridge Architecture
 
-UIBridge implements a decoupled architecture that bridges the gap between high-level AI agents and low-level native desktop applications. It leverages the Objective-C runtime's introspection capabilities and the Model Context Protocol (MCP) to provide a programmable interface to GNUstep applications.
+UIBridge implements a decoupled architecture that bridges the gap between high-level AI clients and low-level native desktop applications. It leverages the Objective-C runtime's introspection capabilities and the Model Context Protocol (MCP) to provide a programmable interface to GNUstep applications.
 
 ## System Overview
 
-The system is composed of an **injected agent** and a **coordinating server**.
+The system consists of a **coordinating server** that interacts with applications via the **Eau Theme UIBridge service** using GNUstep Distributed Objects (DO).
 
 ```mermaid
 graph TD
-    Client[Client / Agent] -- MCP (JSON-RPC) --> Server[UIBridge Server]
-    Server -- Distributed Objects --> Agent[UIBridge Agent]
-    Agent -- Objective-C Runtime --> App[Target Application]
+    Client[Client / AI Client] -- MCP (JSON-RPC) --> Server[UIBridge Server]
+    Server -- Distributed Objects --> App[Target App / Eau Theme]
+    App -- Objective-C Runtime --> AppContent[Internal State]
     Server -- X11 Protocol --> X11[X Server]
     Server -- LLDB API --> Debugger[Target Process]
 ```
 
-## 1. UIBridge Agent
+## 1. Eau Theme Integration
 
-The Agent is a dynamic library (`libUIBridgeAgent.so`) that runs within the target application's process space.
+Modern UIBridge workflows rely on the **Eau theme**, which is the default theme in the Gershwin desktop environment. Eau includes a built-in `UIBridge` service that registers itself via Distributed Objects on application startup.
 
-### Injection and Lifecycle
-The Agent is injected using the `LD_PRELOAD` environment variable. Upon loading, it checks the `UIBRIDGE_TARGET` environment variable against the current process name. If they match, it initializes:
-- **Registration Thread**: A background thread that periodically attempts to register the Agent with the system's `NSConnection` name server.
-- **Distributed Objects Interface**: Implements the `UIBridgeProtocol`, allowing the Server to invoke methods across process boundaries.
+### Lifecycle and Registration
+When a GNUstep application using the Eau theme launches:
+- It automatically instantiates a UIBridge provider.
+- It registers a unique service name with the `NSConnection` name server, following the pattern `org.gershwin.Gershwin.Theme.UIBridge.<PID>`.
+- This eliminates the need for any external components or complex setup.
 
 ### Object Registry and Identity
 UIBridge uses a **Pointer-as-ID** strategy (`objc:<pointer>`) to uniquely identify Objective-C objects without requiring a complex mapping table.
 - **Serialization**: Objects are serialized into JSON descriptors containing their ID, class name, and relevant state (e.g., frame for views, title for windows).
-- **Resolution**: The Agent resolves incoming IDs back to live objects using standard pointer casting, relying on the stability of objects within the same process session.
+- **Resolution**: The Service resolves incoming IDs back to live objects using standard pointer casting, relying on the stability of objects within the same process session.
 
 ### Main Thread Execution
-To ensure thread safety with AppKit, the Agent executes all state-mutating or UI-querying operations on the application's **Main Thread** using `performSelectorOnMainThread:waitUntilDone:`.
+To ensure thread safety with AppKit, the Service executes all state-mutating or UI-querying operations on the application's **Main Thread** using `performSelectorOnMainThread:waitUntilDone:`.
 
 ## 2. UIBridge Server
 
@@ -38,13 +39,14 @@ The Server acts as the central coordinator and MCP gateway.
 
 ### Connection Management
 The Server is responsible for:
-- **Application Launching**: Setting the necessary environment variables (`LD_PRELOAD`, `UIBRIDGE_TARGET`) and spawning the target process.
-- **DO Proxying**: Establishing an `NSConnection` to the injected Agent and managing the proxy object.
+- **Application Launching**: Spawning the target process.
+- **Discovery**: Scanning for registered `UIBridge` services via standard GNUstep IPC mechanisms.
+- **Proxying**: Establishing an `NSConnection` to the application's UIBridge service.
 
 ### Tool Implementation
-The Server exposes a set of **MCP Tools** that abstract the complexity of the Agent's protocol. It handles:
+The Server exposes a set of **MCP Tools** that abstract the complexity of the underlying protocol. It handles:
 - **Protocol Translation**: Converting JSON-RPC tool calls into Distributed Objects method calls.
-- **Error Handling**: Gracefully handling agent disconnects or execution failures.
+- **Error Handling**: Gracefully handling application disconnects or execution failures.
 
 ## 3. Extended Integrations
 
@@ -60,7 +62,7 @@ For deep debugging and crash analysis, the Server can attach LLDB to the target 
 
 ## 4. Communication Protocol
 
-The `UIBridgeProtocol` defines the contract between the Server and Agent. It includes methods for:
+The `UIBridgeProtocol` defines the contract between the Server and the target application's UIBridge service. It includes methods for:
 - **Introspection**: Retrieving root objects and deep object details.
 - **Control**: Invoking selectors and triggering menu actions.
-- **Serialization**: Ensuring data returned from the Agent is JSON-safe and properly sanitized.
+- **Serialization**: Ensuring data returned from the application is JSON-safe and properly sanitized.

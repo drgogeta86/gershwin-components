@@ -1,7 +1,7 @@
 include $(GNUSTEP_MAKEFILES)/common.make
 
 TOOL_NAME = UIBridgeServer
-ADDITIONAL_LDFLAGS += -L../Agent/obj -Wl,-rpath,/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:'$$ORIGIN/../../Agent/obj' -lX11 -lXext
+ADDITIONAL_LDFLAGS += -Wl,-rpath,/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu -lX11 -lXext
 UIBridgeServer_OBJC_FILES = main.m X11Support.m LLDBController.m
 UIBridgeServer_LIBRARIES = gnustep-base gnustep-gui objc
 

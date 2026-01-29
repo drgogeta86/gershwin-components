@@ -43,8 +43,8 @@ def read_response(proc, timeout=10):
     return None
 
 def test_uibridge():
-    # Prioritize locally built server for testing changes
-    server_path = "/home/devuan/gershwin-build/repos/gershwin-components/UIBridge/Server/obj/UIBridgeServer"
+    # Prioritize locally built server for testing changes. Can be overridden via UIBRIDGE_SERVER env var.
+    server_path = os.environ.get("UIBRIDGE_SERVER", os.path.join(os.path.dirname(__file__), "Server", "obj", "UIBridgeServer"))
     if not os.path.exists(server_path):
         server_path = "/System/Library/Tools/UIBridgeServer"
     

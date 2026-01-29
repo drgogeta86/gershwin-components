@@ -50,91 +50,126 @@ static void SendJSON(id obj) {
 }
 // --- Static helper functions (must be at file scope) ---
 
-static id<UIBridgeProtocol> ConnectToAgent(int pid) {
-    NSFileManager *fm = [NSFileManager defaultManager];
+// Connect to app via Distributed Objects (DO) - Theme service via DO by default
+static id<UIBridgeProtocol> ConnectToApp(int pid) {
+    id proxy = nil;
+    
+    // Try to connect to per-PID theme UIBridge service using Distributed Objects (DO)
+    // This is the preferred method - works directly with Eau theme
     if (pid > 0) {
-        NSString *connName = [NSString stringWithFormat:@"UIBridgeAgent%d", pid];
-        NSLog(@"[Server] Connecting to %@", connName);
-        id proxy = [NSConnection rootProxyForConnectionWithRegisteredName:connName host:nil];
-        if (proxy) {
-            [(NSDistantObject *)proxy setProtocolForProxy:@protocol(UIBridgeProtocol)];
-            // Use shorter timeouts to avoid hanging on modal dialogs
-            [[proxy connectionForProxy] setRequestTimeout:2.0];
-            [[proxy connectionForProxy] setReplyTimeout:2.0];
-            return proxy;
-        } else {
-            NSLog(@"[Server] Failed to get proxy for %@", connName);
-        }
+      NSString *themeServiceName = [NSString stringWithFormat:@"org.gershwin.Gershwin.Theme.UIBridge.%d", pid];
+      NSLog(@"[Server] Connecting to per-PID theme UIBridge service via DO: %@", themeServiceName);
+      proxy = [NSConnection rootProxyForConnectionWithRegisteredName:themeServiceName host:nil];
+      if (proxy) {
+        [(NSDistantObject *)proxy setProtocolForProxy:@protocol(UIBridgeProtocol)];
+        NSConnection *conn = [proxy connectionForProxy];
+        [conn setRequestTimeout:2.0];
+        [conn setReplyTimeout:2.0];
+        [conn enableMultipleThreads];
+        NSLog(@"[Server] Successfully connected to theme service via DO: %@", themeServiceName);
+        return proxy;
+      } else {
+        NSLog(@"[Server] Theme service not available via DO: %@", themeServiceName);
+      }
     }
 
-    // Fallback: scan /proc for any running UIBridgeAgent registrations. This helps
-    // when the server wasn't the process that launched the app or if PID changed.
-    NSLog(@"[Server] Scanning /proc for UIBridgeAgent registrations as fallback");
-    NSArray *procEntries = [fm contentsOfDirectoryAtPath:@"/proc" error:nil];
-    for (NSString *entry in procEntries) {
-        NSCharacterSet *digits = [NSCharacterSet decimalDigitCharacterSet];
-        if ([entry rangeOfCharacterFromSet:[digits invertedSet]].location != NSNotFound) continue;
-        NSString *trialConn = [NSString stringWithFormat:@"UIBridgeAgent%@", entry];
-        id proxy = [NSConnection rootProxyForConnectionWithRegisteredName:trialConn host:nil];
-        if (proxy) {
-            NSLog(@"[Server] Found agent via fallback: %@", trialConn);
-            [(NSDistantObject *)proxy setProtocolForProxy:@protocol(UIBridgeProtocol)];
-            [[proxy connectionForProxy] setRequestTimeout:2.0];
-            [[proxy connectionForProxy] setReplyTimeout:2.0];
-            return proxy;
-        }
+    // Fallback: scan running PIDs for any running theme DO services
+    // Note: NSFileManager contentsOfDirectoryAtPath doesn't work reliably on /proc (esp. on FreeBSD)
+    // Use ps command to get PID list portably
+    NSLog(@"[Server] Scanning PIDs via ps for theme services via DO as fallback");
+    
+    NSTask *psTask = [[NSTask alloc] init];
+    [psTask setLaunchPath:@"/bin/ps"];
+    [psTask setArguments:@[@"-axo", @"pid="]];
+    NSPipe *pipe = [NSPipe pipe];
+    [psTask setStandardOutput:pipe];
+    [psTask setStandardError:[NSFileHandle fileHandleWithNullDevice]];
+    
+    @try {
+        [psTask launch];
+        [psTask waitUntilExit];
+    } @catch (NSException *e) {
+        NSLog(@"[Server] Failed to run ps: %@", e);
+        [psTask release];
+        return nil;
+    }
+    
+    NSData *psData = [[pipe fileHandleForReading] readDataToEndOfFile];
+    [psTask release];
+    
+    NSString *psOutput = [[NSString alloc] initWithData:psData encoding:NSUTF8StringEncoding];
+    NSArray *lines = [psOutput componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    [psOutput release];
+    
+    for (NSString *line in lines) {
+      NSString *entry = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if ([entry length] == 0) continue;
+      
+      // Verify it's a numeric PID
+      NSCharacterSet *digits = [NSCharacterSet decimalDigitCharacterSet];
+      if ([entry rangeOfCharacterFromSet:[digits invertedSet]].location != NSNotFound) continue;
+      
+      // Try per-PID theme service via DO
+      NSString *themeServiceName = [NSString stringWithFormat:@"org.gershwin.Gershwin.Theme.UIBridge.%@", entry];
+      proxy = [NSConnection rootProxyForConnectionWithRegisteredName:themeServiceName host:nil];
+      if (proxy) {
+        NSLog(@"[Server] Found per-PID theme service via fallback: %@", themeServiceName);
+        [(NSDistantObject *)proxy setProtocolForProxy:@protocol(UIBridgeProtocol)];
+        NSConnection *conn = [proxy connectionForProxy];
+        [conn setRequestTimeout:2.0];
+        [conn setReplyTimeout:2.0];
+        [conn enableMultipleThreads];
+        return proxy;
+      }
     }
 
     return nil;
 }
 
+// Launch a GNUstep application
+// Apps should be built with Eau theme for UIBridge support via DO
 static int LaunchApp(NSString *appPath) {
     NSTask *task = [[NSTask alloc] init];
     NSString *appName = [[appPath lastPathComponent] stringByDeletingPathExtension];
     NSString *executable = [appPath stringByAppendingPathComponent:appName];
     [task setLaunchPath:executable];
 
-    // Set environment to inject agent
+    // Environment setup
     NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
-
-    // Resolve absolute path to the agent dylib relative to the server's own directory
-    NSString *serverPath = [[NSBundle mainBundle] executablePath];
-    if (!serverPath) serverPath = [[NSProcessInfo processInfo] arguments][0];
-
-    NSString *baseDir = [serverPath stringByDeletingLastPathComponent];
-    // Preferred agent path: use GNUSTEP_SYSTEM_LIBRARIES if set, otherwise fall back to conventional locations
-    const char *gsLibs = getenv("GNUSTEP_SYSTEM_LIBRARIES");
-    NSString *systemLibsDir = gsLibs ? [NSString stringWithUTF8String:gsLibs] : @"/System/Library/Libraries";
-    NSArray *candidatePaths = @[
-        [[baseDir stringByAppendingPathComponent:@"../../Agent/obj/libUIBridgeAgent.so"] stringByStandardizingPath],
-        [systemLibsDir stringByAppendingPathComponent:@"libUIBridgeAgent.so"],
-        @"/usr/lib/libUIBridgeAgent.so",
-        @"/usr/local/lib/libUIBridgeAgent.so"
-    ];
-    NSString *agentPath = nil;
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *p in candidatePaths) {
-        if ([fm fileExistsAtPath:p]) {
-            agentPath = p;
-            break;
-        }
+    
+    // Applications with Eau theme register their UIBridge service automatically via DO
+    
+    // Handle special cases (e.g., CreateLiveMediaAssistant that uses sudo relaunch)
+    NSString *appNameLower = [appName lowercaseString];
+    if ([appNameLower isEqualToString:@"createlivemediaassistant"]) {
+        env[@"CLM_SKIP_SUDO"] = @"1";
+        NSLog(@"[Server] Setting CLM_SKIP_SUDO=1 for CreateLiveMediaAssistant");
     }
-    if (!agentPath) {
-        // Fallback to the build-relative path (second candidate) and warn
-        agentPath = [candidatePaths[1] copy];
-        NSLog(@"[Server] WARNING: Agent library not found in standard locations; will attempt to use: %@", agentPath);
-    }
-    NSLog(@"[Server] Injecting agent from: %@", agentPath);
-    env[@"LD_PRELOAD"] = agentPath;
-    env[@"UIBRIDGE_TARGET"] = appName;
 
     [task setEnvironment:env];
+    [env release];
+
+    // Redirect child output to a log file to avoid corrupting the MCP pipe on stdout
+    NSString *logPath = [NSString stringWithFormat:@"/tmp/%@.log", appName];
+    [[NSFileManager defaultManager] removeItemAtPath:logPath error:nil];
+    [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+    NSFileHandle *logHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+    if (logHandle) {
+        [task setStandardOutput:logHandle];
+        [task setStandardError:logHandle];
+        NSLog(@"[Server] App output redirected to %@", logPath);
+    } else {
+        [task setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
+        [task setStandardError:[NSFileHandle fileHandleWithNullDevice]];
+    }
+
     [task launch];
 
     int pid = [task processIdentifier];
-    NSString *connName = [NSString stringWithFormat:@"UIBridgeAgent%d", pid];
-    NSLog(@"[Server] Launched app with PID %d, agent should register as %@", pid, connName);
+    NSLog(@"[Server] Launched app '%@' with PID %d", appName, pid);
+    NSLog(@"[Server] App should register its UIBridge service via Distributed Objects (DO) if it uses Eau theme");
 
+    [task release];
     return pid;
 }
 
@@ -167,16 +202,16 @@ static void RedirectLogs(void) {
     if (!self.isWatching || self.currentPID == 0) return;
     
     NSLog(@"[Server] watchLoop firing for PID %d", self.currentPID);
-    id<UIBridgeProtocol> agent = ConnectToAgent(self.currentPID);
-    if (!agent) {
-        NSLog(@"[Server] watchLoop: failed to connect to agent");
+    id<UIBridgeProtocol> app = ConnectToApp(self.currentPID);
+    if (!app) {
+        NSLog(@"[Server] watchLoop: failed to connect to app via DO");
         return;
     }
     
     @try {
-        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+        NSString *treeJSON = [app fullTreeForObjectJSON:nil];
         if (!treeJSON) {
-            NSLog(@"[Server] watchLoop: agent returned nil tree");
+            NSLog(@"[Server] watchLoop: app returned nil tree");
             return;
         }
         NSDictionary *newTree = ParseJSON(treeJSON);
@@ -454,7 +489,7 @@ static void RedirectLogs(void) {
             @"serverInfo": @{
                 @"name": @"uibridge", 
                 @"version": @"1.4.0",
-                @"description": @"UIBridge is a comprehensive automation and introspection server for GNUstep applications. It features high-performance UI tree recursion with absolute screen coordinate tracking, autonomous real-time UI logging to /tmp/uibridge_live_ui.json (allowing the AI to 'see' UI changes live), and real-time 'watch' notifications for state changes. It provides intelligent widget discovery (regex matching, tag/coordinate lookup) and robust X11 input simulation. Designed for end-to-end GUI testing, accessibility auditing, layout analysis, and fully autonomous task execution even during modal alert sessions."
+                @"description": @"UIBridge is a comprehensive automation and introspection server for GNUstep applications. It features high-performance UI tree recursion with absolute screen coordinate tracking, autonomous real-time UI logging (when enabled), and real-time 'watch' notifications for state changes. It provides intelligent widget discovery (regex matching, tag/coordinate lookup) and robust X11 input simulation. Designed for end-to-end GUI testing, accessibility auditing, layout analysis, and fully autonomous task execution even during modal alert sessions."
             }
         };
     } else if ([method isEqualToString:@"tools/list"] || [method isEqualToString:@"list_tools"]) {
@@ -478,16 +513,16 @@ static void RedirectLogs(void) {
 
         result = @{
             @"tools": @[
-                @{@"name": @"launch_app", @"description": @"Launches a GNUstep application with the UIBridge Agent injected. This automatically enables real-time UI monitoring. The current full UI state is autonomously logged every second to /tmp/uibridge_live_ui.json - you should read this file frequently to 'see' new windows or modal alerts as they happen.", @"inputSchema": @{@"type": @"object", @"properties": @{@"app_path": @{@"type": @"string", @"description": @"The absolute path to the .app bundle or its binary executable."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"launch_app", @"description": @"Launches a GNUstep application. The application will automatically register its UIBridge service via Distributed Objects if it uses the Eau theme.", @"inputSchema": @{@"type": @"object", @"properties": @{@"app_path": @{@"type": @"string", @"description": @"The absolute path to the .app bundle or its binary executable."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"list_apps", @"description": @"Scans standard GNUstep application directories and returns a list of installed applications. Use this to discover which apps are available to be launched and tested on the current system.", @"inputSchema": @{@"type": @"object", @"properties": @{}}, @"outputSchema": contentSchema},
                 @{@"name": @"list_files", @"description": @"Lists files in a given directory path. Useful for exploring application resources, data bundles, or confirming the presence of specifically required files before or during testing.", @"inputSchema": @{@"type": @"object", @"properties": @{@"path": @{@"type": @"string", @"description": @"The directory path to list."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"read_file_content", @"description": @"Reads the full text content of a file. Use this to inspect configuration files, logs, or other text-based data within the application's environment.", @"inputSchema": @{@"type": @"object", @"properties": @{@"path": @{@"type": @"string", @"description": @"The path to the file to read."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"get_root", @"description": @"Retrieves the entry-level Objective-C objects for the currently running app: the NSApp instance and a list of all top-level windows. This provides the starting point for exploring the UI widget tree and application-wide state.", @"inputSchema": @{@"type": @"object", @"properties": @{}}, @"outputSchema": contentSchema},
                 @{@"name": @"get_object_details", @"description": @"Fetches comprehensive details about a specific Objective-C object within the target application. Returns its class name, window context, frame (relative), window_frame (relative to window), and screen_frame (absolute). Also lists direct child components. Essential for verifying widget state and position.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"The unique object identifier (e.g., 'objc:0x...') returned by other tools."}}}, @"outputSchema": contentSchema},
-                @{@"name": @"get_full_tree", @"description": @"Recursively fetches the entire UI hierarchy starting from a specific object, or the whole app if no ID is provided. Each object in the tree includes 'frame' (relative), 'window_frame' (relative to window root), and 'screen_frame' (absolute screen coordinates). Use this sparingly for large apps; prefer checking /tmp/uibridge_live_ui.json for rapid state checks.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"Optional object identifier to start from. If omitted, starts from NSApp."}}}, @"outputSchema": contentSchema},
-                @{@"name": @"find_widgets", @"description": @"Scans the UI tree for all widgets matching specific criteria. Now supports searching by 'tag'. This tool works even when modal alerts are active. If you can't find a button you expect (like 'Save'), ensure you've checked the latest /tmp/uibridge_live_ui.json for the alert's window.", @"inputSchema": @{@"type": @"object", @"properties": @{@"class": @{@"type": @"string", @"description": @"Class name to match (partial matches ok)."}, @"text": @{@"type": @"string", @"description": @"Text or title content to match (supports regex)."}, @"tag": @{@"type": @"integer", @"description": @"Tag value to match."}, @"visible_only": @{@"type": @"boolean", @"description": @"If true, only returns widgets that are not hidden."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"get_full_tree", @"description": @"Recursively fetches the entire UI hierarchy starting from a specific object, or the whole app if no ID is provided. Each object in the tree includes 'frame' (relative), 'window_frame' (relative to window root), and 'screen_frame' (absolute screen coordinates). Use this sparingly for large apps; prefer using the watch stream (notifications/ui_event) for rapid state checks.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"Optional object identifier to start from. If omitted, starts from NSApp."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"find_widgets", @"description": @"Scans the UI tree for all widgets matching specific criteria. Now supports searching by 'tag'. This tool works even when modal alerts are active. If you can't find a button you expect (like 'Save'), ensure you've checked recent watch notifications (notifications/ui_event) for the alert's window.", @"inputSchema": @{@"type": @"object", @"properties": @{@"class": @{@"type": @"string", @"description": @"Class name to match (partial matches ok)."}, @"text": @{@"type": @"string", @"description": @"Text or title content to match (supports regex)."}, @"tag": @{@"type": @"integer", @"description": @"Tag value to match."}, @"visible_only": @{@"type": @"boolean", @"description": @"If true, only returns widgets that are not hidden."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"get_widget_at", @"description": @"Identifies the UI widget located at the specified absolute screen coordinates (x, y). Useful for mapping X11 events back to Objective-C objects.", @"inputSchema": @{@"type": @"object", @"properties": @{@"x": @{@"type": @"integer", @"description": @"X screen coordinate."}, @"y": @{@"type": @"integer", @"description": @"Y screen coordinate."}}}, @"outputSchema": contentSchema},
-                @{@"name": @"watch_app", @"description": @"Starts or stops a live stream of UI changes. When enabled, the server will emit JSON-RPC notifications ('notifications/ui_event') whenever windows are opened/closed, widgets are added/removed, or properties change. Note: The autonomous file log (/tmp/uibridge_live_ui.json) runs independently of this setting.", @"inputSchema": @{@"type": @"object", @"properties": @{@"enabled": @{@"type": @"boolean", @"description": @"Set to true to start watching, false to stop."}}}, @"outputSchema": contentSchema},
+                @{@"name": @"watch_app", @"description": @"Starts or stops a live stream of UI changes. When enabled, the server will emit JSON-RPC notifications ('notifications/ui_event') whenever windows are opened/closed, widgets are added/removed, or properties change. Note: Optional autonomous file logging (when enabled) runs independently of this setting.", @"inputSchema": @{@"type": @"object", @"properties": @{@"enabled": @{@"type": @"boolean", @"description": @"Set to true to start watching, false to stop."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"wait_for_text", @"description": @"A specialized version of wait_for_object that polls the entire application until the specified text appears. This tool is modal-resilient and will continue to work while alerts or save panels are open.", @"inputSchema": @{@"type": @"object", @"properties": @{@"text": @{@"type": @"string", @"description": @"The text string to wait for."}, @"timeout": @{@"type": @"integer", @"description": @"Maximum time to wait in seconds. Defaults to 10."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"wait_for_object", @"description": @"Polls the application until an object matching the specified class and/or title appears. Modal-resilient: safely waits for alerts or sub-windows that block the main event loop.", @"inputSchema": @{@"type": @"object", @"properties": @{@"class": @{@"type": @"string", @"description": @"The class name to look for (e.g., 'NSWindow', 'TextView')."}, @"title": @{@"type": @"string", @"description": @"The title or string content to match (supports partial matching)."}, @"timeout": @{@"type": @"integer", @"description": @"Maximum time to wait in seconds. Defaults to 10."}}}, @"outputSchema": contentSchema},
                 @{@"name": @"invoke_selector", @"description": @"Dynamically calls an Objective-C selector (method) on a remote object in the target application. This allows directly manipulating application state, triggering internal workflows, or simulating events at the model/controller level. Support passing an array of primitive arguments.", @"inputSchema": @{@"type": @"object", @"properties": @{@"object_id": @{@"type": @"string", @"description": @"The object identifier to call the method on."}, @"selector": @{@"type": @"string", @"description": @"The Objective-C selector name (e.g., 'setTitle:')."}, @"args": @{@"type": @"array", @"description": @"Optional array of arguments to pass to the method.", @"items": @{}}}}, @"outputSchema": contentSchema},
@@ -524,7 +559,7 @@ static void RedirectLogs(void) {
             },
             @{
                 @"name": @"debug_ui_flow",
-                @"description": @"Expert assistant for debugging UI flows, specifically for handling modal alerts or save dialogs that appear during automation. Tracks the live UI log to see buttons and text in modal windows as they appear.",
+                @"description": @"Expert assistant for debugging UI flows, specifically for handling modal alerts or save dialogs that appear during automation. Tracks live UI events (via the watch stream) to see buttons and text in modal windows as they appear.",
                 @"arguments": @[
                     @{@"name": @"app_path", @"description": @"Absolute path to the .app bundle to debug", @"required": @YES}
                 ]
@@ -602,22 +637,13 @@ static void RedirectLogs(void) {
             if (path) {
                 self.currentPID = LaunchApp(path);
                 if (self.currentPID > 0) {
-                    // Wait a bit for agent to register
-                    [NSThread sleepForTimeInterval:2.0];
-                    // Verify agent connection
-                    id<UIBridgeProtocol> agent = ConnectToAgent(self.currentPID);
-                    if (agent) {
-                        // Automatically enable watch when a new app is launched
-                        self.isWatching = YES;
-                        result = @{
-                            @"pid": @(self.currentPID), 
-                            @"status": @"launched_with_agent",
-                            @"live_ui_log": @"/tmp/uibridge_live_ui.json",
-                            @"observation": @"Agent successfully injected and connected. Real-time UI logging and watching enabled. You can see live events via notifications/ui_event, or read /tmp/uibridge_live_ui.json at any time to get the current full state of the UI including all child widgets and their coordinates."
-                        };
-                    } else {
-                        errorMsg = @"App launched but agent injection failed - UI tools will not work";
-                    }
+                    // Automatically enable watch when a new app is launched
+                    self.isWatching = YES;
+                    result = @{
+                        @"pid": @(self.currentPID), 
+                        @"status": @"launched",
+                        @"observation": @"Application launched. The UIBridge server will automatically attempt to connect via Distributed Objects (DO) in the background. You can monitor progress via logs or wait for 'notifications/ui_event'."
+                    };
                 } else {
                      errorMsg = @"Failed to launch";
                 }
@@ -749,7 +775,7 @@ static void RedirectLogs(void) {
             }
         } else if ([toolName isEqualToString:@"lldb_exec"]) {
             if (self.currentPID == 0) {
-                errorMsg = @"No app running. Call launch_app first.";
+                errorMsg = @"No app running. Call launch_app first with the absolute path to the .app bundle.";
             } else {
                 NSString *cmd = callParams[@"command"];
                 if (cmd) {
@@ -759,25 +785,28 @@ static void RedirectLogs(void) {
                     errorMsg = @"Missing command";
                 }
             }
-        } else if (self.currentPID == 0 && ![toolName isEqualToString:@"launch_app"]) {
-            errorMsg = @"No app running. Call launch_app first.";
         } else {
-            id<UIBridgeProtocol> agent = ConnectToAgent(self.currentPID);
-            if (!agent) {
-                errorMsg = @"Could not connect to Agent";
+            // Try to connect to app via Distributed Objects. If currentPID is 0, ConnectToApp will scan for any available service.
+            id<UIBridgeProtocol> app = ConnectToApp(self.currentPID);
+            if (!app) {
+                if (self.currentPID == 0) {
+                    errorMsg = @"No GNUstep app detected. Launch an app using the Eau theme or call launch_app first with the absolute path to the .app bundle.";
+                } else {
+                    errorMsg = @"Could not connect to app via Distributed Objects - ensure app uses Eau theme";
+                }
             } else {
                 @try {
                     id jsonResult = nil; // may be NSString, NSData, NSDictionary, or NSArray
                     if ([toolName isEqualToString:@"get_root"]) {
-                        NSLog(@"[Server] Requesting agent root objects...");
-                        jsonResult = [agent rootObjectsJSON];
-                        if (!jsonResult) jsonResult = [agent rootObjects];
+                        NSLog(@"[Server] Requesting app root objects via DO...");
+                        jsonResult = [app rootObjectsJSON];
+                        if (!jsonResult) jsonResult = [app rootObjects];
                     } else if ([toolName isEqualToString:@"get_object_details"]) {
-                        jsonResult = [agent detailsForObjectJSON:callParams[@"object_id"]];
-                        if (!jsonResult) jsonResult = [agent detailsForObject:callParams[@"object_id"]];
+                        jsonResult = [app detailsForObjectJSON:callParams[@"object_id"]];
+                        if (!jsonResult) jsonResult = [app detailsForObject:callParams[@"object_id"]];
                     } else if ([toolName isEqualToString:@"get_full_tree"]) {
-                        jsonResult = [agent fullTreeForObjectJSON:callParams[@"object_id"]];
-                        if (!jsonResult) jsonResult = [agent fullTreeForObject:callParams[@"object_id"]];
+                        jsonResult = [app fullTreeForObjectJSON:callParams[@"object_id"]];
+                        if (!jsonResult) jsonResult = [app fullTreeForObject:callParams[@"object_id"]];
                     } else if ([toolName isEqualToString:@"watch_app"]) {
                         self.isWatching = [callParams[@"enabled"] boolValue];
                         if (self.isWatching) {
@@ -795,7 +824,7 @@ static void RedirectLogs(void) {
                         NSDate *expiry = [NSDate dateWithTimeIntervalSinceNow:timeout];
                         while ([[NSDate date] compare:expiry] == NSOrderedAscending) {
                             @try {
-                                NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                                NSString *treeJSON = [app fullTreeForObjectJSON:nil];
                                 id tree = ParseJSON(treeJSON);
                                 id found = [self findObjectInTree:tree class:cls title:title tag:tag];
                                 if (found) {
@@ -815,7 +844,7 @@ static void RedirectLogs(void) {
                         int timeout = [callParams[@"timeout"] ?: @10 intValue];
                         NSDate *expiry = [NSDate dateWithTimeIntervalSinceNow:timeout];
                         while ([[NSDate date] compare:expiry] == NSOrderedAscending) {
-                             NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                             NSString *treeJSON = [app fullTreeForObjectJSON:nil];
                              id tree = ParseJSON(treeJSON);
                              id found = [self findObjectInTree:tree class:nil title:text tag:nil];
                              if (found) {
@@ -830,7 +859,7 @@ static void RedirectLogs(void) {
                         NSString *text = callParams[@"text"];
                         NSNumber *tag = callParams[@"tag"];
                         BOOL visibleOnly = [callParams[@"visible_only"] ?: @NO boolValue];
-                        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                        NSString *treeJSON = [app fullTreeForObjectJSON:nil];
                         id tree = ParseJSON(treeJSON);
                         NSMutableArray *foundArr = [NSMutableArray array];
                         [self findWidgetsInTree:tree class:cls text:text tag:tag visibleOnly:visibleOnly into:foundArr];
@@ -838,42 +867,42 @@ static void RedirectLogs(void) {
                     } else if ([toolName isEqualToString:@"get_widget_at"]) {
                         int x = [callParams[@"x"] intValue];
                         int y = [callParams[@"y"] intValue];
-                        NSString *treeJSON = [agent fullTreeForObjectJSON:nil];
+                        NSString *treeJSON = [app fullTreeForObjectJSON:nil];
                         id tree = ParseJSON(treeJSON);
                         result = [self widgetAtPoint:NSMakePoint(x, y) inTree:tree] ?: @{};
                     } else if ([toolName isEqualToString:@"invoke_selector"]) {
-                        jsonResult = [agent invokeSelectorJSON:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
-                        if (!jsonResult) jsonResult = [agent invokeSelector:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
+                        jsonResult = [app invokeSelectorJSON:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
+                        if (!jsonResult) jsonResult = [app invokeSelector:callParams[@"selector"] onObject:callParams[@"object_id"] withArgs:callParams[@"args"]];
                     } else if ([toolName isEqualToString:@"list_menus"]) {
                         // Prefer JSON variant for reliability over DO
-                        NSString *menusJSON = [agent listMenusJSON];
+                        NSString *menusJSON = [app listMenusJSON];
                         if (menusJSON) {
                             result = ParseJSON(menusJSON);
                         } else {
                             // Fallback to typed variant
-                            result = [agent listMenus];
+                            result = [app listMenus];
                         }
                     } else if ([toolName isEqualToString:@"invoke_menu_item"]) {
-                        // Call invokeMenuItem via DO proxy (agent)
-                        BOOL ok = [agent invokeMenuItem:callParams[@"object_id"]];
+                        // Call invokeMenuItem via DO proxy (app)
+                        BOOL ok = [app invokeMenuItem:callParams[@"object_id"]];
                         result = @{ @"status": ok ? @"invoked" : @"failed" };
                     } else {
                         errorMsg = [NSString stringWithFormat:@"Unknown tool: %@", toolName];
                     }
                     if (jsonResult) {
-                        // Defensive: agent may return NSString (JSON), NSData (raw bytes),
+                        // Defensive: app may return NSString (JSON), NSData (raw bytes),
                         // or even already-parsed NSDictionary/NSArray in some DO implementations.
-                        NSLog(@"[Server] Agent returned object of class: %@", NSStringFromClass([jsonResult class]));
+                        NSLog(@"[Server] App returned object of class: %@", NSStringFromClass([jsonResult class]));
                         if ([jsonResult isKindOfClass:[NSString class]]) {
                             result = ParseJSON(jsonResult);
                         } else if ([jsonResult isKindOfClass:[NSData class]]) {
-                            NSLog(@"[Server] Agent returned NSData — attempting to decode as UTF-8 JSON string");
+                            NSLog(@"[Server] App returned NSData — attempting to decode as UTF-8 JSON string");
                             NSString *s = [[NSString alloc] initWithData:jsonResult encoding:NSUTF8StringEncoding];
                             if (s) {
                                 result = ParseJSON(s);
                             } else {
-                                NSLog(@"[Server] Failed to decode agent NSData as UTF-8");
-                                result = @{ @"error": @"Agent returned non-UTF8 NSData" };
+                                NSLog(@"[Server] Failed to decode app NSData as UTF-8");
+                                result = @{ @"error": @"Service returned non-UTF8 NSData" };
                             }
                             [s release];
                         } else if ([jsonResult isKindOfClass:[NSDictionary class]] || [jsonResult isKindOfClass:[NSArray class]]) {
@@ -882,7 +911,7 @@ static void RedirectLogs(void) {
                             result = nil;
                         } else {
                             // Fallback: try to stringify and parse
-                            NSLog(@"[Server] Agent returned unexpected type — using description() as fallback");
+                            NSLog(@"[Server] App returned unexpected type — using description() as fallback");
                             NSString *desc = [jsonResult description];
                             result = ParseJSON(desc);
                         }
@@ -970,8 +999,7 @@ int main(int argc, const char *argv[]) {
     NSArray *configCandidates = @[
         @"/System/Library/Preferences/GNUstep.conf",
         @"/Local/Library/Preferences/GNUstep.conf",
-        @"/etc/GNUstep/GNUstep.conf",
-        @"/home/devuan/gershwin-build/repos/gershwin-system/Library/Preferences/GNUstep.conf"
+        @"/etc/GNUstep/GNUstep.conf"
     ];
     for (NSString *conf in configCandidates) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:conf]) {
@@ -983,7 +1011,11 @@ int main(int argc, const char *argv[]) {
     // Set LD_LIBRARY_PATH for GNUstep libraries
     const char *ldpath = getenv("LD_LIBRARY_PATH");
     NSString *ldpathStr = ldpath ? [NSString stringWithUTF8String:ldpath] : @"";
-    NSString *newLdPath = [NSString stringWithFormat:@"/System/Library/Libraries:/Local/Library/Libraries:/home/devuan/gershwin-build/repos/libs-base/Source/obj:/home/devuan/gershwin-build/repos/libs-gui/Source/obj:/home/devuan/gershwin-build/repos/UIBridge/Agent/obj%@%@", ldpath ? @":" : @"", ldpathStr];
+    NSMutableArray *parts = [NSMutableArray arrayWithObjects:@"/System/Library/Libraries", @"/Local/Library/Libraries", nil];
+    NSString *extra = [[[NSProcessInfo processInfo] environment] objectForKey:@"UIBRIDGE_EXTRA_LIBS"];
+    if (extra && [extra length] > 0) [parts addObject:extra];
+    if ([ldpathStr length] > 0) [parts addObject:ldpathStr];
+    NSString *newLdPath = [parts componentsJoinedByString:@":"];
     setenv("LD_LIBRARY_PATH", [newLdPath UTF8String], 1);
     
     // Unbuffer stdout

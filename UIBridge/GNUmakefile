@@ -1,20 +1,14 @@
-.PHONY: all agent server install clean
+.PHONY: all server install clean
 
-# Top-level helper Makefile for building the Agent and Server.
-# The Server depends on the Agent (Agent must be built first).
+# Top-level helper Makefile for building the Server.
 
-all: agent server
+all: server
 
-agent:
-	$(MAKE) -C Agent
-
-server: agent
+server:
 	$(MAKE) -C Server
 
 install:
-	$(MAKE) -C Agent install
 	$(MAKE) -C Server install
 
 clean:
-	$(MAKE) -C Agent clean
 	$(MAKE) -C Server clean

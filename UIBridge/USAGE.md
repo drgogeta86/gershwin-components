@@ -11,38 +11,29 @@ Before using UIBridge, ensure your system has the following installed:
 
 ## Installation
 
-UIBridge consists of two main targets: the Agent and the Server. They should be built in the following order:
+UIBridge is built as a standalone server that interacts with applications using the Eau theme.
 
-### 1. Build the Agent
-The Agent is the component injected into target applications.
+### Build the Server
+The Server is the primary component and coordinates UI introspection and control.
 ```bash
-cd Agent
-make
-```
-Successful build produces `obj/libUIBridgeAgent.so`.
-
-### 2. Build the Server
-The Server coordinates the agent and provides the MCP interface.
-```bash
-cd ../Server
+cd Server
 make
 ```
 Successful build produces `obj/UIBridgeServer`.
 
-### Installing to system locations (optional)
+### Installing to system locations
 
-You can install the agent and server to a chosen GNUstep domain (requires root for system domains):
+You can install the Server to a chosen GNUstep domain (requires root for system domains):
 
 ```bash
-sudo make install -C Agent
 sudo make install -C Server
 ```
 
-The server will be installed to `Library/Tools/UIBridgeServer` of the chosen domain and the agent will be installed to `Library/Libraries/libUIBridgeAgent.so` of the chosen domain (for example: `/System`, `/Local`, or a user domain like `~`). The Makefiles respect `GNUSTEP_SYSTEM_TOOLS` for the Tools directory and `GNUSTEP_SYSTEM_LIBRARIES` for the libraries directory when these are set in your GNUstep environment; otherwise they fall back to `/System/Library/Tools` and `/System/Library/Libraries` respectively. Installing to the domain's `Library/Tools` directory ensures `UIBridgeServer` is available on the user PATH.
+The server will be installed to `Library/Tools/UIBridgeServer` of the chosen domain. The Makefiles respect `GNUSTEP_SYSTEM_TOOLS` for the Tools directory when these are set in your GNUstep environment; otherwise they fall back to `/System/Library/Tools`. Installing to the domain's `Library/Tools` directory ensures `UIBridgeServer` is available on the user PATH.
 
 ## Running UIBridge
 
-UIBridge is designed to be used as a Model Context Protocol (MCP) server. It can be integrated into AI agent environments or run manually for diagnostic purposes.
+UIBridge is designed to be used as a Model Context Protocol (MCP) server. It can be integrated into AI environments or run manually for diagnostic purposes.
 
 ### Manual Execution
 To start the server manually:
@@ -81,7 +72,7 @@ UIBridge exposes several tools via its MCP interface for application lifecycle m
 ### Application Lifecycle
 
 #### `launch_app`
-Launches a GNUstep application with the UIBridge Agent automatically injected.
+Launches a GNUstep application. The application will automatically register its UIBridge service via Distributed Objects if it uses the Eau theme.
 - **Arguments**: `app_path` (Absolute path to the `.app` bundle or executable).
 - **Returns**: PID and launch status.
 
