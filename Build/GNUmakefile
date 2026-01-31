@@ -13,4 +13,6 @@ Build_HEADERS = \
 
 ADDITIONAL_GUI_LIBS += -ldispatch
 
+Build_APPLICATION_ICON = Build.png
+
 include $(GNUSTEP_MAKEFILES)/application.make
