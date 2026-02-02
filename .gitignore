@@ -46,3 +46,5 @@ Menu/StatusItems/TimeDisplay/TimeDisplay.bundle/TimeDisplay
 Processes/tools/safe_proc_scan
 *.bundle
 *.d
+*.so
+*.so.*
