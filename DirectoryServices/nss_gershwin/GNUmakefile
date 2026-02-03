@@ -29,6 +29,9 @@ install: $(NSS_LIB)
 ifeq ($(findstring linux,$(GNUSTEP_HOST_OS)),linux)
 	@echo "$(INSTALL_DIR)" > /etc/ld.so.conf.d/gershwin.conf
 	ldconfig
-else
-	ldconfig -m $(INSTALL_DIR) || true
+endif
+ifeq ($(findstring freebsd,$(GNUSTEP_HOST_OS)),freebsd)
+	install -d /usr/local/libdata/ldconfig
+	@echo "$(INSTALL_DIR)" > /usr/local/libdata/ldconfig/gershwin
+	ldconfig
 endif
