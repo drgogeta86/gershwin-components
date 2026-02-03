@@ -445,6 +445,156 @@ _nss_gershwin_getspnam_r(const char *name, struct spwd *spw,
 
     return NSS_STATUS_SUCCESS;
 }
+
+/*
+ * Check if a group exists in /etc/group
+ */
+static int
+group_exists_in_etc_linux(const char *groupname)
+{
+    FILE *f = fopen("/etc/group", "r");
+    if (!f) return 0;
+
+    char line[512];
+    size_t namelen = strlen(groupname);
+
+    while (fgets(line, sizeof(line), f)) {
+        /* Check if line starts with "groupname:" */
+        if (strncmp(line, groupname, namelen) == 0 && line[namelen] == ':') {
+            fclose(f);
+            return 1;
+        }
+    }
+
+    fclose(f);
+    return 0;
+}
+
+#define ADMIN_GID_LINUX 5000
+#define WHEEL_GID_LINUX 0
+#define SUDO_GID_LINUX 27
+
+/*
+ * initgroups_dyn - return all groups for a user (Linux)
+ * This is where we add wheel (0) and sudo (27) for admin users
+ */
+enum nss_status
+_nss_gershwin_initgroups_dyn(const char *user, gid_t group __attribute__((unused)),
+                              long int *start, long int *size, gid_t **groupsp,
+                              long int limit, int *errnop)
+{
+    char request[256];
+    char response[BUFFER_SIZE];
+    gid_t *groups = *groupsp;
+    long int count = *start;
+    int is_admin = 0;
+
+    /* Query dshelper for user's group memberships */
+    snprintf(request, sizeof(request), "getgrouplist:%s", user);
+
+    if (query_dshelper(request, response, sizeof(response)) != 0) {
+        /* User not found in our directory - that's OK, not an error */
+        return NSS_STATUS_SUCCESS;
+    }
+
+    /* Response format: gid1,gid2,gid3,... */
+    char *saveptr;
+    char *gidstr = strtok_r(response, ",", &saveptr);
+
+    while (gidstr) {
+        gid_t gid = (gid_t)strtoul(gidstr, NULL, 10);
+
+        /* Check if already in list */
+        int found = 0;
+        for (long int i = 0; i < count; i++) {
+            if (groups[i] == gid) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            /* Grow array if needed */
+            if (count >= *size) {
+                long int newsize = *size * 2;
+                if (limit > 0 && newsize > limit) newsize = limit;
+                if (newsize == *size) {
+                    *errnop = ERANGE;
+                    return NSS_STATUS_TRYAGAIN;
+                }
+                gid_t *newgroups = realloc(groups, newsize * sizeof(gid_t));
+                if (!newgroups) {
+                    *errnop = ENOMEM;
+                    return NSS_STATUS_TRYAGAIN;
+                }
+                groups = newgroups;
+                *groupsp = groups;
+                *size = newsize;
+            }
+
+            groups[count++] = gid;
+            if (gid == ADMIN_GID_LINUX) {
+                is_admin = 1;
+            }
+        }
+
+        gidstr = strtok_r(NULL, ",", &saveptr);
+    }
+
+    /* If user is in admin group, add wheel and sudo */
+    if (is_admin) {
+        /* Add wheel group */
+        int has_wheel = 0;
+        for (long int i = 0; i < count; i++) {
+            if (groups[i] == WHEEL_GID_LINUX) has_wheel = 1;
+        }
+        if (!has_wheel) {
+            if (count >= *size) {
+                long int newsize = *size * 2;
+                if (limit > 0 && newsize > limit) newsize = limit;
+                if (newsize > *size) {
+                    gid_t *newgroups = realloc(groups, newsize * sizeof(gid_t));
+                    if (newgroups) {
+                        groups = newgroups;
+                        *groupsp = groups;
+                        *size = newsize;
+                    }
+                }
+            }
+            if (count < *size) {
+                groups[count++] = WHEEL_GID_LINUX;
+            }
+        }
+
+        /* Add sudo group if it exists */
+        if (group_exists_in_etc_linux("sudo")) {
+            int has_sudo = 0;
+            for (long int i = 0; i < count; i++) {
+                if (groups[i] == SUDO_GID_LINUX) has_sudo = 1;
+            }
+            if (!has_sudo) {
+                if (count >= *size) {
+                    long int newsize = *size * 2;
+                    if (limit > 0 && newsize > limit) newsize = limit;
+                    if (newsize > *size) {
+                        gid_t *newgroups = realloc(groups, newsize * sizeof(gid_t));
+                        if (newgroups) {
+                            groups = newgroups;
+                            *groupsp = groups;
+                            *size = newsize;
+                        }
+                    }
+                }
+                if (count < *size) {
+                    groups[count++] = SUDO_GID_LINUX;
+                }
+            }
+        }
+    }
+
+    *start = count;
+    return NSS_STATUS_SUCCESS;
+}
 #endif /* __linux__ */
 
 #ifdef __FreeBSD__
