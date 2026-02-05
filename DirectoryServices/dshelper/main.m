@@ -2,15 +2,73 @@
 #import "dshelper.h"
 #import <signal.h>
 #import <unistd.h>
+#import <fcntl.h>
+#import <sys/file.h>
+#import <errno.h>
+#import <string.h>
+
+#define PID_FILE "/var/run/dshelper.pid"
 
 static DSHelper *helper = nil;
+static int pidFileFd = -1;
 
 void signalHandler(int sig) {
     NSLog(@"dshelper: Received signal %d, shutting down...", sig);
     [helper unregisterService];
     [helper stopServer];
-    unlink("/var/run/dshelper.pid");
+    if (pidFileFd >= 0) {
+        flock(pidFileFd, LOCK_UN);
+        close(pidFileFd);
+    }
+    unlink(PID_FILE);
     exit(0);
+}
+
+// Returns YES if we acquired the lock, NO if another instance is running
+BOOL acquirePidLock(void) {
+    // Open or create the PID file
+    pidFileFd = open(PID_FILE, O_RDWR | O_CREAT, 0644);
+    if (pidFileFd < 0) {
+        fprintf(stderr, "dshelper: Cannot open %s: %s\n", PID_FILE, strerror(errno));
+        return NO;
+    }
+
+    // Try to acquire an exclusive lock (non-blocking)
+    if (flock(pidFileFd, LOCK_EX | LOCK_NB) < 0) {
+        if (errno == EWOULDBLOCK) {
+            // Another instance holds the lock - read its PID
+            char buf[32];
+            ssize_t n = read(pidFileFd, buf, sizeof(buf) - 1);
+            if (n > 0) {
+                buf[n] = '\0';
+                // Strip trailing newline
+                char *nl = strchr(buf, '\n');
+                if (nl) *nl = '\0';
+                fprintf(stderr, "dshelper: Already running, PID %s\n", buf);
+            } else {
+                fprintf(stderr, "dshelper: Already running\n");
+            }
+        } else {
+            fprintf(stderr, "dshelper: Cannot lock %s: %s\n", PID_FILE, strerror(errno));
+        }
+        close(pidFileFd);
+        pidFileFd = -1;
+        return NO;
+    }
+
+    return YES;
+}
+
+void writePid(void) {
+    if (pidFileFd < 0) return;
+
+    // Truncate and write our PID
+    ftruncate(pidFileFd, 0);
+    lseek(pidFileFd, 0, SEEK_SET);
+
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%d\n", getpid());
+    write(pidFileFd, buf, len);
 }
 
 void printUsage(const char *progname) {
@@ -49,6 +107,11 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        // Acquire PID file lock before forking to prevent race conditions
+        if (!acquirePidLock()) {
+            return 1;
+        }
+
         // Daemonize unless -d flag
         if (!foreground) {
             pid_t pid = fork();
@@ -57,26 +120,25 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             if (pid > 0) {
-                // Parent exits
+                // Parent exits - child inherits the lock
                 printf("dshelper: Started with PID %d\n", pid);
-                return 0;
+                _exit(0);  // Use _exit to avoid flushing buffers twice
             }
 
             // Child continues
             setsid();
             chdir("/");
 
-            // Write pid file
-            FILE *pf = fopen("/var/run/dshelper.pid", "w");
-            if (pf) {
-                fprintf(pf, "%d\n", getpid());
-                fclose(pf);
-            }
+            // Write our PID to the locked file
+            writePid();
 
             // Close standard file descriptors
             close(STDIN_FILENO);
             close(STDOUT_FILENO);
             close(STDERR_FILENO);
+        } else {
+            // Foreground mode - write PID now
+            writePid();
         }
 
         // Set up signal handlers
