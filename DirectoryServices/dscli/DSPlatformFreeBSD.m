@@ -46,6 +46,12 @@
     return [self runCommand:cmd];
 }
 
+- (BOOL)serviceIsRunning:(NSString *)service
+{
+    NSString *cmd = [NSString stringWithFormat:@"service %@ onestatus >/dev/null 2>&1", service];
+    return [self runCommand:cmd];
+}
+
 - (BOOL)serviceRestart:(NSString *)service
 {
     NSString *cmd = [NSString stringWithFormat:@"service %@ restart >/dev/null 2>&1", service];
@@ -146,27 +152,47 @@
 {
     BOOL success = YES;
 
-    if (![self serviceStart:@"rpcbind"]) {
-        // May already be running
-        printf("rpcbind: already running or failed to start\n");
-    } else {
+    // rpcbind: start if not running, leave alone if running (no config to reload)
+    if ([self serviceIsRunning:@"rpcbind"]) {
+        printf("rpcbind already running\n");
+    } else if ([self serviceStart:@"rpcbind"]) {
         printf("Started rpcbind\n");
-    }
-
-    if (![self serviceStart:@"mountd"]) {
-        printf("mountd: already running or failed to start\n");
     } else {
-        printf("Started mountd\n");
+        fprintf(stderr, "Failed to start rpcbind\n");
+        success = NO;
     }
 
-    if (![self serviceStart:@"nfsd"]) {
+    // mountd: restart if running (to reload exports), otherwise start
+    if ([self serviceIsRunning:@"mountd"]) {
+        if ([self serviceRestart:@"mountd"]) {
+            printf("Restarted mountd\n");
+        } else {
+            fprintf(stderr, "Failed to restart mountd\n");
+            success = NO;
+        }
+    } else if ([self serviceStart:@"mountd"]) {
+        printf("Started mountd\n");
+    } else {
+        fprintf(stderr, "Failed to start mountd\n");
+        success = NO;
+    }
+
+    // nfsd: restart if running (to pick up config changes), otherwise start
+    if ([self serviceIsRunning:@"nfsd"]) {
+        if ([self serviceRestart:@"nfsd"]) {
+            printf("Restarted nfsd\n");
+        } else {
+            fprintf(stderr, "Failed to restart nfsd\n");
+            success = NO;
+        }
+    } else if ([self serviceStart:@"nfsd"]) {
+        printf("Started nfsd\n");
+    } else {
         fprintf(stderr, "Failed to start nfsd\n");
         success = NO;
-    } else {
-        printf("Started nfsd\n");
     }
 
-    // Reload exports
+    // Reload exports (belt and suspenders)
     [self runCommand:@"exportfs -r >/dev/null 2>&1"];
 
     return success;
@@ -271,16 +297,24 @@
 {
     BOOL success = YES;
 
-    if (![self serviceStart:@"rpcbind"]) {
-        printf("rpcbind: already running or failed to start\n");
-    } else {
+    // rpcbind: start if not running
+    if ([self serviceIsRunning:@"rpcbind"]) {
+        printf("rpcbind already running\n");
+    } else if ([self serviceStart:@"rpcbind"]) {
         printf("Started rpcbind\n");
+    } else {
+        fprintf(stderr, "Failed to start rpcbind\n");
+        success = NO;
     }
 
-    if (![self serviceStart:@"nfsclient"]) {
-        printf("nfsclient: already running or failed to start\n");
-    } else {
+    // nfsclient: start if not running
+    if ([self serviceIsRunning:@"nfsclient"]) {
+        printf("nfsclient already running\n");
+    } else if ([self serviceStart:@"nfsclient"]) {
         printf("Started nfsclient\n");
+    } else {
+        fprintf(stderr, "Failed to start nfsclient\n");
+        success = NO;
     }
 
     return success;
