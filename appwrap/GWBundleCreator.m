@@ -334,10 +334,16 @@
 
   NSDebugLog(@"Sanitized Exec command: %@", sanitized);
 
-  // Create the launcher script using the sanitized command
+  // Create the launcher script using the sanitized command.
+  // We filter out -GSFilePath because non-GNUstep apps don't understand it.
   NSString *script = [NSString stringWithFormat:
     @"#!/bin/sh\n"
     @"# Auto-generated launcher script\n"
+    @"for arg do\n"
+    @"  shift\n"
+    @"  [ \"$arg\" = \"-GSFilePath\" ] && continue\n"
+    @"  set -- \"$@\" \"$arg\"\n"
+    @"done\n"
     @"exec %@ \"$@\"\n",
     sanitized];
 
