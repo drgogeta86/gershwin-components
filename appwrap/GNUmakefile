@@ -4,7 +4,11 @@ TOOL_NAME = appwrap
 
 # Source files
 appwrap_OBJC_FILES = \
-	appwrap.m
+	appwrap.m \
+	GWBundleCreator.m \
+	GWDocumentIcon.m \
+	DesktopFileParser.m \
+	GWUtils.m
 
 # Install explicitly into the GNUstep Tools directory
 appwrap_INSTALL_DIR = $(GNUSTEP_TOOLS)
