@@ -219,7 +219,8 @@ static void ShowErrorAlert(NSString *title, NSString *message)
 - (NSString *)sanitizeFileName:(NSString *)name;
 
 // Create a composite document icon by using the generic GNUstep document picture and overlaying
-// a small version of the app icon. Returns the filename (basename) created in resourcesPath or nil.
+// a small version of the app icon centered on top at 30% of the document icon size.
+// Returns the filename (basename) created in resourcesPath or nil.
 - (NSString *)createDocumentIconWithAppName:(NSString *)appName
                               resourcesPath:(NSString *)resourcesPath
                            appIconFilename:(NSString *)appIconFilename
@@ -279,263 +280,145 @@ static void ShowErrorAlert(NSString *title, NSString *message)
   NSString *sanApp = [self sanitizeFileName:appName];
   NSString *sanType = [self sanitizeFileName:typeName ? typeName : mimeType];
 
-  NSString *docFilename = [NSString stringWithFormat:@"%@-doc-%@.%@", sanApp, sanType, @"png"];
+  NSString *docFilename = [NSString stringWithFormat:@"%@-doc-%@.png", sanApp, sanType];
   NSString *docPath = [resourcesPath stringByAppendingPathComponent:docFilename];
 
-  // If it already exists, reuse it
-  if ([fm fileExistsAtPath:docPath])
+  // 1. Load app icon from bundle resources
+  NSImage *appIcon = nil;
+  if (appIconFilename && [appIconFilename length] > 0)
     {
-      NSLog(@"Document icon already exists: %@", docPath);
+      NSString *appIconFull = [resourcesPath stringByAppendingPathComponent:appIconFilename];
+      if ([fm fileExistsAtPath:appIconFull])
+        {
+          appIcon = [[NSImage alloc] initWithContentsOfFile:appIconFull];
+        }
+    }
+
+  // 2. Load generic document icon from the current theme/system
+  // We prioritize known names to ensure we follow the visual style of the selected GNUstep theme.
+  // Many themes use common_Unknown or page_portrait as the base for documents.
+  NSArray *baseNames = @[@"NSDocument", @"common_document", @"common_Unknown", @"Unknown", @"page_portrait", @"NSDocumentIcon"];
+  NSImage *docBase = nil;
+  for (NSString *name in baseNames)
+    {
+      docBase = [NSImage imageNamed:name];
+      // If we got an image, use it. We don't discard common_Unknown anymore because 
+      // in the Eau theme it might be the intended document icon.
+      if (docBase)
+        {
+          NSLog(@"Found base icon: %@ with name: %@", name, [docBase name]);
+          break;
+        }
+    }
+
+  // Fallback to NSWorkspace if theme images aren't found directly
+  if (!docBase)
+    {
+      docBase = [[NSWorkspace sharedWorkspace] iconForFileType:@"public.data"];
+    }
+  
+  NSLog(@"createDocumentIcon: selected docBase=%@ name=%@ appIcon=%@ size=%d", 
+        docBase, [docBase name], appIcon, size);
+
+  // 3. Create canvas and draw
+  NSImage *canvas = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
+  [canvas lockFocus];
+
+  // Start with transparent background
+  [[NSColor clearColor] set];
+  NSRectFill(NSMakeRect(0, 0, size, size));
+
+  if (docBase)
+    {
+      [docBase drawInRect:NSMakeRect(0, 0, size, size)
+                fromRect:NSZeroRect
+               operation:NSCompositeSourceOver
+                fraction:1.0];
+    }
+  else
+    {
+      // Draw a proper "Generic Document" icon fallback (White sheet, folded corner, lines)
+      NSRect r = NSMakeRect(size * 0.15, size * 0.05, size * 0.7, size * 0.9);
+      
+      // Page body
+      [[NSColor whiteColor] setFill];
+      [[NSColor darkGrayColor] setStroke];
+      NSBezierPath *p = [NSBezierPath bezierPath];
+      CGFloat corner = size * 0.2;
+      [p moveToPoint:NSMakePoint(NSMinX(r), NSMinY(r))];
+      [p lineToPoint:NSMakePoint(NSMaxX(r), NSMinY(r))];
+      [p lineToPoint:NSMakePoint(NSMaxX(r), NSMaxY(r) - corner)];
+      [p lineToPoint:NSMakePoint(NSMaxX(r) - corner, NSMaxY(r))];
+      [p lineToPoint:NSMakePoint(NSMinX(r), NSMaxY(r))];
+      [p closePath];
+      
+      [p fill];
+      [p setLineWidth:size * 0.01];
+      [p stroke];
+      
+      // Folded corner
+      NSBezierPath *fold = [NSBezierPath bezierPath];
+      [fold moveToPoint:NSMakePoint(NSMaxX(r) - corner, NSMaxY(r))];
+      [fold lineToPoint:NSMakePoint(NSMaxX(r) - corner, NSMaxY(r) - corner)];
+      [fold lineToPoint:NSMakePoint(NSMaxX(r), NSMaxY(r) - corner)];
+      [[NSColor colorWithCalibratedWhite:0.9 alpha:1.0] setFill];
+      [fold fill];
+      [fold stroke];
+      
+      // Horizontal lines (dummy text)
+      [[NSColor lightGrayColor] setStroke];
+      [NSBezierPath setDefaultLineWidth:size * 0.01];
+      for (int i=0; i<6; i++)
+        {
+          CGFloat y = NSMaxY(r) - corner - size*0.1 - (i * size * 0.1);
+          if (y < NSMinY(r) + size*0.1) break;
+          [NSBezierPath strokeLineFromPoint:NSMakePoint(NSMinX(r) + size*0.1, y)
+                                    toPoint:NSMakePoint(NSMaxX(r) - size*0.1, y)];
+        }
+    }
+
+  // 4. Draw app icon overlay centered, 45% of document size
+  if (appIcon)
+    {
+      CGFloat overlaySize = size * 0.45;
+      NSRect overlayRect = NSMakeRect((size - overlaySize) / 2.0, (size - overlaySize) / 2.0, overlaySize, overlaySize);
+
+      // Draw the app icon with transparency preserved
+      [appIcon drawInRect:overlayRect fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
+      [appIcon release];
+    }
+
+  // 5. Capture as PNG
+  NSData *pngData = nil;
+  NSData *tiffData = [canvas TIFFRepresentation];
+  if (tiffData)
+    {
+      NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiffData];
+      if (rep)
+        {
+          pngData = [rep representationUsingType:NSPNGFileType properties:nil];
+        }
+    }
+  [canvas unlockFocus];
+  [canvas release];
+
+  if (!(pngData && [pngData writeToFile:docPath atomically:YES]))
+    {
+      NSLog(@"Failed to write document icon to %@", docPath);
+      return nil;
+    }
+
+  // Basic validation
+  NSImage *verify = [[NSImage alloc] initWithContentsOfFile:docPath];
+  BOOL valid = (verify && [verify size].width > 0);
+  [verify release];
+
+  if (valid)
+    {
+      NSLog(@"Document icon created and validated: %@", docPath);
       return docFilename;
     }
 
-  // Load app icon from bundle resources
-  NSString *appIconFull = nil;
-  if (appIconFilename && [appIconFilename length] > 0)
-    appIconFull = [resourcesPath stringByAppendingPathComponent:appIconFilename];
-
-  NSImage *appIcon = nil;
-  BOOL appIconFileExists = NO;
-  if (appIconFull && [fm fileExistsAtPath:appIconFull])
-    {
-      appIconFileExists = YES;
-      appIcon = [[NSImage alloc] initWithContentsOfFile:appIconFull];
-    }
-  NSLog(@"createDocumentIcon: appIconFull=%@ exists=%d appIconLoaded=%d", appIconFull, appIconFileExists, (appIcon != nil));
-
-  // Try to load generic document icon from the theme / GNUstep images
-  NSImage *docBase = [NSImage imageNamed:@"NSDocument"];
-  if (!docBase) docBase = [NSImage imageNamed:@"common_document"];
-
-  // Fallback: we'll draw a simple rounded-rect document shape if no base image
-
-  // Create alpha-enabled bitmap
-  NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
-                                                                   pixelsWide:size
-                                                                   pixelsHigh:size
-                                                                bitsPerSample:8
-                                                              samplesPerPixel:4
-                                                                     hasAlpha:YES
-                                                                     isPlanar:NO
-                                                               colorSpaceName:NSDeviceRGBColorSpace
-                                                                 bytesPerRow:0
-                                                                  bitsPerPixel:0];
-  if (!rep)
-    return nil;
-
-  NSGraphicsContext *ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
-  if (ctx)
-    {
-      [NSGraphicsContext saveGraphicsState];
-      [NSGraphicsContext setCurrentContext:ctx];
-
-      // Start with transparent background
-      [[NSColor clearColor] set];
-      NSRectFill(NSMakeRect(0,0,size,size));
-
-      // Draw docBase or fallback shape
-      if (docBase)
-        {
-          [docBase drawInRect:NSMakeRect(0,0,size,size) fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-        }
-      else
-        {
-          // Draw basic document with folded corner
-          NSRect r = NSMakeRect(size*0.06, size*0.06, size*0.88, size*0.88);
-          [[NSColor colorWithCalibratedWhite:0.98 alpha:1.0] setFill];
-          NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:r xRadius:size*0.02 yRadius:size*0.02];
-          [path fill];
-          // folded corner
-          NSPoint p1 = NSMakePoint(NSMaxX(r)-size*0.12, NSMaxY(r));
-          NSPoint p2 = NSMakePoint(NSMaxX(r), NSMaxY(r)-size*0.12);
-          NSBezierPath *fold = [NSBezierPath bezierPath];
-          [fold moveToPoint:p1];
-          [fold lineToPoint: NSMakePoint(NSMaxX(r), NSMaxY(r))];
-          [fold lineToPoint:p2];
-          [[NSColor colorWithCalibratedWhite:0.90 alpha:1.0] setFill];
-          [fold fill];
-        }
-
-      // Draw small app icon overlay if available
-      if (appIcon)
-        {
-          CGFloat overlaySize = size * 0.40; // 40% of doc icon
-          CGFloat inset = size * 0.08;
-          NSRect overlayRect = NSMakeRect(size - inset - overlaySize, inset, overlaySize, overlaySize);
-          // Optional: draw a rounded rect background for the overlay to make it pop
-          NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(overlayRect, -4, -4) xRadius:6 yRadius:6];
-          [[NSColor colorWithCalibratedWhite:1.0 alpha:0.9] setFill];
-          [bg fill];
-
-          [appIcon drawInRect:overlayRect fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-          [appIcon release];
-        }
-
-      [NSGraphicsContext restoreGraphicsState];
-
-      // Write a base PNG (without external-tool overlay)
-      NSData *baseData = [rep representationUsingType:NSPNGFileType properties:nil];
-      [rep release];
-
-      if (!(baseData && [baseData writeToFile:docPath atomically:YES]))
-        {
-          NSLog(@"Failed to write base document icon to %@", docPath);
-          return nil;
-        }
-
-      // If an app icon exists, try to composite it onto the base with ImageMagick (centered 64x64 overlay).
-      if (appIcon)
-        {
-          NSString *convertExe = [self findExecutableInPath:@"convert"];
-          if (!convertExe)
-            {
-              NSString *msg = @"ImageMagick 'convert' was not found in PATH. To get file-type icons with an overlayed app icon, install ImageMagick.\n\nCommon commands:\n  Debian/Ubuntu: sudo apt install imagemagick\n  Fedora/RHEL: sudo dnf install ImageMagick\n  Arch Linux: sudo pacman -S imagemagick\n  FreeBSD: sudo pkg install ImageMagick\n  OpenBSD: doas pkg_add ImageMagick\n\nFalling back to the base document icon (no overlay).";
-              ShowErrorAlert(@"ImageMagick 'convert' not found", msg);
-            }
-          else
-            {
-              NSString *tmpBase = [docPath stringByAppendingString:@".base.png"];
-              // Move base to a temp file and produce final composited PNG using convert
-              [[NSFileManager defaultManager] moveItemAtPath:docPath toPath:tmpBase error:NULL];
-
-              NSTask *task = [[NSTask alloc] init];
-              [task setLaunchPath:convertExe];
-
-              // Centered overlay: resize app icon to 64x64 and composite at center
-              NSArray *args = @[
-                tmpBase,
-                @"(",
-                [resourcesPath stringByAppendingPathComponent:appIconFilename],
-                @"-resize",
-                @"64x64",
-                @")",
-                @"-gravity",
-                @"center",
-                @"-composite",
-                docPath
-              ];
-
-              [task setArguments:args];
-              @try
-                {
-                  NSLog(@"Running convert to composite app icon: %@ %@", convertExe, args);
-                  [task launch];
-                  [task waitUntilExit];
-                  int status = [task terminationStatus];
-                  [task release];
-                  if (status != 0)
-                    {
-                      NSLog(@"ImageMagick 'convert' failed (status %d); keeping base PNG: %@", status, tmpBase);
-                      [[NSFileManager defaultManager] moveItemAtPath:tmpBase toPath:docPath error:NULL];
-                    }
-                  else
-                    {
-                      // Success: remove tmpBase
-                      [[NSFileManager defaultManager] removeItemAtPath:tmpBase error:NULL];
-                      NSLog(@"Composited app icon using convert: %@", docPath);
-                    }
-                }
-              @catch (NSException *e)
-                {
-                  NSLog(@"Exception running convert: %@", e);
-                  [[NSFileManager defaultManager] moveItemAtPath:tmpBase toPath:docPath error:NULL];
-                }
-            }
-        }
-    }
-  else
-    {
-      // Fallback: some backends can't create a graphics context for the bitmap; use lockFocus on an NSImage
-      NSLog(@"createDocumentIcon: bitmap context unavailable, falling back to lockFocus drawing");
-      NSImage *canvas = [[NSImage alloc] initWithSize:NSMakeSize(size, size)];
-      [canvas lockFocus];
-
-      // transparent background
-      [[NSColor clearColor] set];
-      NSRectFill(NSMakeRect(0,0,size,size));
-
-      if (docBase)
-        {
-          [docBase drawInRect:NSMakeRect(0,0,size,size) fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-        }
-      else
-        {
-          NSRect r = NSMakeRect(size*0.06, size*0.06, size*0.88, size*0.88);
-          [[NSColor colorWithCalibratedWhite:0.98 alpha:1.0] setFill];
-          NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:r xRadius:size*0.02 yRadius:size*0.02];
-          [path fill];
-          NSPoint p1 = NSMakePoint(NSMaxX(r)-size*0.12, NSMaxY(r));
-          NSPoint p2 = NSMakePoint(NSMaxX(r), NSMaxY(r)-size*0.12);
-          NSBezierPath *fold = [NSBezierPath bezierPath];
-          [fold moveToPoint:p1];
-          [fold lineToPoint: NSMakePoint(NSMaxX(r), NSMaxY(r))];
-          [fold lineToPoint:p2];
-          [[NSColor colorWithCalibratedWhite:0.90 alpha:1.0] setFill];
-          [fold fill];
-        }
-
-      if (appIcon)
-        {
-          CGFloat overlaySize = size * 0.40;
-          CGFloat inset = size * 0.08;
-          NSRect overlayRect = NSMakeRect(size - inset - overlaySize, inset, overlaySize, overlaySize);
-          NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(overlayRect, -4, -4) xRadius:6 yRadius:6];
-          [[NSColor colorWithCalibratedWhite:1.0 alpha:0.9] setFill];
-          [bg fill];
-          [appIcon drawInRect:overlayRect fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
-          [appIcon release];
-        }
-
-      NSBitmapImageRep *tmpRep = [[NSBitmapImageRep alloc] initWithFocusedViewRect:NSMakeRect(0,0,size,size)];
-      [canvas unlockFocus];
-      NSData *pngData = [tmpRep representationUsingType:NSPNGFileType properties:nil];
-      [tmpRep release];
-      [canvas release];
-
-      if (!(pngData && [pngData writeToFile:docPath atomically:YES]))
-        {
-          NSLog(@"Failed to write document icon (fallback) to %@", docPath);
-          return nil;
-        }
-    }
-
-  // Basic validation: PNG signature (first 8 bytes) and that NSImage can load it
-  NSError *readErr = nil;
-  NSData *written = [NSData dataWithContentsOfFile:docPath options:0 error:&readErr];
-  const unsigned char pngSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-  BOOL valid = NO;
-
-  if (!written || [written length] < 8)
-    {
-      NSLog(@"Written file is too small or couldn't be read: %@ (%@)", docPath, [readErr localizedDescription]);
-    }
-  else
-    {
-      if (memcmp([written bytes], pngSig, 8) == 0)
-        {
-          // Try loading via NSImage to ensure the PNG is readable by AppKit
-          NSImage *verify = [[NSImage alloc] initWithContentsOfFile:docPath];
-          if (verify && [verify size].width > 0)
-            {
-              valid = YES;
-              NSLog(@"Document icon validated successfully: %@", docPath);
-            }
-          else
-            {
-              NSLog(@"NSImage failed to load generated PNG: %@", docPath);
-            }
-          [verify release];
-        }
-      else
-        {
-          NSLog(@"Generated file does not have PNG signature: %@", docPath);
-        }
-    }
-
-  if (valid)
-    return docFilename;
-
-  // If validation failed, remove the invalid file and return nil
   NSLog(@"Removing invalid document icon: %@", docPath);
   [[NSFileManager defaultManager] removeItemAtPath:docPath error:NULL];
   return nil;
