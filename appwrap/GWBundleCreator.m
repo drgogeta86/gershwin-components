@@ -15,7 +15,7 @@
                            outputDir:(NSString *)outputDir
 {
   // Parse the desktop file
-  NSLog(@"Starting bundle creation from desktop file: %@", desktopPath);
+  NSDebugLog(@"Starting bundle creation from desktop file: %@", desktopPath);
   DesktopFileParser *parser = [[DesktopFileParser alloc] initWithFile:desktopPath];
   if (!parser)
     {
@@ -29,7 +29,7 @@
   NSString *execCommand = [parser stringForKey:@"Exec"];
   NSString *iconName = [parser stringForKey:@"Icon"];
 
-  NSLog(@"Parsed desktop file entries: Name=%@ Exec=%@ Icon=%@", appName, execCommand, iconName);
+  NSDebugLog(@"Parsed desktop file entries: Name=%@ Exec=%@ Icon=%@", appName, execCommand, iconName);
 
   if (!appName || !execCommand)
     {
@@ -57,25 +57,25 @@
   if (!resolvedIconPath)
     {
       NSArray *genericFallbacks = @[@"dialog-information", @"application", @"preferences-system", @"dialog-warning", @"dialog-error", @"notification", @"utilities-system-monitor"];
-      NSLog(@"No specific icon resolved for %@; trying generic fallbacks: %@", appName, genericFallbacks);
+      NSDebugLog(@"No specific icon resolved for %@; trying generic fallbacks: %@", appName, genericFallbacks);
       for (NSString *gname in genericFallbacks)
         {
           NSString *p = [self resolveIconPath:gname];
           if (p)
             {
               resolvedIconPath = p;
-              NSLog(@"Using generic fallback icon '%@' -> %@", gname, p);
+              NSDebugLog(@"Using generic fallback icon '%@' -> %@", gname, p);
               break;
             }
         }
       if (!resolvedIconPath)
         {
-          NSLog(@"No icon could be resolved for %@ (including generic fallbacks)", appName);
+          NSDebugLog(@"No icon could be resolved for %@ (including generic fallbacks)", appName);
         }
     }
 
   // Create bundle structure
-  NSLog(@"Creating bundle structure at %@", appPath);
+  NSDebugLog(@"Creating bundle structure at %@", appPath);
   if (![self createBundleStructure:appPath withAppName:bundleName])
     {
       NSString *msg = [NSString stringWithFormat:@"Failed to create bundle structure at %@", appPath];
@@ -85,7 +85,7 @@
     }
 
   // Create the launcher script with the full Exec command; sanitize script name for safety
-  NSLog(@"Creating launcher script (name: %@) with Exec: %@", bundleName, execCommand);
+  NSDebugLog(@"Creating launcher script (name: %@) with Exec: %@", bundleName, execCommand);
   if (![self createLauncherScript:appPath 
                       execCommand:execCommand
                         iconPath:resolvedIconPath
@@ -101,19 +101,19 @@
   NSString *copiedIconFilename = nil;
   if (resolvedIconPath)
     {
-      NSLog(@"Copying icon from %@ into bundle resources", resolvedIconPath);
+      NSDebugLog(@"Copying icon from %@ into bundle resources", resolvedIconPath);
       copiedIconFilename = [self copyIconToBundle:resolvedIconPath
                                   toBundleResources:[NSString stringWithFormat:@"%@/Resources", appPath]
                                            appName:bundleName];
-      NSLog(@"Resulting icon filename in bundle: %@", copiedIconFilename);
+      NSDebugLog(@"Resulting icon filename in bundle: %@", copiedIconFilename);
     }
   else
     {
-      NSLog(@"No icon resolved; skipping icon copy and Info.plist icon entry will be omitted");
+      NSDebugLog(@"No icon resolved; skipping icon copy and Info.plist icon entry will be omitted");
     }
 
   // Create the Info.plist with the actual copied icon filename
-  NSLog(@"Creating Info.plist (appName=%@, exec=%@, icon=%@)", appName, execCommand, copiedIconFilename);
+  NSDebugLog(@"Creating Info.plist (appName=%@, exec=%@, icon=%@)", appName, execCommand, copiedIconFilename);
   if (![self createInfoPlist:appPath 
                  desktopInfo:parser
                      appName:appName
@@ -138,7 +138,7 @@
 {
   if (!command || !appName || !outputDir) return NO;
   NSString *sanAppName = [GWUtils sanitizeFileName:appName];
-  NSLog(@"Starting bundle creation from command: %@ (appName=%@)", command, sanAppName);
+  NSDebugLog(@"Starting bundle creation from command: %@ (appName=%@)", command, sanAppName);
 
   NSString *appPath = [NSString stringWithFormat:@"%@/%@.app", outputDir, sanAppName];
 
@@ -163,7 +163,7 @@
   if (iconPath && [iconPath length] > 0)
     {
       copiedIconFilename = [self copyIconToBundle:iconPath toBundleResources:[NSString stringWithFormat:@"%@/Resources", appPath] appName:sanAppName];
-      NSLog(@"Resulting icon filename in bundle: %@", copiedIconFilename);
+      NSDebugLog(@"Resulting icon filename in bundle: %@", copiedIconFilename);
     }
 
   // Create Info.plist
@@ -243,7 +243,7 @@
   NSArray *mimeTypes = [parser arrayForKey:@"MimeType"];
   if (mimeTypes && [mimeTypes count] > 0)
     {
-      NSLog(@"Found MimeType entries in desktop file: %@", mimeTypes);
+      NSDebugLog(@"Found MimeType entries in desktop file: %@", mimeTypes);
       NSMutableArray *docTypes = [NSMutableArray array];
       for (NSString *mt in mimeTypes)
         {
@@ -256,12 +256,12 @@
           NSArray *exts = [GWUtils extensionsForMIMEType:mt];
           if (exts && [exts count] > 0)
             {
-              NSLog(@"Mapping MIME %@ -> extensions %@", mt, exts);
+              NSDebugLog(@"Mapping MIME %@ -> extensions %@", mt, exts);
               [dt setObject:exts forKey:@"CFBundleTypeExtensions"];
             }
           else
             {
-              NSLog(@"No extensions mapped for MIME %@; adding type without extensions", mt);
+              NSDebugLog(@"No extensions mapped for MIME %@; adding type without extensions", mt);
             }
 
           if (iconFilename && [iconFilename length] > 0)
@@ -294,7 +294,7 @@
       if ([docTypes count] > 0)
         {
           [infoPlist setObject:docTypes forKey:@"CFBundleDocumentTypes"];
-          NSLog(@"Added CFBundleDocumentTypes to Info.plist: %@", docTypes);
+          NSDebugLog(@"Added CFBundleDocumentTypes to Info.plist: %@", docTypes);
         }
     }
 
@@ -308,7 +308,7 @@
     }
   else
     {
-      NSLog(@"Wrote Info.plist to %@", plistPath);
+      NSDebugLog(@"Wrote Info.plist to %@", plistPath);
     }
   return ok;
 }
@@ -323,7 +323,7 @@
   NSString *launcherPath = [NSString stringWithFormat:@"%@/%@", appPath, scriptName];
 
   // Sanitize Exec= field codes (%U, %u, %F, %f, %i, %c, %k) and %% → %
-  NSLog(@"Sanitizing Exec command for launcher: %@", command);
+  NSDebugLog(@"Sanitizing Exec command for launcher: %@", command);
   NSString *sanitized = [GWUtils sanitizeExecCommand:command];
   if (!sanitized || [sanitized length] == 0)
     {
@@ -332,7 +332,7 @@
       return NO;
     }
 
-  NSLog(@"Sanitized Exec command: %@", sanitized);
+  NSDebugLog(@"Sanitized Exec command: %@", sanitized);
 
   // Create the launcher script using the sanitized command
   NSString *script = [NSString stringWithFormat:
@@ -362,7 +362,7 @@
       return NO;
     }
 
-  NSLog(@"Created launcher script at %@", launcherPath);
+  NSDebugLog(@"Created launcher script at %@", launcherPath);
   return YES;
 }
 
@@ -371,16 +371,16 @@
   NSFileManager *fm = [NSFileManager defaultManager];
   if (!iconName || [iconName length] == 0)
     {
-      NSLog(@"resolveIconPath: called with empty iconName");
+      NSDebugLog(@"resolveIconPath: called with empty iconName");
       return nil;
     }
 
-  NSLog(@"Resolving icon path for: '%@'", iconName);
+  NSDebugLog(@"Resolving icon path for: '%@'", iconName);
 
   // If it's an absolute path and exists, use it directly
   if ([iconName hasPrefix:@"/"] && [fm fileExistsAtPath:iconName])
     {
-      NSLog(@"Icon provided as absolute path and exists: %@", iconName);
+      NSDebugLog(@"Icon provided as absolute path and exists: %@", iconName);
       return iconName;
     }
 
@@ -418,7 +418,7 @@
               NSString *cand = [NSString stringWithFormat:@"%@/%@/%@%@", base, sizeSub, iconName, ext];
               if ([fm fileExistsAtPath:cand])
                 {
-                  NSLog(@"Quick-match found candidate: %@", cand);
+                  NSDebugLog(@"Quick-match found candidate: %@", cand);
                   [candidates addObject:@{@"path": cand, @"ext": ext}];
                 }
             }
@@ -429,7 +429,7 @@
   for (NSString *base in iconBaseDirs)
     {
       if (![fm fileExistsAtPath:base]) continue;
-      NSLog(@"Searching base icon dir: %@", base);
+      NSDebugLog(@"Searching base icon dir: %@", base);
       NSDirectoryEnumerator *e = [fm enumeratorAtPath:base];
       NSString *file;
       while ((file = [e nextObject]))
@@ -449,7 +449,7 @@
               if ([[file lastPathComponent] isEqualToString:target] || [[file lastPathComponent] isEqualToString:[target lowercaseString]] || [[file lastPathComponent] isEqualToString:[target uppercaseString]])
                 {
                   NSString *full = [base stringByAppendingPathComponent:file];
-                  NSLog(@"Found candidate by basename match: %@", full);
+                  NSDebugLog(@"Found candidate by basename match: %@", full);
                   [candidates addObject:@{@"path": full, @"ext": ext}];
                 }
             }
@@ -458,14 +458,14 @@
           if ([lowerFile rangeOfString:lowerIcon].location != NSNotFound)
             {
               NSString *full = [base stringByAppendingPathComponent:file];
-              NSLog(@"Found fuzzy candidate (substring match): %@", full);
+              NSDebugLog(@"Found fuzzy candidate (substring match): %@", full);
               [candidates addObject:@{@"path": full, @"ext": [[file pathExtension] length] ? [@"." stringByAppendingString:[file pathExtension]] : @""}];
             }
         }
 
       if ([candidates count] > 0)
         {
-          NSLog(@"Stopping search at base %@ because candidates were found", base);
+          NSDebugLog(@"Stopping search at base %@ because candidates were found", base);
           break;
         }
     }
@@ -473,7 +473,7 @@
   // If no candidates yet, try more aggressive fuzzy search across installed themes
   if ([candidates count] == 0)
     {
-      NSLog(@"No direct candidates found; performing aggressive fuzzy search (case-insensitive substring) across icon dirs");
+      NSDebugLog(@"No direct candidates found; performing aggressive fuzzy search (case-insensitive substring) across icon dirs");
       for (NSString *base in iconBaseDirs)
         {
           if (![fm fileExistsAtPath:base]) continue;
@@ -486,7 +486,7 @@
               if ([lowerFile rangeOfString:lowerIcon].location != NSNotFound)
                 {
                   NSString *full = [base stringByAppendingPathComponent:file];
-                  NSLog(@"Aggressive fuzzy candidate: %@", full);
+                  NSDebugLog(@"Aggressive fuzzy candidate: %@", full);
                   [candidates addObject:@{@"path": full, @"ext": [[file pathExtension] length] ? [@"." stringByAppendingString:[file pathExtension]] : @""}];
                 }
             }
@@ -495,7 +495,7 @@
 
   if ([candidates count] == 0)
     {
-      NSLog(@"No icon candidates found for '%@' after extensive search and generic fallbacks", iconName);
+      NSDebugLog(@"No icon candidates found for '%@' after extensive search and generic fallbacks", iconName);
       return nil;
     }
 
@@ -544,10 +544,10 @@
     }
 
   // Log candidate scores
-  NSLog(@"Icon candidates and scores for '%@':", iconName);
+  NSDebugLog(@"Icon candidates and scores for '%@':", iconName);
   for (NSDictionary *s in scored)
     {
-      NSLog(@"  %@ -> %@", [s objectForKey:@"path"], [s objectForKey:@"score"]);
+      NSDebugLog(@"  %@ -> %@", [s objectForKey:@"path"], [s objectForKey:@"score"]);
     }
 
   // Pick the candidate with the highest score
@@ -556,7 +556,7 @@
   NSDictionary *best = [sorted objectAtIndex:0];
   NSString *bestPath = [best objectForKey:@"path"];
 
-  NSLog(@"Selected icon for '%@': %@ (reason: highest score)", iconName, bestPath);
+  NSDebugLog(@"Selected icon for '%@': %@ (reason: highest score)", iconName, bestPath);
   return bestPath;
 }
 
@@ -606,17 +606,17 @@
           NSDictionary *copiedAttrs = [fm attributesOfItemAtPath:bundleIconPath error:&error];
           if (copiedAttrs && [copiedAttrs fileSize] > 0)
             {
-              NSLog(@"Rasterized SVG and wrote PNG to bundle as %@", [bundleIconPath lastPathComponent]);
+              NSDebugLog(@"Rasterized SVG and wrote PNG to bundle as %@", [bundleIconPath lastPathComponent]);
               return [bundleIconPath lastPathComponent];
             }
           else
             {
-              NSLog(@"Rasterization produced empty file or failed to write: %@", bundleIconPath);
+              NSDebugLog(@"Rasterization produced empty file or failed to write: %@", bundleIconPath);
             }
         }
       else
         {
-          NSLog(@"Rasterization failed for %@; will try to copy original SVG into bundle as fallback", iconPath);
+          NSDebugLog(@"Rasterization failed for %@; will try to copy original SVG into bundle as fallback", iconPath);
         }
 
       // As a fallback, copy the original SVG into the resources
@@ -626,19 +626,19 @@
           NSDictionary *copiedAttrs = [fm attributesOfItemAtPath:bundleSVGPath error:&error];
           if (copiedAttrs && [copiedAttrs fileSize] > 0)
             {
-              NSLog(@"Copied SVG fallback into bundle as %@", [bundleSVGPath lastPathComponent]);
+              NSDebugLog(@"Copied SVG fallback into bundle as %@", [bundleSVGPath lastPathComponent]);
               return [bundleSVGPath lastPathComponent];
             }
           else
             {
-              NSLog(@"Copied SVG fallback file is empty, removing: %@", bundleSVGPath);
+              NSDebugLog(@"Copied SVG fallback file is empty, removing: %@", bundleSVGPath);
               [fm removeItemAtPath:bundleSVGPath error:NULL];
               return nil;
             }
         }
       else
         {
-          NSLog(@"Failed to copy SVG fallback into bundle: %@", [error localizedDescription]);
+          NSDebugLog(@"Failed to copy SVG fallback into bundle: %@", [error localizedDescription]);
           return nil;
         }
     }
@@ -665,7 +665,7 @@
       return nil;
     }
 
-  NSLog(@"Copied icon to bundle as %@", [bundleIconPath lastPathComponent]);
+  NSDebugLog(@"Copied icon to bundle as %@", [bundleIconPath lastPathComponent]);
   return [bundleIconPath lastPathComponent];
 }
 

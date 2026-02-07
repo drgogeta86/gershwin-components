@@ -48,7 +48,7 @@
       // in the Eau theme it might be the intended document icon.
       if (docBase)
         {
-          NSLog(@"Found base icon: %@ with name: %@", name, [docBase name]);
+          NSDebugLog(@"Found base icon: %@ with name: %@", name, [docBase name]);
           break;
         }
     }
@@ -59,7 +59,7 @@
       docBase = [[NSWorkspace sharedWorkspace] iconForFileType:@"public.data"];
     }
   
-  NSLog(@"createDocumentIcon: selected docBase=%@ name=%@ appIcon=%@ size=%d", 
+  NSDebugLog(@"createDocumentIcon: selected docBase=%@ name=%@ appIcon=%@ size=%d", 
         docBase, [docBase name], appIcon, size);
 
   // 3. Create canvas and draw
@@ -157,7 +157,7 @@
 
   if (valid)
     {
-      NSLog(@"Document icon created and validated: %@", docPath);
+      NSDebugLog(@"Document icon created and validated: %@", docPath);
       return docFilename;
     }
 
