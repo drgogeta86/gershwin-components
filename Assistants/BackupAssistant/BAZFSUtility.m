@@ -2999,7 +2999,7 @@
                     
                     // Update progress on main thread
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        [self updateProgressOnMainThread:[NSArray arrayWithObjects: [NSNumber numberWithFloat:adjustedProgress], statusMsg, [progressBlock copy], nil]];
+                        [self updateProgressOnMainThread:@[[NSNumber numberWithFloat:adjustedProgress], statusMsg, [progressBlock copy]]];
                     });
                 }
                 
