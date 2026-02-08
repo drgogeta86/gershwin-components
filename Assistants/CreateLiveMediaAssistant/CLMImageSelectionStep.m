@@ -12,6 +12,7 @@
 
 #import "CLMImageSelectionStep.h"
 #import "CLMController.h"
+#import "CLMConstants.h"
 #import "CLMGitHubAPI.h"
 #import <GSNetworkUtilities.h>
 #import <GSDiskUtilities.h>
@@ -67,8 +68,19 @@
     [_stepView addSubview:repoLabel];
     
     _repositoryPopUp = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(96, 174, 250, 22)];
-    [_repositoryPopUp addItemWithTitle:NSLocalizedString(@"probonopd/ghostbsd-build", @"")];
-    [_repositoryPopUp addItemWithTitle:NSLocalizedString(@"ventoy/Ventoy", @"")];
+    NSArray<NSString *> *repos = CLMAvailableRepositories();
+    for (NSString *repoURL in repos) {
+        NSString *repoTitle = repoURL;
+        NSRange prefixRange = [repoTitle rangeOfString:@"https://api.github.com/repos/"];
+        if (prefixRange.location != NSNotFound) {
+            repoTitle = [repoTitle substringFromIndex:prefixRange.location + prefixRange.length];
+            NSRange suffixRange = [repoTitle rangeOfString:@"/releases"];
+            if (suffixRange.location != NSNotFound) {
+                repoTitle = [repoTitle substringToIndex:suffixRange.location];
+            }
+        }
+        [_repositoryPopUp addItemWithTitle:NSLocalizedString(repoTitle, @"")];
+    }
     [_repositoryPopUp addItemWithTitle:NSLocalizedString(@"Other...", @"")];
     [_repositoryPopUp addItemWithTitle:NSLocalizedString(@"Local ISO file...", @"")];
     [_repositoryPopUp setTarget:self];
@@ -179,26 +191,79 @@
     
     NSInteger selectedIndex = [_repositoryPopUp indexOfSelectedItem];
     
-    if (selectedIndex == 2) { // Other...
+    NSInteger repoCount = (NSInteger)[CLMAvailableRepositories() count];
+    if (selectedIndex == repoCount) { // Other...
         NSAlert *alert = [NSAlert alertWithMessageText:@"Custom Repository"
                                          defaultButton:@"OK"
                                        alternateButton:@"Cancel"
                                            otherButton:nil
                              informativeTextWithFormat:@"Enter the GitHub API URL for releases:"];
         
-        NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+        NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 400, 24)];
         [input setStringValue:NSLocalizedString(@"https://api.github.com/repos/owner/repo/releases", @"")];
-        
-        // Create a simple input dialog instead of using setAccessoryView
-        NSInteger response = [alert runModal];
-        
-        if (response == NSAlertDefaultReturn) {
-            // For now, use a hardcoded URL or implement a proper input dialog
-            NSString *customURL = @"https://api.github.com/repos/probonopd/ghostbsd-build/releases";
-            [self loadReleasesFromURL:customURL];
+
+        if ([alert respondsToSelector:@selector(setAccessoryView:)]) {
+            // Newer AppKit/GNUstep may support accessory views on NSAlert
+            [(id)alert setAccessoryView:input];
+            NSInteger response = [alert runModal];
+            if (response == NSAlertDefaultReturn) {
+                NSString *customURL = [input stringValue];
+                if ([customURL length] > 0) {
+                    [self loadReleasesFromURL:customURL];
+                }
+            }
+        } else {
+            // Fallback for GNUstep without setAccessoryView: - create a small modal panel
+            NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 420, 120)
+                                                        styleMask:(NSTitledWindowMask | NSClosableWindowMask)
+                                                          backing:NSBackingStoreBuffered
+                                                            defer:NO];
+            [panel setTitle:@"Custom Repository"];
+            [panel center];
+
+            NSView *contentView = [panel contentView];
+
+            NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 72, 396, 24)];
+            [label setStringValue:NSLocalizedString(@"Enter the GitHub API URL for releases:", @"")];
+            [label setBezeled:NO];
+            [label setDrawsBackground:NO];
+            [label setEditable:NO];
+            [label setSelectable:NO];
+            [contentView addSubview:label];
+
+            [input setFrame:NSMakeRect(12, 44, 396, 24)];
+            [contentView addSubview:input];
+
+            NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(320, 10, 90, 24)];
+            [okButton setTitle:@"OK"];
+            [okButton setTarget:NSApp];
+            [okButton setAction:@selector(stopModal)];
+            [okButton setKeyEquivalent:@"\r"];
+            [contentView addSubview:okButton];
+
+            NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(220, 10, 90, 24)];
+            [cancelButton setTitle:@"Cancel"];
+            [cancelButton setTarget:NSApp];
+            [cancelButton setAction:@selector(abortModal)];
+            [cancelButton setKeyEquivalent:@"\e"];
+            [contentView addSubview:cancelButton];
+
+            [panel setInitialFirstResponder:input];
+            [panel makeFirstResponder:input];
+
+            NSInteger response = [NSApp runModalForWindow:panel];
+            if (response == NSRunStoppedResponse) {
+                NSString *customURL = [input stringValue];
+                if ([customURL length] > 0) {
+                    [self loadReleasesFromURL:customURL];
+                }
+            }
+
+            // Clean up
+            [panel orderOut:nil];
         }
     }
-    else if (selectedIndex == 3) { // Local ISO file...
+    else if (selectedIndex == repoCount + 1) { // Local ISO file...
         NSOpenPanel *openPanel = [NSOpenPanel openPanel];
         [openPanel setCanChooseFiles:YES];
         [openPanel setCanChooseDirectories:NO];
@@ -214,13 +279,8 @@
         }
     }
     else {
-        // Standard repositories
-        NSArray *repoURLs = @[
-            @"https://api.github.com/repos/probonopd/ghostbsd-build/releases",
-            @"https://api.github.com/repos/ventoy/Ventoy/releases"
-        ];
-        
-        if (selectedIndex < (NSInteger)[repoURLs count]) {
+        NSArray *repoURLs = CLMAvailableRepositories();
+        if (selectedIndex >= 0 && selectedIndex < (NSInteger)[repoURLs count]) {
             [self loadReleasesFromURL:[repoURLs objectAtIndex:selectedIndex]];
         }
     }
@@ -450,7 +510,10 @@
     
     // Load default repository when this step first appears
     if ([_availableReleases count] == 0 && !_isLoading) {
-        [self loadReleasesFromURL:@"https://api.github.com/repos/probonopd/ghostbsd-build/releases"];
+        NSArray *repos = CLMAvailableRepositories();
+        if ([repos count] > 0) {
+            [self loadReleasesFromURL:[repos objectAtIndex:0]];
+        }
     }
 }
 

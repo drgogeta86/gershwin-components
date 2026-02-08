@@ -8,6 +8,7 @@ VERSION = 1.0
 CreateLiveMediaAssistant_OBJC_FILES = \
 	main.m \
 	CLMController.m \
+	CLMConstants.m \
 	CLMDiskUtility.m \
 	CLMGitHubAPI.m \
 	CLMIntroStep.m \

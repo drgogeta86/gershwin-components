@@ -11,6 +11,7 @@
 //
 
 #import "CLMController.h"
+#import "CLMConstants.h"
 #import "CLMIntroStep.h"
 #import "CLMImageSelectionStep.h"
 #import "CLMDiskSelectionStep.h"
@@ -49,11 +50,8 @@
         _installationSuccessful = NO;
         _showPrereleases = NO;
         
-        // Initialize available repositories
-        _availableRepositories = [[NSArray alloc] initWithObjects:
-            @"https://api.github.com/repos/probonopd/ghostbsd-builder/releases",
-            @"https://api.github.com/repos/ventoy/Ventoy/releases",
-            nil];
+        // Initialize available repositories (single source of truth)
+        _availableRepositories = CLMAvailableRepositories();
         
         _availableReleases = [[NSArray alloc] init];
     }
