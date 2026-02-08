@@ -36,22 +36,23 @@
             NSString *component = (NSString *)item;
             NSDebugLog(@"DBusMenuShortcutParser: Processing shortcut component: '%@'", component);
             
-            // Check if it's a modifier - map modifiers
-            if ([component isEqualToString:@"Control_L"] || [component isEqualToString:@"Control_R"] || 
-                [component isEqualToString:@"Control"] || [component isEqualToString:@"ctrl"]) {
+            // Check if it's a modifier - map modifiers (case-insensitive)
+            NSString *lowerComponent = [component lowercaseString];
+            if ([lowerComponent isEqualToString:@"control_l"] || [lowerComponent isEqualToString:@"control_r"] || 
+                [lowerComponent isEqualToString:@"control"] || [lowerComponent isEqualToString:@"ctrl"]) {
                 [components addObject:@"ctrl"]; // Control key
                 NSDebugLog(@"DBusMenuShortcutParser: Added Control modifier");
-            } else if ([component isEqualToString:@"Shift_L"] || [component isEqualToString:@"Shift_R"] || 
-                       [component isEqualToString:@"Shift"] || [component isEqualToString:@"shift"]) {
+            } else if ([lowerComponent isEqualToString:@"shift_l"] || [lowerComponent isEqualToString:@"shift_r"] || 
+                       [lowerComponent isEqualToString:@"shift"]) {
                 [components addObject:@"shift"];
                 NSDebugLog(@"DBusMenuShortcutParser: Added Shift modifier");
-            } else if ([component isEqualToString:@"Alt_L"] || [component isEqualToString:@"Alt_R"] || 
-                       [component isEqualToString:@"Alt"] || [component isEqualToString:@"alt"]) {
+            } else if ([lowerComponent isEqualToString:@"alt_l"] || [lowerComponent isEqualToString:@"alt_r"] || 
+                       [lowerComponent isEqualToString:@"alt"]) {
                 [components addObject:@"alt"];
                 NSDebugLog(@"DBusMenuShortcutParser: Added Alt modifier");
-            } else if ([component isEqualToString:@"Meta_L"] || [component isEqualToString:@"Meta_R"] || 
-                       [component isEqualToString:@"Super_L"] || [component isEqualToString:@"Super_R"] ||
-                       [component isEqualToString:@"Meta"] || [component isEqualToString:@"Super"]) {
+            } else if ([lowerComponent isEqualToString:@"meta_l"] || [lowerComponent isEqualToString:@"meta_r"] || 
+                       [lowerComponent isEqualToString:@"super_l"] || [lowerComponent isEqualToString:@"super_r"] ||
+                       [lowerComponent isEqualToString:@"meta"] || [lowerComponent isEqualToString:@"super"]) {
                 [components addObject:@"cmd"]; // Command/Super key
                 NSDebugLog(@"DBusMenuShortcutParser: Added Command modifier");
             } else {
@@ -94,16 +95,18 @@
         NSString *cleanPart = [part stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSDebugLog(@"DBusMenuShortcutParser: Processing key combo part: '%@'", cleanPart);
         
-        if ([cleanPart isEqualToString:@"cmd"] || [cleanPart isEqualToString:@"command"]) {
+        // Case-insensitive modifier matching for Canonical AppMenu compatibility
+        NSString *lowerPart = [cleanPart lowercaseString];
+        if ([lowerPart isEqualToString:@"cmd"] || [lowerPart isEqualToString:@"command"]) {
             modifierMask |= NSCommandKeyMask;
             NSDebugLog(@"DBusMenuShortcutParser: Added Command modifier mask");
-        } else if ([cleanPart isEqualToString:@"shift"]) {
+        } else if ([lowerPart isEqualToString:@"shift"]) {
             modifierMask |= NSShiftKeyMask;
             NSDebugLog(@"DBusMenuShortcutParser: Added Shift modifier mask");
-        } else if ([cleanPart isEqualToString:@"alt"] || [cleanPart isEqualToString:@"option"]) {
+        } else if ([lowerPart isEqualToString:@"alt"] || [lowerPart isEqualToString:@"option"]) {
             modifierMask |= NSAlternateKeyMask;
             NSDebugLog(@"DBusMenuShortcutParser: Added Alt modifier mask");
-        } else if ([cleanPart isEqualToString:@"ctrl"] || [cleanPart isEqualToString:@"control"]) {
+        } else if ([lowerPart isEqualToString:@"ctrl"] || [lowerPart isEqualToString:@"control"]) {
             modifierMask |= NSControlKeyMask;
             NSDebugLog(@"DBusMenuShortcutParser: Added Control modifier mask");
         } else {

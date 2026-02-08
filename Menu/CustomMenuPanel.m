@@ -148,11 +148,12 @@ static IMP original_NSMenuView_windowIMP = NULL;
 
 - (void)original_drawRect:(NSRect)dirtyRect
 {
-    // Draw transparent background
+    // Fill with transparent background so the window/parent gradient shows through
     [[NSColor clearColor] set];
     NSRectFill(dirtyRect);
-    
-    // Call original implementation directly
+
+    // Call original implementation which delegates to the theme's drawMenuRect:
+    // The theme draws the gradient background and menu item cells.
     if (original_NSMenuView_drawRectIMP) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Wcast-function-type-mismatch"
@@ -176,51 +177,51 @@ static IMP original_NSMenuView_windowIMP = NULL;
         window = ((NSWindow * (*)(id, SEL))original_NSMenuView_windowIMP)(self, @selector(window));
         #pragma clang diagnostic pop
     }
-    
+
     if (window && ![window isKindOfClass:[CustomMenuPanel class]]) {
+        // Apply gradient styling to the window
+        [window setBackgroundColor:[NSColor clearColor]];
+        [window setOpaque:NO];
+
         // Quick check: if the content view is already a MenuGradientView, we've already wrapped it
         NSView *contentView = [window contentView];
         if (!contentView || [contentView isKindOfClass:[MenuGradientView class]]) {
             return window;
         }
-        
+
         // Apply gradient styling to the window (first time only)
-        [window setBackgroundColor:[NSColor clearColor]];
-        [window setOpaque:NO];
-        
-        // Create gradient view wrapper with full content bounds
         NSRect contentBounds = [contentView bounds];
         MenuGradientView *gradientView = [[MenuGradientView alloc] initWithFrame:contentBounds];
-        
+
         // Set up the gradient
-        NSColor *brightGrey = [NSColor colorWithCalibratedRed:0.95 
-                                                        green:0.95 
-                                                         blue:0.95 
+        NSColor *brightGrey = [NSColor colorWithCalibratedRed:0.95
+                                                        green:0.95
+                                                         blue:0.95
                                                         alpha:0.80];
-        NSColor *midGrey = [NSColor colorWithCalibratedRed:0.85 
-                                                     green:0.85 
-                                                      blue:0.85 
+        NSColor *midGrey = [NSColor colorWithCalibratedRed:0.85
+                                                     green:0.85
+                                                      blue:0.85
                                                      alpha:0.70];
-        
-        NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:brightGrey 
-                                                           endingColor:midGrey];
+
+        NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:brightGrey
+                                                             endingColor:midGrey];
         [gradientView setGradient:gradient];
-        
+
         // Ensure gradient view fills the content area
         [gradientView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        
+
         // Adjust contentView to fill the gradient view
         [contentView setFrame:contentBounds];
         [contentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        
+
         // Set as background and bring content view to front
         [contentView removeFromSuperview];
         [window setContentView:gradientView];
         [gradientView addSubview:contentView];
-        
-        NSDebugLog(@"CustomMenuPanel: Wrapped menu panel content view with gradient");
+
+        NSLog(@"CustomMenuPanel: Wrapped window %@ content view with gradient", window);
     }
-    
+
     return window;
 }
 

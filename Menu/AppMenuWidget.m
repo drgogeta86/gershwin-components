@@ -559,6 +559,11 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     if (self.menuView) {
         [self.menuView setHidden:YES];
     }
+    // Ensure overlay views (RoundedCornersView) are redrawn after clearing
+    NSWindow *window = [self window];
+    if (window) {
+        [[window contentView] setNeedsDisplay:YES];
+    }
 }
 
 - (void)clearMenu
@@ -659,7 +664,6 @@ static int handleX11Error(Display *display, XErrorEvent *event)
             NSLog(@"AppMenuWidget: Menu is registered for window %lu - attempting to load despite validation failure", windowId);
         } else {
             [self clearMenuAndHideView];
-            return;
             return;
         }
     }
@@ -1036,6 +1040,13 @@ static int handleX11Error(Display *display, XErrorEvent *event)
         if (window) {
             [window enableFlushWindow];
             [window flushWindow];
+            // Ensure overlay views (e.g., RoundedCornersView) are redrawn after
+            // a menu update.  RoundedCornersView is a sibling of MenuBarView in
+            // the window's contentView, so AppMenuWidget's setNeedsDisplay does
+            // not propagate to it.  Marking the contentView ensures all siblings
+            // (including the rounded-corners overlay) are included in the next
+            // display pass.
+            [[window contentView] setNeedsDisplay:YES];
         }
     }
 }
@@ -1106,9 +1117,16 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     
     // If the newly registered window is the currently active window, display its menu immediately
     if (activeWindow == windowId) {
-        NSLog(@"AppMenuWidget: Newly registered window %lu is currently active, updating menu immediately", windowId);
+        NSLog(@"AppMenuWidget: Newly registered window %lu is currently active, forcing menu load", windowId);
         @try {
-            [self updateForActiveWindowId:activeWindow];
+            // Reset the optimisation guard so the new menu is loaded even if we
+            // previously attempted (and failed/skipped) this window.
+            self.lastLoadedMenuWindowId = 0;
+            self.currentWindowId = windowId;
+            // Call displayMenuForWindow: directly instead of updateForActiveWindowId:
+            // to bypass the 50ms rate-limit guard — this is a one-shot event triggered
+            // by a real menu registration and must not be throttled.
+            [self displayMenuForWindow:windowId isDifferentApp:YES];
         }
         @catch (NSException *exception) {
             NSLog(@"AppMenuWidget: Exception updating menu for newly registered window %lu: %@", windowId, exception);

@@ -559,13 +559,13 @@
         }
     } else {
         // Handle GTK accelerator format: <Control>o, <Primary><Shift>n, <Alt>F4, etc.
-        // Remove modifier prefixes
-        key = [key stringByReplacingOccurrencesOfString:@"<Control>" withString:@""];
-        key = [key stringByReplacingOccurrencesOfString:@"<Primary>" withString:@""];
-        key = [key stringByReplacingOccurrencesOfString:@"<Shift>" withString:@""];
-        key = [key stringByReplacingOccurrencesOfString:@"<Alt>" withString:@""];
-        key = [key stringByReplacingOccurrencesOfString:@"<Meta>" withString:@""];
-        key = [key stringByReplacingOccurrencesOfString:@"<Super>" withString:@""];
+        // Remove modifier prefixes (case-insensitive)
+        key = [key stringByReplacingOccurrencesOfString:@"<Control>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
+        key = [key stringByReplacingOccurrencesOfString:@"<Primary>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
+        key = [key stringByReplacingOccurrencesOfString:@"<Shift>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
+        key = [key stringByReplacingOccurrencesOfString:@"<Alt>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
+        key = [key stringByReplacingOccurrencesOfString:@"<Meta>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
+        key = [key stringByReplacingOccurrencesOfString:@"<Super>" withString:@"" options:NSCaseInsensitiveSearch range:NSMakeRange(0, [key length])];
     }
     
     // Convert special keys
@@ -597,19 +597,21 @@
     
     NSUInteger modifiers = 0;
     
-    // Handle both x-canonical-accel format ("Ctrl+O") and GTK format ("<Control>o")
-    if ([accel containsString:@"<Control>"] || [accel containsString:@"<Primary>"] || 
-        [accel containsString:@"Ctrl+"]) {
+    // Case-insensitive matching for modifier names from Canonical AppMenu / GTK
+    NSString *lower = [accel lowercaseString];
+    
+    if ([lower containsString:@"<control>"] || [lower containsString:@"<primary>"] || 
+        [lower containsString:@"ctrl+"]) {
         modifiers |= NSControlKeyMask;
     }
-    if ([accel containsString:@"<Shift>"] || [accel containsString:@"Shift+"]) {
+    if ([lower containsString:@"<shift>"] || [lower containsString:@"shift+"]) {
         modifiers |= NSEventModifierFlagShift;
     }
-    if ([accel containsString:@"<Alt>"] || [accel containsString:@"Alt+"]) {
+    if ([lower containsString:@"<alt>"] || [lower containsString:@"alt+"]) {
         modifiers |= NSEventModifierFlagOption;
     }
-    if ([accel containsString:@"<Meta>"] || [accel containsString:@"<Super>"] || 
-        [accel containsString:@"Meta+"] || [accel containsString:@"Super+"]) {
+    if ([lower containsString:@"<meta>"] || [lower containsString:@"<super>"] || 
+        [lower containsString:@"meta+"] || [lower containsString:@"super+"]) {
         modifiers |= NSEventModifierFlagCommand;
     }
     
