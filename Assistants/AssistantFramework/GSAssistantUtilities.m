@@ -491,6 +491,12 @@
     return self;
 }
 
+- (instancetype)withLayoutStyle:(GSAssistantLayoutStyle)layoutStyle {
+    NSLog(@"[GSAssistantBuilder] Setting layout style: %ld", (long)layoutStyle);
+    _layoutStyle = layoutStyle;
+    return self;
+}
+
 - (instancetype)withAnimationType:(GSAssistantAnimationType)animationType {
     NSLog(@"[GSAssistantBuilder] Setting animation type: %ld", (long)animationType);
     _animationType = animationType;

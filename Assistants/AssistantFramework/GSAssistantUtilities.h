@@ -64,6 +64,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly) GSAssistantWindow *assistant;
 
 + (instancetype)builder;
+- (instancetype)withLayoutStyle:(GSAssistantLayoutStyle)layoutStyle;
 
 - (instancetype)withTitle:(NSString *)title;
 - (instancetype)withIcon:(NSImage *)icon;
