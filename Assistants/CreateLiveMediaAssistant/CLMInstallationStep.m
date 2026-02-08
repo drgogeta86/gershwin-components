@@ -17,6 +17,8 @@
 #import "GSNetworkUtilities.h"
 
 @interface CLMInstallationStep ()
+- (void)startInstallation;
+- (void)startDirectDownload;
 - (void)copyTempFileToDevice;
 - (void)startDDProgressTimer;
 - (void)stopDDProgressTimer;
@@ -151,9 +153,7 @@
     
     // Use a more direct approach similar to Python's urllib.request.urlretrieve()
     // This downloads directly to the block device without complex resume logic
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self startDirectDownload];
-    });
+    [self performSelector:@selector(startDirectDownload) withObject:nil afterDelay:0.1];
 }
 
 #pragma mark - GSDownloaderDelegate
@@ -389,16 +389,16 @@
     
     // Failsafe: Ensure disk polling is stopped when installation begins
     [_controller stopDiskPolling];
-    
-    // Start installation automatically when step appears
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self startInstallation];
-    });
 }
 
 - (void)stepDidAppear
 {
     NSLog(@"CLMInstallationStep: stepDidAppear");
+    
+    // Start installation automatically when step appears
+    // Use performSelector:withObject:afterDelay: for better reliability
+    // and ensuring UI is fully ready
+    [self performSelector:@selector(startInstallation) withObject:nil afterDelay:0.5];
 }
 
 - (void)stepWillDisappear
