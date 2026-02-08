@@ -288,7 +288,7 @@ NSView *createColoredBox(NSRect frame, NSColor *color) {
         id<GSAssistantStepProtocol> currentStep = _steps[_currentStepIndex];
         
         // Create step title
-        NSRect titleFrame = NSMakeRect(40, [_contentAreaView frame].size.height - 80, 
+        NSRect titleFrame = NSMakeRect(40, [_contentAreaView frame].size.height - 64, 
                                      [_contentAreaView frame].size.width - 80, 30);
         _stepTitleField = [[NSTextField alloc] initWithFrame:titleFrame];
         [_stepTitleField setStringValue:[currentStep stepTitle]];

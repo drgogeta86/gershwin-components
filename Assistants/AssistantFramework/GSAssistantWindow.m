@@ -358,7 +358,7 @@ static const CGFloat GSAssistantWindowMinHeight = 450.0;
     [_contentView addSubview:_mainContentView];
     
     // Main title
-    _titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 280, 460, 30)];
+    _titleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 296, 460, 30)];
     _titleLabel.editable = NO;
     _titleLabel.selectable = NO;
     _titleLabel.bordered = NO;
@@ -381,7 +381,7 @@ static const CGFloat GSAssistantWindowMinHeight = 450.0;
     [_mainContentView addSubview:_stepTitleLabel];
     
     // Step description
-    _stepDescriptionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 220, 430, 20)];
+    _stepDescriptionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 236, 430, 20)];
     _stepDescriptionLabel.editable = NO;
     _stepDescriptionLabel.selectable = NO;
     _stepDescriptionLabel.bordered = NO;
@@ -983,6 +983,77 @@ static const CGFloat GSAssistantWindowMinHeight = 450.0;
     // Clear card subviews but keep any future background layers
     if (_installerContentCardView) {
         NSArray *subviews = [_installerContentCardView.subviews copy];
+installerButtonAreaView addSubview:_backButton];
+    
+    NSLog(@"[GSAssistantWindow] Installer button area setup complete (flat)");
+}
+
+- (void)createInstallerStepIndicators {
+    CGFloat startY = [_sidebarView frame].size.height - 36; // top inset 36px
+    CGFloat stepPitch = 26.0; // 24 height + 2 gap
+
+    for (NSInteger i = 0; i < (NSInteger)_stepsArray.count; i++) {
+        id<GSAssistantStepProtocol> step = _stepsArray[i];
+        CGFloat yPosition = startY - 45 - (i * stepPitch);
+
+        NSRect stepFrame = NSMakeRect(6, yPosition - 12, GSAssistantInstallerSidebarWidth - 12 - 6, 24);
+        NSView *stepRow = [[NSView alloc] initWithFrame:stepFrame];
+
+        // Bullet 16x16 at x=8
+        GSStepBulletView *bullet = [[GSStepBulletView alloc] initWithFrame:NSMakeRect(8, 8, 16, 16)];
+        [bullet setState:(i == 0 ? 1 : 0)];
+
+        // Label
+        NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(32, 1, stepFrame.size.width - 36, 20)];
+        [label setStringValue:[step stepTitle]];
+        [label setBezeled:NO];
+        [label setDrawsBackground:NO];
+        [label setEditable:NO];
+        [label setSelectable:NO];
+        [label setBordered:NO];
+        [label setFont:[NSFont systemFontOfSize:12]];
+        [label setTextColor:[NSColor colorWithCalibratedWhite:0.25 alpha:1.0]];
+
+        [stepRow addSubview:bullet];
+        [stepRow addSubview:label];
+        [_sidebarView addSubview:stepRow];
+        [_stepIndicatorViews addObject:stepRow];
+    }
+
+    NSLog(@"[GSAssistantWindow] Created %lu step indicators", (unsigned long)_stepIndicatorViews.count);
+}
+
+- (void)updateInstallerStepIndicators {
+    for (NSInteger i = 0; i < (NSInteger)_stepIndicatorViews.count; i++) {
+        NSView *row = [_stepIndicatorViews objectAtIndex:i];
+        if ([[row subviews] count] < 2) continue;
+        GSStepBulletView *bullet = (GSStepBulletView *)[[row subviews] objectAtIndex:0];
+        NSTextField *label = (NSTextField *)[[row subviews] objectAtIndex:1];
+
+        if (i < _currentIndex) {
+            [bullet setState:2];
+            [label setTextColor:[NSColor colorWithCalibratedWhite:0.5 alpha:1.0]];
+            [label setFont:[NSFont systemFontOfSize:12]];
+        } else if (i == _currentIndex) {
+            [bullet setState:1];
+            [label setTextColor:[NSColor blackColor]];
+            [label setFont:[NSFont boldSystemFontOfSize:12]];
+        } else {
+            [bullet setState:0];
+            [label setTextColor:[NSColor colorWithCalibratedWhite:0.6 alpha:1.0]];
+            [label setFont:[NSFont systemFontOfSize:12]];
+        }
+    }
+}
+
+- (void)setupInstallerStepContent {
+    // Remove previous title/description fields if any
+    if (_installerStepTitleField) { [_installerStepTitleField removeFromSuperview]; _installerStepTitleField = nil; }
+    if (_installerStepDescriptionField) { [_installerStepDescriptionField removeFromSuperview]; _installerStepDescriptionField = nil; }
+
+    // Clear card subviews but keep any future background layers
+    if (_installerContentCardView) {
+        NSArray *subviews = [[_installerContentCardView.subviews copy] autorelease];
         for (NSView *sub in subviews) {
             [sub removeFromSuperview];
         }
@@ -994,7 +1065,7 @@ static const CGFloat GSAssistantWindowMinHeight = 450.0;
         CGFloat contentWidth = [_mainContentView frame].size.width;   // full content width
 
         // Title above the card - position to match the standard top margin
-        NSRect titleFrame = NSMakeRect(24, 320, contentWidth - 48, 26);
+        NSRect titleFrame = NSMakeRect(24, 336, contentWidth - 48, 26);
         _installerStepTitleField = [[NSTextField alloc] initWithFrame:titleFrame];
         [_installerStepTitleField setStringValue:[currentStep stepTitle] ?: @""];
         [_installerStepTitleField setBezeled:NO];
@@ -1024,6 +1095,36 @@ static const CGFloat GSAssistantWindowMinHeight = 450.0;
             [_installerStepDescriptionField setSelectable:NO];
             [_installerStepDescriptionField setFont:[NSFont systemFontOfSize:12]];
             [_installerStepDescriptionField setTextColor:[NSColor colorWithCalibratedWhite:0.25 alpha:1.0]];
+            // Enable wrapping for GNUstep labels
+            if ([_installerStepDescriptionField respondsToSelector:@selector(setUsesSingleLineMode:)]) {
+                [_installerStepDescriptionField setUsesSingleLineMode:NO];
+            }
+            if ([[_installerStepDescriptionField cell] respondsToSelector:@selector(setWraps:)]) {
+                [[_installerStepDescriptionField cell] setWraps:YES];
+            }
+            if ([[_installerStepDescriptionField cell] respondsToSelector:@selector(setScrollable:)]) {
+                [[_installerStepDescriptionField cell] setScrollable:NO];
+            }
+            
+            // Compute expected height using the cell's measurement
+            CGFloat baseHeight = 18.0;
+            CGFloat padding = 16.0; // extra padding inside card
+            CGFloat available = inner.size.height - 20.0; // maximum available for description
+            CGFloat computedHeight = 48.0;
+            if ([[_installerStepDescriptionField cell] respondsToSelector:@selector(cellSizeForBounds:)]) {
+                NSRect measureBounds = NSMakeRect(0, 0, maxWidth, CGFLOAT_MAX);
+                NSSize expected = [[_installerStepDescriptionField cell] cellSizeForBounds:measureBounds];
+                computedHeight = MAX(expected.height + 6.0, baseHeight);
+            }
+            // Ensure we leave sufficient space for the step content (minimum 80px)
+            CGFloat minContentHeight = 80.0;
+            CGFloat maxDescHeight = MAX(available - minContentHeight, baseHeight);
+            if (maxDescHeight < baseHeight) maxDescHeight = baseHeight;
+            computedHeight = MIN(computedHeight, maxDescHeight);
+
+            // Position description at top area inside the card
+            NSRect finalDescFrame = NSMakeRect(inner.origin.x, inner.origin.y + inner.size.height - computedHeight - padding/2.0, maxWidth, computedHeight + padding/2.0);
+            _installerStepDescriptionField.frame = finalDescFrame;
             [_installerContentCardView addSubview:_installerStepDescriptionField];
             descBlockHeight = 20.0; // label height + minimal spacing
         }
