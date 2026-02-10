@@ -4,11 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
 #import <GSAssistantFramework.h>
-#import <GSAssistantUtilities.h>
 #import "InstallationSteps.h"
 
 @interface InstallationAppDelegate : NSObject <NSApplicationDelegate>
@@ -16,272 +14,70 @@
 
 @implementation InstallationAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    NSLog(@"InstallationAssistant: Last window closed, terminating application");
+    (void)sender;
     return YES;
 }
 @end
 
-@interface InstallationDelegate : NSObject <GSAssistantWindowDelegate>
+@interface InstallationDelegate : NSObject <GSAssistantWindowDelegate,
+                                            IADiskSelectionDelegate,
+                                            IAInstallProgressDelegate>
+{
+    @public
+    IADiskInfo *_selectedDisk;
+}
 @end
 
 @implementation InstallationDelegate
 
-- (void)assistantWindowWillFinish:(GSAssistantWindow *)window {
-    NSLog(@"Installation assistant will finish");
+- (void)dealloc
+{
+    [_selectedDisk release];
+    [super dealloc];
 }
 
 - (void)assistantWindowDidFinish:(GSAssistantWindow *)window {
-    NSLog(@"Installation assistant finished");
+    (void)window;
     [NSApp terminate:nil];
 }
 
 - (BOOL)assistantWindow:(GSAssistantWindow *)window shouldCancelWithConfirmation:(BOOL)showConfirmation {
+    (void)window;
     if (showConfirmation) {
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Cancel Installation?";
-        alert.informativeText = @"Are you sure you want to cancel the installation?";
-        [alert addButtonWithTitle:NSLocalizedString(@"Cancel Installation", @"")];
-        [alert addButtonWithTitle:NSLocalizedString(@"Continue Installation", @"")];
-        alert.alertStyle = NSWarningAlertStyle;
-        
+        [alert setMessageText:NSLocalizedString(@"Cancel Installation?", @"")];
+        [alert setInformativeText:NSLocalizedString(@"Are you sure you want to cancel?", @"")];
+        [alert addButtonWithTitle:NSLocalizedString(@"Cancel", @"")];
+        [alert addButtonWithTitle:NSLocalizedString(@"Continue", @"")];
+        [alert setAlertStyle:NSWarningAlertStyle];
         NSModalResponse response = [alert runModal];
+        [alert release];
         return response == NSAlertFirstButtonReturn;
     }
     return YES;
 }
 
+- (void)diskSelectionStep:(id)step didSelectDisk:(IADiskInfo *)disk {
+    (void)step;
+    [_selectedDisk release];
+    _selectedDisk = [disk retain];
+}
+
+- (void)installProgressDidFinish:(BOOL)success {
+    (void)success;
+}
+
 @end
 
-@interface InstallationAssistant : NSObject
-+ (void)showInstallationAssistant;
-@end
-
-@implementation InstallationAssistant
-
-+ (void)showInstallationAssistant {
-    NSLog(@"[InstallationAssistant] Starting showInstallationAssistant");
-    InstallationDelegate *delegate = [[InstallationDelegate alloc] init];
-    NSLog(@"[InstallationAssistant] Created delegate: %@", delegate);
-    
-    NSLog(@"[InstallationAssistant] Creating builder...");
-    GSAssistantBuilder *builder = [GSAssistantBuilder builder];
-    NSLog(@"[InstallationAssistant] Created builder: %@", builder);
-    
-    
-    NSLog(@"[InstallationAssistant] Setting title...");
-    [builder withTitle:NSLocalizedString(@"Software Installation", @"")];
-    
-    NSLog(@"[InstallationAssistant] Setting icon...");
-    [builder withIcon:[NSImage imageNamed:@"NSApplicationIcon"]];
-    
-    NSLog(@"[InstallationAssistant] Adding destination step...");
-    IADestinationStep *destinationStep = [[IADestinationStep alloc] init];
-    [builder addStep:destinationStep];
-    [destinationStep release];
-    
-    NSLog(@"[InstallationAssistant] Adding options step...");
-    IAOptionsStep *optionsStep = [[IAOptionsStep alloc] init];
-    [builder addStep:optionsStep];
-    [optionsStep release];
-    
-    NSLog(@"[InstallationAssistant] Adding progress step...");
-    [builder addProgressStep:@"Installing" 
-           description:@"Installing software components..."];
-    
-    NSLog(@"[InstallationAssistant] Adding completion step...");
-    [builder addCompletionWithMessage:@"Installation completed successfully!" 
-           success:YES];
-    
-    NSLog(@"[InstallationAssistant] Building assistant...");
-    GSAssistantWindow *assistant = [builder build];
-    NSLog(@"[InstallationAssistant] Built assistant: %@", assistant);
-    
-    NSLog(@"[InstallationAssistant] Setting delegate...");
-    assistant.delegate = delegate;
-    
-    NSLog(@"[InstallationAssistant] Showing window...");
-    [assistant showWindow:nil];
-    NSLog(@"[InstallationAssistant] Making window key and front...");
-    [assistant.window makeKeyAndOrderFront:nil];
-    NSLog(@"[InstallationAssistant] Assistant window should now be visible");
-}
-
-+ (NSView *)createLicenseView {
-    NSView *container = [[NSView alloc] init];
-    
-    // License text
-    NSTextField *licenseLabel = [GSAssistantUIHelper createTitleLabelWithText:@"Software License Agreement"];
-    
-    NSScrollView *scrollView = [[NSScrollView alloc] init];
-    scrollView.hasVerticalScroller = YES;
-    scrollView.hasHorizontalScroller = NO;
-    scrollView.autohidesScrollers = NO;
-    
-    NSTextView *textView = [[NSTextView alloc] init];
-    textView.editable = NO;
-    textView.string = @"GERSHWIN SOFTWARE LICENSE AGREEMENT\n\n"
-                      @"This software is provided 'AS IS' without warranty of any kind. "
-                      @"By installing this software, you agree to the following terms:\n\n"
-                      @"1. You may use this software for personal and commercial purposes.\n"
-                      @"2. You may redistribute the software under the same license terms.\n"
-                      @"3. You may modify the software for your own use.\n"
-                      @"4. The authors are not liable for any damages resulting from use.\n\n"
-                      @"This software includes components from the GNUstep project and other "
-                      @"open source projects. See the individual component licenses for details.\n\n"
-                      @"Copyright (c) 2025 Gershwin Project Contributors\n"
-                      @"All rights reserved.";
-    
-    scrollView.documentView = textView;
-    
-    // Agreement checkbox
-    NSButton *agreeCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"I agree to the license terms", @"")];
-    
-    // Create layout
-    NSArray *views = @[licenseLabel, scrollView, agreeCheck];
-    NSView *stackView = [GSAssistantUIHelper createVerticalStackViewWithViews:views spacing:12.0];
-    
-    [container addSubview:stackView];
-    [GSAssistantUIHelper addStandardConstraintsToView:stackView inContainer:container];
-    
-    return container;
-}
-
-+ (NSView *)createDestinationView {
-    NSView *container = [[NSView alloc] init];
-    
-    // Destination selection
-    NSTextField *destLabel = [GSAssistantUIHelper createTitleLabelWithText:@"Installation Location:"];
-    
-    NSTextField *pathField = [GSAssistantUIHelper createInputFieldWithPlaceholder:@"/Applications"];
-    pathField.stringValue = @"/Applications";
-    
-    NSButton *browseButton = [[NSButton alloc] init];
-    browseButton.title = @"Browse...";
-    browseButton.bezelStyle = NSRoundedBezelStyle;
-    
-    // Disk space info
-    NSTextField *spaceLabel = [GSAssistantUIHelper createDescriptionLabelWithText:@"Required Space: 150 MB"];
-    NSTextField *availableLabel = [GSAssistantUIHelper createDescriptionLabelWithText:@"Available Space: 2.5 GB"];
-    
-    // Installation options
-    NSTextField *optionsLabel = [GSAssistantUIHelper createTitleLabelWithText:@"Installation Options:"];
-    NSButton *createShortcutCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Create desktop shortcuts", @"")];
-    NSButton *addToPathCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Add to system PATH", @"")];
-    [createShortcutCheck setState:NSOnState];
-    [addToPathCheck setState:NSOnState];
-    
-    // Create horizontal layout for path and browse button
-    NSView *pathContainer = [GSAssistantUIHelper createHorizontalStackViewWithViews:@[pathField, browseButton] spacing:8.0];
-    
-    // Create layout
-    NSArray *views = @[destLabel, pathContainer, spaceLabel, availableLabel, 
-                      optionsLabel, createShortcutCheck, addToPathCheck];
-    NSView *stackView = [GSAssistantUIHelper createVerticalStackViewWithViews:views spacing:8.0];
-    
-    [container addSubview:stackView];
-    [GSAssistantUIHelper addStandardConstraintsToView:stackView inContainer:container];
-    
-    return container;
-}
-
-+ (NSView *)createInstallOptionsView {
-    NSView *container = [[NSView alloc] init];
-    
-    // Component selection
-    NSTextField *componentsLabel = [GSAssistantUIHelper createTitleLabelWithText:@"Components to Install:"];
-    
-    NSButton *coreCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Gershwin Core System (Required)", @"")];
-    [coreCheck setState:NSOnState];
-    coreCheck.enabled = NO; // Required component
-    
-    NSButton *appsCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Standard Applications", @"")];
-    [appsCheck setState:NSOnState];
-    
-    NSButton *devsCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Development Tools", @"")];
-    [devsCheck setState:NSOffState];
-    
-    NSButton *gamesCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Games and Entertainment", @"")];
-    [gamesCheck setState:NSOffState];
-    
-    NSButton *docsCheck = [GSAssistantUIHelper createCheckboxWithTitle:NSLocalizedString(@"Documentation and Examples", @"")];
-    [docsCheck setState:NSOnState];
-    
-    // Installation type
-    NSTextField *typeLabel = [GSAssistantUIHelper createTitleLabelWithText:@"Installation Type:"];
-    NSButton *typicalRadio = [GSAssistantUIHelper createRadioButtonWithTitle:NSLocalizedString(@"Typical Installation", @"")];
-    NSButton *customRadio = [GSAssistantUIHelper createRadioButtonWithTitle:NSLocalizedString(@"Custom Installation", @"")];
-    NSButton *minimalRadio = [GSAssistantUIHelper createRadioButtonWithTitle:NSLocalizedString(@"Minimal Installation", @"")];
-    [typicalRadio setState:NSOnState];
-    
-    // Size information
-    NSTextField *sizeLabel = [GSAssistantUIHelper createDescriptionLabelWithText:@"Total Size: 147 MB"];
-    
-    // Create layout
-    NSArray *views = @[componentsLabel, coreCheck, appsCheck, devsCheck, gamesCheck, docsCheck,
-                      typeLabel, typicalRadio, customRadio, minimalRadio, sizeLabel];
-    NSView *stackView = [GSAssistantUIHelper createVerticalStackViewWithViews:views spacing:8.0];
-    
-    [container addSubview:stackView];
-    [GSAssistantUIHelper addStandardConstraintsToView:stackView inContainer:container];
-    
-    return container;
-}
-
-+ (NSView *)createSoftwareSelectionView {
-    NSLog(@"[InstallationAssistant] Creating software selection view container...");
-    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
-    NSLog(@"[InstallationAssistant] Container created with frame: %@", NSStringFromRect(container.frame));
-    
-    // Software package checkboxes
-    NSLog(@"[InstallationAssistant] Creating development tools checkbox...");
-    NSButton *devToolsCheck = [[NSButton alloc] initWithFrame:NSMakeRect(24, 260, 250, 20)];
-    [devToolsCheck setButtonType:NSSwitchButton];
-    devToolsCheck.title = @"Development Tools (GCC, Make, etc.)";
-    devToolsCheck.state = NSOnState;
-    NSLog(@"[InstallationAssistant] Development tools checkbox created: %@", devToolsCheck);
-    
-    NSLog(@"[InstallationAssistant] Creating desktop environment checkbox...");
-    NSButton *desktopCheck = [[NSButton alloc] initWithFrame:NSMakeRect(20, 230, 250, 20)];
-    [desktopCheck setButtonType:NSSwitchButton];
-    desktopCheck.title = @"Desktop Environment (GNOME/KDE)";
-    desktopCheck.state = NSOnState;
-    NSLog(@"[InstallationAssistant] Desktop environment checkbox created: %@", desktopCheck);
-    
-    NSLog(@"[InstallationAssistant] Creating multimedia checkbox...");
-    NSButton *multimediaCheck = [[NSButton alloc] initWithFrame:NSMakeRect(24, 200, 250, 20)];
-    [multimediaCheck setButtonType:NSSwitchButton];
-    multimediaCheck.title = @"Multimedia Codecs and Players";
-    NSLog(@"[InstallationAssistant] Multimedia checkbox created: %@", multimediaCheck);
-    
-    // Add all subviews
-    NSLog(@"[InstallationAssistant] Adding subviews to container...");
-    [container addSubview:devToolsCheck];
-    NSLog(@"[InstallationAssistant] Added development tools checkbox");
-    [container addSubview:desktopCheck];
-    NSLog(@"[InstallationAssistant] Added desktop environment checkbox");
-    [container addSubview:multimediaCheck];
-    NSLog(@"[InstallationAssistant] Added multimedia checkbox");
-    
-    NSLog(@"[InstallationAssistant] Container now has %lu subviews", (unsigned long)container.subviews.count);
-    NSLog(@"[InstallationAssistant] Software selection view creation complete");
-    
-    return container;
-}
-@end
-
-// Main application entry point
-int main(int argc, const char * argv[]) {
-    // Silence unused parameter warnings
+int main(int argc, const char *argv[]) {
     (void)argc;
     (void)argv;
     @autoreleasepool {
         [NSApplication sharedApplication];
         
-        // Set up application delegate to ensure proper termination
         InstallationAppDelegate *appDelegate = [[InstallationAppDelegate alloc] init];
         [NSApp setDelegate:appDelegate];
         
-        // Create menu bar
         NSMenu *mainMenu = [[NSMenu alloc] init];
         NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
         [mainMenu addItem:appMenuItem];
@@ -292,8 +88,33 @@ int main(int argc, const char * argv[]) {
         [appMenu addItem:quitMenuItem];
         [appMenuItem setSubmenu:appMenu];
         
-        // Show the assistant immediately
-        [InstallationAssistant showInstallationAssistant];
+        InstallationDelegate *delegate = [[InstallationDelegate alloc] init];
+        
+        IAWelcomeStep *welcomeStep = [[IAWelcomeStep alloc] init];
+        IALicenseStep *licenseStep = [[IALicenseStep alloc] init];
+        IADiskSelectionStep *diskStep = [[IADiskSelectionStep alloc] init];
+        IAConfirmStep *confirmStep = [[IAConfirmStep alloc] init];
+        IAInstallProgressStep *progressStep = [[IAInstallProgressStep alloc] init];
+        IACompletionStep *completionStep = [[IACompletionStep alloc] init];
+        
+        [diskStep setDelegate:delegate];
+        [progressStep setDelegate:delegate];
+        
+        GSAssistantBuilder *builder = [GSAssistantBuilder builder];
+        [builder withTitle:NSLocalizedString(@"Install Operating System", @"")];
+        [builder withIcon:[NSImage imageNamed:@"NSComputer"]];
+        [builder allowingCancel:YES];
+        
+        [builder addStep:welcomeStep];
+        [builder addStep:licenseStep];
+        [builder addStep:diskStep];
+        [builder addStep:confirmStep];
+        [builder addStep:progressStep];
+        [builder addStep:completionStep];
+        
+        GSAssistantWindow *assistant = [builder build];
+        [assistant setDelegate:delegate];
+        [[assistant window] makeKeyAndOrderFront:nil];
         
         [NSApp run];
         

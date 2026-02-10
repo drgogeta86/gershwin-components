@@ -12,6 +12,10 @@
 
 #import "InstallationSteps.h"
 
+@implementation IADiskInfo
+@synthesize devicePath, name, diskDescription, sizeBytes, formattedSize;
+@end
+
 @implementation IALicenseStep
 
 @synthesize stepTitle, stepDescription;
@@ -257,5 +261,616 @@
 {
     return ([_installDocumentationCheckbox state] == NSOnState);
 }
+
+@end
+
+// ============================================================================
+// IAWelcomeStep - simple welcome screen
+// ============================================================================
+
+@implementation IAWelcomeStep
+
+@synthesize stepTitle, stepDescription;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Welcome", @"");
+        self.stepDescription = NSLocalizedString(@"Welcome to the installer", @"");
+        [self setupView];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_stepView release];
+    [stepTitle release];
+    [stepDescription release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+
+    NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 140, 360, 40)];
+    [label setBezeled:NO];
+    [label setDrawsBackground:NO];
+    [label setEditable:NO];
+    [label setSelectable:NO];
+    [label setStringValue:NSLocalizedString(@"This assistant will guide you through installing the operating system.", @"")];
+    [[label cell] setWraps:YES];
+    [label setFont:[NSFont systemFontOfSize:12]];
+    [_stepView addSubview:label];
+    [label release];
+}
+
+- (NSView *)stepView
+{
+    return _stepView;
+}
+
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)canContinue { return YES; }
+
+@end
+
+// ============================================================================
+// IADiskSelectionStep - enumerates disks using external installer scripts
+// ============================================================================
+
+#import <sys/utsname.h>
+
+@implementation IADiskSelectionStep
+
+@synthesize stepTitle, stepDescription, delegate;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Select Destination Disk", @"");
+        self.stepDescription = NSLocalizedString(@"Choose a physical disk to install to", @"");
+        _disks = [[NSMutableArray alloc] init];
+        _diagnostics = [[NSMutableString alloc] init];
+        [self setupView];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self refreshDiskList];
+        });
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [_stepView release];
+    [_tableView release];
+    [_disks release];
+    [_statusLabel release];
+    [_spinner release];
+    [_detailsButton release];
+    [_diagnostics release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 240)];
+
+    _statusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 200, 360, 20)];
+    [_statusLabel setBezeled:NO];
+    [_statusLabel setDrawsBackground:NO];
+    [_statusLabel setEditable:NO];
+    [_statusLabel setSelectable:NO];
+    [_statusLabel setStringValue:NSLocalizedString(@"Scanning for disks...", @"")];
+    [_stepView addSubview:_statusLabel];
+
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 60, 360, 130)];
+    [scrollView setHasVerticalScroller:YES];
+    [scrollView setBorderType:NSBezelBorder];
+
+    _tableView = [[NSTableView alloc] initWithFrame:[[scrollView contentView] frame]];
+    NSTableColumn *col1 = [[NSTableColumn alloc] initWithIdentifier:@"devicePath"]; [[col1 headerCell] setStringValue:NSLocalizedString(@"Device", @"")]; [col1 setWidth:120]; [_tableView addTableColumn:col1]; [col1 release];
+    NSTableColumn *col2 = [[NSTableColumn alloc] initWithIdentifier:@"name"]; [[col2 headerCell] setStringValue:NSLocalizedString(@"Name", @"")]; [col2 setWidth:160]; [_tableView addTableColumn:col2]; [col2 release];
+    NSTableColumn *col3 = [[NSTableColumn alloc] initWithIdentifier:@"formattedSize"]; [[col3 headerCell] setStringValue:NSLocalizedString(@"Size", @"")]; [col3 setWidth:70]; [_tableView addTableColumn:col3]; [col3 release];
+
+    [_tableView setDelegate:(id<NSTableViewDelegate>)self];
+    [_tableView setDataSource:(id<NSTableViewDataSource>)self];
+    [scrollView setDocumentView:_tableView];
+    [_stepView addSubview:scrollView];
+    [scrollView release];
+
+    _detailsButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 80, 24)];
+    [_detailsButton setTitle:NSLocalizedString(@"Details", @"")];
+    [_detailsButton setTarget:self];
+    [_detailsButton setAction:@selector(showDiagnostics:)];
+    [_stepView addSubview:_detailsButton];
+
+    _spinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(110, 20, 16, 16)];
+    [_spinner setStyle:NSProgressIndicatorSpinningStyle];
+    [_spinner startAnimation:nil];
+    [_stepView addSubview:_spinner];
+}
+
+static BOOL isRunningLinux()
+{
+    struct utsname u;
+    if (uname(&u) == 0) {
+        return (strcmp(u.sysname, "Linux") == 0);
+    }
+    return NO;
+}
+
+- (void)refreshDiskList
+{
+    NSLog(@"IADiskSelectionStep: refreshDiskList");
+    [_diagnostics setString:@""];
+    [_statusLabel setStringValue:NSLocalizedString(@"Scanning for disks...", @"")];
+    [_spinner startAnimation:nil];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *scriptPath = isRunningLinux() ? @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer-linux.sh" : @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer.sh";
+        NSTask *task = [[NSTask alloc] init];
+        [task setLaunchPath:scriptPath];
+        [task setArguments:@[@"--list-disks", @"--debug=1"]];
+
+        NSPipe *outPipe = [NSPipe pipe];
+        NSPipe *errPipe = [NSPipe pipe];
+        [task setStandardOutput:outPipe];
+        [task setStandardError:errPipe];
+
+        @try {
+            [task launch];
+        } @catch (NSException *ex) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [_spinner stopAnimation:nil];
+                [_statusLabel setStringValue:NSLocalizedString(@"Failed to start disk enumeration script", @"")];
+                [_diagnostics appendFormat:@"Exception launching script: %@\n", ex];
+            });
+            [task release];
+            return;
+        }
+
+        NSData *outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
+        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+        [task waitUntilExit];
+        int term = [task terminationStatus];
+
+        NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
+        NSString *errStr = errData ? [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease] : @"";
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [_spinner stopAnimation:nil];
+
+            if (outStr && [outStr length] > 0) {
+                NSError *jsonError = nil;
+                id obj = nil;
+                @try {
+                    obj = [NSJSONSerialization JSONObjectWithData:outData options:0 error:&jsonError];
+                } @catch (NSException *ex) {
+                    obj = nil;
+                    [_diagnostics appendFormat:@"JSON parse exception: %@\n", ex];
+                }
+
+                if (obj && [obj isKindOfClass:[NSArray class]]) {
+                    [_disks removeAllObjects];
+                    for (NSDictionary *d in obj) {
+                        IADiskInfo *disk = [[IADiskInfo alloc] init];
+                        disk.devicePath = [d objectForKey:@"devicePath"] ?: @"";
+                        disk.name = [d objectForKey:@"name"] ?: @"";
+                        disk.diskDescription = [d objectForKey:@"description"] ?: @"";
+                        disk.sizeBytes = [[d objectForKey:@"sizeBytes"] unsignedLongLongValue];
+                        disk.formattedSize = [d objectForKey:@"formattedSize"] ?: @"";
+                        [_disks addObject:disk];
+                        [disk release];
+                    }
+                    [_statusLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Found %lu disk(s)", @""), (unsigned long)[_disks count]]];
+                    [_tableView reloadData];
+                } else {
+                    [_diagnostics appendString:@"Unexpected JSON output from script\n"];
+                    if (jsonError) [_diagnostics appendFormat:@"JSON error: %@\n", [jsonError localizedDescription]];
+                    if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
+                    [_statusLabel setStringValue:NSLocalizedString(@"Error enumerating disks - see Details", @"")];
+                }
+            } else {
+                [_diagnostics appendString:@"No output from disk enumeration script\n"];
+                if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
+                [_statusLabel setStringValue:NSLocalizedString(@"No disks found - see Details", @"")];
+            }
+
+            // If the script exited with non-zero status, append that info
+            if (term != 0) {
+                [_diagnostics appendFormat:@"Script exited with status %d\n", term];
+            }
+        });
+
+        [task release];
+    });
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView
+{
+    return (NSInteger)[_disks count];
+}
+
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
+{
+    if ((NSUInteger)row >= [_disks count]) return @"";
+    IADiskInfo *d = [_disks objectAtIndex:row];
+    NSString *ident = [tableColumn identifier];
+    if ([ident isEqualToString:@"devicePath"]) return d.devicePath;
+    if ([ident isEqualToString:@"name"]) return d.name;
+    if ([ident isEqualToString:@"formattedSize"]) return d.formattedSize;
+    return @"";
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification
+{
+    NSInteger sel = [_tableView selectedRow];
+    if (sel >= 0 && (NSUInteger)sel < [_disks count]) {
+        IADiskInfo *d = [_disks objectAtIndex:sel];
+        if (delegate && [delegate respondsToSelector:@selector(diskSelectionStep:didSelectDisk:)]) {
+            [delegate diskSelectionStep:self didSelectDisk:d];
+        }
+    }
+}
+
+- (IADiskInfo *)selectedDisk
+{
+    NSInteger sel = [_tableView selectedRow];
+    if (sel >= 0 && (NSUInteger)sel < [_disks count]) return [_disks objectAtIndex:sel];
+    return nil;
+}
+
+- (void)showDiagnostics:(id)sender
+{
+    // Show a modal panel with diagnostics text
+    NSWindow *panel = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 600, 360)
+                                                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable)
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
+    [panel setTitle:NSLocalizedString(@"Disk Enumeration Diagnostics", @"")];
+
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 10, 580, 320)];
+    [scrollView setHasVerticalScroller:YES];
+    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 560, 320)];
+    [tv setEditable:NO];
+    [tv setString:_diagnostics ?: @"No diagnostics available"]; 
+    [scrollView setDocumentView:tv];
+    [[panel contentView] addSubview:scrollView];
+
+    NSWindow *win = [[self stepView] window];
+    if (!win) win = [NSApp keyWindow];
+    [NSApp runModalForWindow:panel];
+
+    [tv release];
+    [scrollView release];
+    [panel release];
+}
+
+- (NSView *)stepView { return _stepView; }
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)canContinue { return ([self selectedDisk] != nil); }
+
+@end
+
+// ============================================================================
+// IAConfirmStep - simple confirmation before destructive action
+// ============================================================================
+
+@implementation IAConfirmStep
+
+@synthesize stepTitle, stepDescription;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Confirm Installation", "");
+        self.stepDescription = NSLocalizedString(@"Finalize and start installation", "");
+        [self setupView];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_stepView release];
+    [stepTitle release];
+    [stepDescription release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+
+    _warningLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 120, 360, 60)];
+    [_warningLabel setBezeled:NO];
+    [_warningLabel setDrawsBackground:NO];
+    [_warningLabel setEditable:NO];
+    [_warningLabel setSelectable:NO];
+    [_warningLabel setStringValue:NSLocalizedString(@"Warning: This will erase all data on the selected disk.", @"")];
+    [[_warningLabel cell] setWraps:YES];
+    [_stepView addSubview:_warningLabel];
+
+    _confirmCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, 90, 360, 20)];
+    [_confirmCheckbox setButtonType:NSSwitchButton];
+    [_confirmCheckbox setTitle:NSLocalizedString(@"I understand that all data will be erased", @"")];
+    [_confirmCheckbox setState:NSOffState];
+    [_confirmCheckbox setTarget:self];
+    [_confirmCheckbox setAction:@selector(checkboxToggled:)];
+    [_stepView addSubview:_confirmCheckbox];
+
+    _diskInfoLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 60, 360, 20)];
+    [_diskInfoLabel setBezeled:NO];
+    [_diskInfoLabel setDrawsBackground:NO];
+    [_diskInfoLabel setEditable:NO];
+    [_diskInfoLabel setSelectable:NO];
+    [_stepView addSubview:_diskInfoLabel];
+}
+
+- (void)checkboxToggled:(id)sender
+{
+    NSWindow *window = [[self stepView] window];
+    if (!window) window = [NSApp keyWindow];
+    NSWindowController *wc = [window windowController];
+    if ([wc isKindOfClass:[GSAssistantWindow class]]) {
+        GSAssistantWindow *assistantWindow = (GSAssistantWindow *)wc;
+        [assistantWindow updateNavigationButtons];
+    }
+}
+
+- (void)updateWithDisk:(IADiskInfo *)disk
+{
+    if (disk) {
+        [_diskInfoLabel setStringValue:[NSString stringWithFormat:@"%@ (%@)", disk.devicePath, disk.formattedSize ? disk.formattedSize : @""]];
+    } else {
+        [_diskInfoLabel setStringValue:@""];
+    }
+}
+
+- (NSView *)stepView { return _stepView; }
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)canContinue { return ([_confirmCheckbox state] == NSOnState); }
+
+@end
+
+// ============================================================================
+// IAInstallProgressStep - run installer script and parse PROGRESS lines
+// ============================================================================
+
+@implementation IAInstallProgressStep
+
+@synthesize stepTitle, stepDescription, delegate;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Installing", @"");
+        self.stepDescription = NSLocalizedString(@"Installing the system to the selected disk", @"");
+        [self setupView];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_stepView release];
+    [_progressBar release];
+    [_phaseLabel release];
+    [_detailLabel release];
+    [_percentLabel release];
+    [_lineBuffer release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+
+    _phaseLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 140, 360, 20)];
+    [_phaseLabel setBezeled:NO]; [_phaseLabel setDrawsBackground:NO]; [_phaseLabel setEditable:NO]; [_phaseLabel setSelectable:NO];
+    [_phaseLabel setStringValue:NSLocalizedString(@"Phase: preparing", @"")];
+    [_stepView addSubview:_phaseLabel];
+
+    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 110, 360, 20)];
+    [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO]; [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
+    [_stepView addSubview:_detailLabel];
+
+    _percentLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 80, 360, 20)];
+    [_percentLabel setBezeled:NO]; [_percentLabel setDrawsBackground:NO]; [_percentLabel setEditable:NO]; [_percentLabel setSelectable:NO];
+    [_percentLabel setStringValue:@"0%"];
+    [_stepView addSubview:_percentLabel];
+
+    _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 40, 360, 20)];
+    [_progressBar setIndeterminate:NO];
+    [_progressBar setMinValue:0.0];
+    [_progressBar setMaxValue:100.0];
+    [_stepView addSubview:_progressBar];
+
+    _lineBuffer = [[NSMutableString alloc] init];
+}
+
+- (void)startInstallationToDisk:(IADiskInfo *)disk
+{
+    if (!disk) return;
+    if (_isRunning) return;
+
+    _isRunning = YES;
+    _isFinished = NO;
+    _wasSuccessful = NO;
+    [_phaseLabel setStringValue:NSLocalizedString(@"Phase: starting", @"")];
+    [_detailLabel setStringValue:@""];
+    [_percentLabel setStringValue:@"0%"];
+    [_progressBar setDoubleValue:0.0];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *scriptPath = isRunningLinux() ? @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer-linux.sh" : @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer.sh";
+        NSTask *task = [[NSTask alloc] init];
+        [task setLaunchPath:scriptPath];
+        [task setArguments:@[@"--noninteractive", @"--disk", disk.devicePath, @"--debug=1"]];
+
+        NSPipe *outPipe = [NSPipe pipe];
+        NSPipe *errPipe = [NSPipe pipe];
+        [task setStandardOutput:outPipe];
+        [task setStandardError:errPipe];
+
+        @try {
+            [task launch];
+        } @catch (NSException *ex) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                _isRunning = NO;
+                _isFinished = YES;
+                _wasSuccessful = NO;
+                [_detailLabel setStringValue:NSLocalizedString(@"Failed to launch installer", @"")];
+                if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
+                    [delegate installProgressDidFinish:NO];
+                }
+            });
+            [task release];
+            return;
+        }
+
+        // Read output to end and parse PROGRESS lines
+        NSData *outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
+        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+        [task waitUntilExit];
+        int term = [task terminationStatus];
+
+        NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
+        NSString *errStr = errData ? [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease] : @"";
+
+        // Parse PROGRESS: lines
+        NSArray *lines = [outStr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+        for (NSString *line in lines) {
+            if ([line hasPrefix:@"PROGRESS:"]) {
+                NSArray *parts = [line componentsSeparatedByString:@":"];
+                if ([parts count] >= 4) {
+                    NSString *phase = parts[1];
+                    NSString *percentStr = parts[2];
+                    NSString *message = [[parts subarrayWithRange:NSMakeRange(3, [parts count]-3)] componentsJoinedByString:@":"];
+                    double percent = [percentStr doubleValue];
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [_phaseLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Phase: %@", @""), phase]];
+                        [_detailLabel setStringValue:message];
+                        [_percentLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", percent]];
+                        [_progressBar setDoubleValue:percent];
+                    });
+                }
+            }
+        }
+
+        BOOL success = (term == 0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            _isRunning = NO;
+            _isFinished = YES;
+            _wasSuccessful = success;
+            if (!success) {
+                NSString *msg = (errStr && [errStr length] > 0) ? errStr : NSLocalizedString(@"Installation failed.", @"");
+                [_detailLabel setStringValue:msg];
+            }
+            if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
+                [delegate installProgressDidFinish:success];
+            }
+        });
+
+        [task release];
+    });
+}
+
+- (NSView *)stepView { return _stepView; }
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)isFinished { return _isFinished; }
+- (BOOL)wasSuccessful { return _wasSuccessful; }
+- (BOOL)canContinue { return _isFinished; }
+
+@end
+
+// ============================================================================
+// IACompletionStep - show success/failure
+// ============================================================================
+
+@implementation IACompletionStep
+
+@synthesize stepTitle, stepDescription;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Finished", @"");
+        self.stepDescription = NSLocalizedString(@"Installation complete", @"");
+        [self setupView];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_stepView release];
+    [_messageLabel release];
+    [_detailLabel release];
+    [_iconView release];
+    [_restartButton release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+
+    _iconView = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 120, 64, 64)];
+    [_stepView addSubview:_iconView];
+
+    _messageLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 140, 280, 40)];
+    [_messageLabel setBezeled:NO]; [_messageLabel setDrawsBackground:NO]; [_messageLabel setEditable:NO]; [_messageLabel setSelectable:NO];
+    [_messageLabel setFont:[NSFont boldSystemFontOfSize:14]];
+    [_stepView addSubview:_messageLabel];
+
+    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 100, 280, 30)];
+    [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO]; [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
+    [_stepView addSubview:_detailLabel];
+
+    _restartButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 20, 120, 30)];
+    [_restartButton setTitle:NSLocalizedString(@"Restart", @"")];
+    [_restartButton setTarget:self];
+    [_restartButton setAction:@selector(restartAction:)];
+    [_stepView addSubview:_restartButton];
+}
+
+- (void)showSuccessWithDisk:(IADiskInfo *)disk
+{
+    [_iconView setImage:[NSImage imageNamed:@"status-available"]];
+    [_messageLabel setStringValue:NSLocalizedString(@"Installation completed successfully.", @"")];
+    [_detailLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Installed to %@", @""), disk.devicePath ?: @""]];
+}
+
+- (void)showFailureWithMessage:(NSString *)message
+{
+    [_iconView setImage:[NSImage imageNamed:@"status-unavailable"]];
+    [_messageLabel setStringValue:NSLocalizedString(@"Installation failed", @"")];
+    if (message) [_detailLabel setStringValue:message];
+}
+
+- (void)restartAction:(id)sender
+{
+    // For safety, don't implement automatic restart here - leave as a no-op
+    NSAlert *a = [[NSAlert alloc] init];
+    [a setMessageText:NSLocalizedString(@"Restart requested", @"")];
+    [a setInformativeText:NSLocalizedString(@"Please restart the system manually.", @"")];
+    [a addButtonWithTitle:NSLocalizedString(@"OK", @"")];
+    [a runModal];
+    [a release];
+}
+
+- (NSView *)stepView { return _stepView; }
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)canContinue { return YES; }
 
 @end

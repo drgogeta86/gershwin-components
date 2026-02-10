@@ -4,32 +4,42 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-
 //
 // InstallationSteps.h
-// Installation Assistant - Custom Step Classes
+// Installation Assistant - Disk-based System Installer Steps
 //
 
 #import <Foundation/Foundation.h>
 #import "GSAssistantFramework.h"
 
-// License Agreement Step
+// ============================================================================
+// IAWelcomeStep - Introduction screen
+// ============================================================================
+@interface IAWelcomeStep : NSObject <GSAssistantStepProtocol>
+{
+    NSView *_stepView;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+@end
+
+// ============================================================================
+// IALicenseStep - License agreement with checkbox
+// ============================================================================
 @interface IALicenseStep : NSObject <GSAssistantStepProtocol>
 {
     NSView *_stepView;
     NSTextView *_licenseTextView;
     NSButton *_agreeCheckbox;
 }
-
-@property (readonly, nonatomic) NSView *stepView;
 @property (copy, nonatomic) NSString *stepTitle;
 @property (copy, nonatomic) NSString *stepDescription;
-
 - (BOOL)userAgreedToLicense;
-
 @end
 
-// Installation Location Step
+// ============================================================================
+// IADestinationStep - Choose installation destination
+// ============================================================================
 @interface IADestinationStep : NSObject <GSAssistantStepProtocol>
 {
     NSView *_stepView;
@@ -37,16 +47,14 @@
     NSTextField *_spaceRequiredLabel;
     NSTextField *_spaceAvailableLabel;
 }
-
-@property (readonly, nonatomic) NSView *stepView;
 @property (copy, nonatomic) NSString *stepTitle;
 @property (copy, nonatomic) NSString *stepDescription;
-
 - (NSString *)selectedDestination;
-
 @end
 
-// Installation Options Step
+// ============================================================================
+// IAOptionsStep - Choose optional components
+// ============================================================================
 @interface IAOptionsStep : NSObject <GSAssistantStepProtocol>
 {
     NSView *_stepView;
@@ -54,13 +62,116 @@
     NSButton *_installLinuxCompatibilityCheckbox;
     NSButton *_installDocumentationCheckbox;
 }
-
-@property (readonly, nonatomic) NSView *stepView;
 @property (copy, nonatomic) NSString *stepTitle;
 @property (copy, nonatomic) NSString *stepDescription;
-
 - (BOOL)installDevelopmentTools;
 - (BOOL)installLinuxCompatibility;
 - (BOOL)installDocumentation;
+@end
 
+// ============================================================================
+// IADiskInfo - Model object for a physical disk
+// ============================================================================
+@interface IADiskInfo : NSObject
+@property (copy, nonatomic) NSString *devicePath;
+@property (copy, nonatomic) NSString *name;
+@property (copy, nonatomic) NSString *diskDescription;
+@property (assign, nonatomic) unsigned long long sizeBytes;
+@property (copy, nonatomic) NSString *formattedSize;
+@end
+
+// ============================================================================
+// IADiskSelectionDelegate - Callback when disk is selected
+// ============================================================================
+@protocol IADiskSelectionDelegate <NSObject>
+- (void)diskSelectionStep:(id)step didSelectDisk:(IADiskInfo *)disk;
+@end
+
+// ============================================================================
+// IADiskSelectionStep - Shows available physical disks in a table
+// ============================================================================
+@interface IADiskSelectionStep : NSObject <GSAssistantStepProtocol, NSTableViewDataSource, NSTableViewDelegate>
+{
+    NSView *_stepView;
+    NSTableView *_tableView;
+    NSMutableArray *_disks;
+    NSTextField *_statusLabel;
+    NSProgressIndicator *_spinner;
+    NSButton *_detailsButton;
+    NSMutableString *_diagnostics;
+    BOOL _isLoading;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+@property (assign, nonatomic) id<IADiskSelectionDelegate> delegate;
+- (IADiskInfo *)selectedDisk;
+- (void)refreshDiskList;
+- (void)showDiagnostics:(id)sender;
+@end
+
+// ============================================================================
+// IAConfirmStep - Confirm before erasing disk
+// ============================================================================
+@interface IAConfirmStep : NSObject <GSAssistantStepProtocol>
+{
+    NSView *_stepView;
+    NSButton *_confirmCheckbox;
+    NSTextField *_warningLabel;
+    NSTextField *_diskInfoLabel;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+- (void)updateWithDisk:(IADiskInfo *)disk;
+@end
+
+// ============================================================================
+// IAInstallProgressDelegate - Callback for installation progress
+// ============================================================================
+@protocol IAInstallProgressDelegate <NSObject>
+- (void)installProgressDidFinish:(BOOL)success;
+@end
+
+// ============================================================================
+// IAInstallProgressStep - Runs the installer script as NSTask
+// ============================================================================
+@interface IAInstallProgressStep : NSObject <GSAssistantStepProtocol>
+{
+    NSView *_stepView;
+    NSProgressIndicator *_progressBar;
+    NSTextField *_phaseLabel;
+    NSTextField *_detailLabel;
+    NSTextField *_percentLabel;
+    NSTask *_installerTask;
+    NSPipe *_outputPipe;
+    NSMutableString *_lineBuffer;
+    BOOL _isRunning;
+    BOOL _isFinished;
+    BOOL _wasSuccessful;
+    NSDate *_startTime;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+@property (assign, nonatomic) id<IAInstallProgressDelegate> delegate;
+- (void)startInstallationToDisk:(IADiskInfo *)disk;
+- (BOOL)isFinished;
+- (BOOL)wasSuccessful;
+@end
+
+// ============================================================================
+// IACompletionStep - Shows result and offers restart
+// ============================================================================
+@interface IACompletionStep : NSObject <GSAssistantStepProtocol>
+{
+    NSView *_stepView;
+    NSTextField *_messageLabel;
+    NSTextField *_detailLabel;
+    NSImageView *_iconView;
+    NSButton *_restartButton;
+    NSTimer *_countdownTimer;
+    int _countdownSeconds;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+- (void)showSuccessWithDisk:(IADiskInfo *)disk;
+- (void)showFailureWithMessage:(NSString *)message;
 @end

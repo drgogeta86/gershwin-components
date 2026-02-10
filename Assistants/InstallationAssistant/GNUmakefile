@@ -8,21 +8,15 @@ InstallationAssistant_OBJC_FILES = InstallationAssistant.m InstallationSteps.m
 
 # Resource files
 InstallationAssistant_RESOURCE_FILES = \
-	Resources/en.lproj/Welcome.txt \
-	Resources/en.lproj/ReadMe.txt \
-	Resources/en.lproj/License.txt \
 	Resources/en.lproj/Localizable.strings \
-	Resources/de.lproj/Welcome.txt \
-	Resources/de.lproj/ReadMe.txt \
-	Resources/de.lproj/License.txt \
 	Resources/de.lproj/Localizable.strings
 
 # Required frameworks and libraries - use GNUstep naming
 InstallationAssistant_GUI_LIBS += -lgnustep-gui -lgnustep-base
 
 # Compiler and linker flags - embed framework in bundle
-InstallationAssistant_CPPFLAGS += -Wall -Wextra -I$(shell pwd)/../AssistantFramework/GSAssistantFramework.framework/Versions/1/Headers
-InstallationAssistant_LDFLAGS += -L$(shell pwd)/../AssistantFramework/GSAssistantFramework.framework/Versions/1 -lGSAssistantFramework -Wl,-rpath,'$$ORIGIN/Frameworks/GSAssistantFramework.framework/Versions/1'
+InstallationAssistant_CPPFLAGS += -Wall -Wextra -Werror -O2 -I$(shell pwd)/../AssistantFramework/GSAssistantFramework.framework/Versions/1/Headers
+InstallationAssistant_LDFLAGS += -L$(shell pwd)/../AssistantFramework/GSAssistantFramework.framework/Versions/1 -lGSAssistantFramework -Wl,-rpath,'$$ORIGIN/Frameworks/GSAssistantFramework.framework/Versions/1' -ldispatch
 
 include $(GNUSTEP_MAKEFILES)/application.make
 

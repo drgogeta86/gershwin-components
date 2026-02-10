@@ -1,32 +1,60 @@
 /* English localization for InstallationAssistant */
 
 /* Application title */
-"Software Installation" = "Software Installation";
+"Install Operating System" = "Install Operating System";
 
-/* Interface labels */
-"Install to:" = "Install to:";
-"/usr/local" = "/usr/local";
-"/opt/gershwin" = "/opt/gershwin";
-"Choose..." = "Choose...";
-"Space required: 2.5 GB" = "Space required: 2.5 GB";
-"Space available: 15.2 GB" = "Space available: 15.2 GB";
-"Choose optional components to install:" = "Choose optional components to install:";
+/* Welcome Step */
+"Welcome" = "Welcome";
+"Welcome to the system installer" = "Welcome to the system installer";
+"Welcome to the Installer" = "Welcome to the Installer";
 
-/* Buttons */
+/* License Step */
+"License" = "License";
+"Please read and accept the software license" = "Please read and accept the software license";
+"I agree to the terms of this license" = "I agree to the terms of this license";
+
+/* Disk Selection Step */
+"Select Destination" = "Select Destination";
+"Choose the disk to install to" = "Choose the disk to install to";
+"Select a disk to install to:" = "Select a disk to install to:";
+"Disk" = "Disk";
+"Size" = "Size";
+"Description" = "Description";
+"Scanning for available disks..." = "Scanning for available disks...";
+"No suitable disks found." = "No suitable disks found.";
+"Refresh" = "Refresh";
+"Unknown Disk" = "Unknown Disk";
+
+/* Confirm Step */
+"Confirm Installation" = "Confirm Installation";
+"Review and confirm" = "Review and confirm";
+"No disk selected." = "No disk selected.";
+"I understand that all data on this disk will be erased" = "I understand that all data on this disk will be erased";
+"Install" = "Install";
+
+/* Progress Step */
+"Installing" = "Installing";
+"Installation in progress" = "Installation in progress";
+"Preparing installation..." = "Preparing installation...";
+"Starting installation..." = "Starting installation...";
+"Installation complete." = "Installation complete.";
+"Installation failed." = "Installation failed.";
+"Error: Installer script not found" = "Error: Installer script not found";
+"Error: Could not start installer" = "Error: Could not start installer";
+
+/* Completion Step */
+"Complete" = "Complete";
+"Installation finished" = "Installation finished";
+"Installation Successful" = "Installation Successful";
+"Installation Failed" = "Installation Failed";
+"Restart Now" = "Restart Now";
+"Close" = "Close";
+
+/* Cancel dialog */
+"Cancel Installation?" = "Cancel Installation?";
+"Are you sure you want to cancel the installation?" = "Are you sure you want to cancel the installation?";
 "Cancel Installation" = "Cancel Installation";
 "Continue Installation" = "Continue Installation";
-"I agree to the license terms" = "I agree to the license terms";
-"Create desktop shortcuts" = "Create desktop shortcuts";
-"Add to system PATH" = "Add to system PATH";
 
-/* Component options */
-"Gershwin Core System (Required)" = "Gershwin Core System (Required)";
-"Standard Applications" = "Standard Applications";
-"Development Tools" = "Development Tools";
-"Games and Entertainment" = "Games and Entertainment";
-"Documentation and Examples" = "Documentation and Examples";
-
-/* Installation types */
-"Typical Installation" = "Typical Installation";
-"Custom Installation" = "Custom Installation";
-"Minimal Installation" = "Minimal Installation";
+/* Menu */
+"Quit" = "Quit";

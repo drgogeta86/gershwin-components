@@ -49,3 +49,4 @@ Processes/tools/safe_proc_scan
 *.so
 *.so.*
 *.pid
+network-helper
