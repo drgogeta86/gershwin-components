@@ -26,7 +26,7 @@
 "Unknown Disk" = "Unknown Disk";
 
 /* Confirm Step */
-"Confirm Installation" = "Confirm Installation";
+"Confirmation" = "Confirmation";
 "Review and confirm" = "Review and confirm";
 "No disk selected." = "No disk selected.";
 "I understand that all data on this disk will be erased" = "I understand that all data on this disk will be erased";
@@ -39,16 +39,22 @@
 "Starting installation..." = "Starting installation...";
 "Installation complete." = "Installation complete.";
 "Installation failed." = "Installation failed.";
+"Installation failed. See log for details." = "Installation failed. See log for details.";
 "Error: Installer script not found" = "Error: Installer script not found";
 "Error: Could not start installer" = "Error: Could not start installer";
 
 /* Completion Step */
-"Complete" = "Complete";
-"Installation finished" = "Installation finished";
+"Finished" = "Finished";
+"Installation complete" = "Installation complete";
 "Installation Successful" = "Installation Successful";
 "Installation Failed" = "Installation Failed";
-"Restart Now" = "Restart Now";
+"Restart" = "Restart";
 "Close" = "Close";
+
+/* Log Window */
+"Installation Log" = "Installation Log";
+"Show Log" = "Show Log";
+"Window" = "Window";
 
 /* Cancel dialog */
 "Cancel Installation?" = "Cancel Installation?";

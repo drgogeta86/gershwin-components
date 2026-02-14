@@ -28,9 +28,9 @@
     IADiskInfo *_selectedDisk;
     NSString *_imageSourcePath;
     IAInstallProgressStep *_progressStep;
-    IACompletionStep *_completionStep;
     IAConfirmStep *_confirmStep;
     GSAssistantWindow *_assistantWindow;
+    IALogWindowController *_logWindowController;
 }
 @end
 
@@ -40,12 +40,24 @@
 {
     [_selectedDisk release];
     [_imageSourcePath release];
-    /* _progressStep, _completionStep, _confirmStep, _assistantWindow are not owned */
+    [_logWindowController release];
+    /* _progressStep, _confirmStep, _assistantWindow are not owned */
     [super dealloc];
 }
 
 - (void)assistantWindowDidFinish:(GSAssistantWindow *)window {
     (void)window;
+    /* The user clicked Restart on the completion step - execute shutdown -r now */
+    NSLog(@"InstallationDelegate: assistantWindowDidFinish - restarting system");
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/usr/bin/env"];
+    [task setArguments:@[@"sudo", @"shutdown", @"-r", @"now"]];
+    @try {
+        [task launch];
+    } @catch (NSException *ex) {
+        NSLog(@"InstallationDelegate: restart failed: %@", ex);
+    }
+    [task release];
     [NSApp terminate:nil];
 }
 
@@ -102,15 +114,19 @@
 
 - (void)installProgressDidFinish:(BOOL)success {
     NSLog(@"InstallationDelegate: installation finished, success=%d", success);
-    if (success) {
-        [_completionStep showSuccessWithDisk:_selectedDisk];
-    } else {
-        [_completionStep showFailureWithMessage:
-            NSLocalizedString(@"The installation did not complete successfully. Check the log for details.", @"")];
-    }
-    /* Enable navigation to move to the completion step */
-    if (_assistantWindow) {
+    if (success && _assistantWindow) {
+        /* Auto-advance to the framework's completion step (green checkmark) */
+        [_assistantWindow goToNextStep];
+    } else if (!success && _assistantWindow) {
+        /* Enable Continue so user can proceed to the error completion step */
         [_assistantWindow updateNavigationButtons];
+    }
+}
+
+- (void)showLog:(id)sender {
+    (void)sender;
+    if (_logWindowController) {
+        [[_logWindowController window] makeKeyAndOrderFront:nil];
     }
 }
 
@@ -131,9 +147,17 @@ int main(int argc, const char *argv[]) {
         [NSApp setMainMenu:mainMenu];
         
         NSMenu *appMenu = [[NSMenu alloc] init];
-        NSMenuItem *quitMenuItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(terminate:) keyEquivalent:@"q"];
+        NSMenuItem *quitMenuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Quit", @"")
+                                                              action:@selector(terminate:)
+                                                       keyEquivalent:@"q"];
         [appMenu addItem:quitMenuItem];
         [appMenuItem setSubmenu:appMenu];
+        
+        /* Window menu with Show Log item */
+        NSMenuItem *windowMenuItem = [[NSMenuItem alloc] init];
+        [mainMenu addItem:windowMenuItem];
+        NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:NSLocalizedString(@"Window", @"")];
+        [windowMenuItem setSubmenu:windowMenu];
         
         InstallationDelegate *delegate = [[InstallationDelegate alloc] init];
         
@@ -154,13 +178,35 @@ int main(int argc, const char *argv[]) {
         IADiskSelectionStep *diskStep = [[IADiskSelectionStep alloc] init];
         IAConfirmStep *confirmStep = [[IAConfirmStep alloc] init];
         IAInstallProgressStep *progressStep = [[IAInstallProgressStep alloc] init];
-        IACompletionStep *completionStep = [[IACompletionStep alloc] init];
-        
+
+        /* Use framework's GSCompletionStep for the success/restart page */
+        NSString *completionMsg = NSLocalizedString(
+            @"The operating system has been installed successfully.\nPlease restart your computer to boot from the new disk.",
+            @"");
+        GSCompletionStep *completionStep = [[GSCompletionStep alloc]
+            initWithCompletionMessage:completionMsg success:YES];
+        completionStep.title = NSLocalizedString(@"Finished", @"");
+        completionStep.stepDescription = NSLocalizedString(@"Installation complete", @"");
+        completionStep.customContinueTitle = NSLocalizedString(@"Restart", @"");
+        completionStep.hideNavigationButtons = NO;
+
+        /* Create log window controller */
+        IALogWindowController *logWC = [[IALogWindowController alloc] init];
+
         [diskStep setDelegate:delegate];
         [progressStep setDelegate:delegate];
+        [progressStep setLogWindowController:logWC];
         delegate->_progressStep = progressStep;
-        delegate->_completionStep = completionStep;
         delegate->_confirmStep = confirmStep;
+        delegate->_logWindowController = logWC;
+
+        /* Add Show Log menu item - wired to delegate */
+        NSMenuItem *showLogItem = [[NSMenuItem alloc]
+            initWithTitle:NSLocalizedString(@"Show Log", @"")
+                   action:@selector(showLog:)
+            keyEquivalent:@"l"];
+        [showLogItem setTarget:delegate];
+        [windowMenu addItem:showLogItem];
         
         GSAssistantBuilder *builder = [GSAssistantBuilder builder];
         [builder withTitle:NSLocalizedString(@"Install Operating System", @"")];

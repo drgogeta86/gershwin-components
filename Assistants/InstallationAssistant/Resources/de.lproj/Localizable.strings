@@ -26,7 +26,7 @@
 "Unknown Disk" = "Unbekanntes Laufwerk";
 
 /* Confirm Step */
-"Confirm Installation" = "Installation bestätigen";
+"Confirmation" = "Bestätigung";
 "Review and confirm" = "Überprüfen und bestätigen";
 "No disk selected." = "Kein Laufwerk ausgewählt.";
 "I understand that all data on this disk will be erased" = "Ich verstehe, dass alle Daten auf diesem Laufwerk gelöscht werden";
@@ -39,16 +39,22 @@
 "Starting installation..." = "Installation wird gestartet...";
 "Installation complete." = "Installation abgeschlossen.";
 "Installation failed." = "Installation fehlgeschlagen.";
+"Installation failed. See log for details." = "Installation fehlgeschlagen. Details im Protokoll.";
 "Error: Installer script not found" = "Fehler: Installationsskript nicht gefunden";
 "Error: Could not start installer" = "Fehler: Installationsprogramm konnte nicht gestartet werden";
 
 /* Completion Step */
-"Complete" = "Fertig";
-"Installation finished" = "Installation abgeschlossen";
+"Finished" = "Fertig";
+"Installation complete" = "Installation abgeschlossen";
 "Installation Successful" = "Installation erfolgreich";
 "Installation Failed" = "Installation fehlgeschlagen";
-"Restart Now" = "Jetzt neu starten";
+"Restart" = "Neu starten";
 "Close" = "Schließen";
+
+/* Log Window */
+"Installation Log" = "Installationsprotokoll";
+"Show Log" = "Protokoll anzeigen";
+"Window" = "Fenster";
 
 /* Cancel dialog */
 "Cancel Installation?" = "Installation abbrechen?";

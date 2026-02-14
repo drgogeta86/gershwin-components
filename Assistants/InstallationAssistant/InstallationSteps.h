@@ -159,6 +159,18 @@ NSString *IACheckImageSourceAvailable(void);
 @end
 
 // ============================================================================
+// IALogWindowController - Separate window for installer log output
+// ============================================================================
+@interface IALogWindowController : NSWindowController
+{
+    NSScrollView *_scrollView;
+    NSTextView *_logView;
+}
+- (void)appendLog:(NSString *)text;
+- (void)clearLog;
+@end
+
+// ============================================================================
 // IAInstallProgressDelegate - Callback for installation progress
 // ============================================================================
 @protocol IAInstallProgressDelegate <NSObject>
@@ -176,8 +188,6 @@ NSString *IACheckImageSourceAvailable(void);
     NSTextField *_detailLabel;
     NSTextField *_percentLabel;
     NSTextField *_elapsedLabel;
-    NSScrollView *_logScrollView;
-    NSTextView *_logView;
     NSTask *_installerTask;
     NSPipe *_outputPipe;
     NSMutableString *_lineBuffer;
@@ -190,27 +200,9 @@ NSString *IACheckImageSourceAvailable(void);
 @property (copy, nonatomic) NSString *stepTitle;
 @property (copy, nonatomic) NSString *stepDescription;
 @property (assign, nonatomic) id<IAInstallProgressDelegate> delegate;
+@property (retain, nonatomic) IALogWindowController *logWindowController;
 - (void)startInstallationToDisk:(IADiskInfo *)disk;
 - (void)startInstallationToDisk:(IADiskInfo *)disk source:(NSString *)sourcePathOrNil;
 - (BOOL)isFinished;
 - (BOOL)wasSuccessful;
-@end
-
-// ============================================================================
-// IACompletionStep - Shows result and offers restart
-// ============================================================================
-@interface IACompletionStep : NSObject <GSAssistantStepProtocol>
-{
-    NSView *_stepView;
-    NSTextField *_messageLabel;
-    NSTextField *_detailLabel;
-    NSImageView *_iconView;
-    NSButton *_restartButton;
-    NSTimer *_countdownTimer;
-    int _countdownSeconds;
-}
-@property (copy, nonatomic) NSString *stepTitle;
-@property (copy, nonatomic) NSString *stepDescription;
-- (void)showSuccessWithDisk:(IADiskInfo *)disk;
-- (void)showFailureWithMessage:(NSString *)message;
 @end

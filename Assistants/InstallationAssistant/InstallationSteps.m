@@ -832,8 +832,8 @@ NSString *IACheckImageSourceAvailable(void)
 - (instancetype)init
 {
     if (self = [super init]) {
-        self.stepTitle = NSLocalizedString(@"Confirm Installation", "");
-        self.stepDescription = NSLocalizedString(@"Finalize and start installation", "");
+        self.stepTitle = NSLocalizedString(@"Confirmation", @"");
+        self.stepDescription = NSLocalizedString(@"Finalize and start installation", @"");
         [self setupView];
     }
     return self;
@@ -904,6 +904,85 @@ NSString *IACheckImageSourceAvailable(void)
 @end
 
 // ============================================================================
+// IALogWindowController - Separate log window
+// ============================================================================
+
+@implementation IALogWindowController
+
+- (instancetype)init
+{
+    NSWindow *logWindow = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(200, 200, 600, 400)
+                  styleMask:(NSTitledWindowMask | NSClosableWindowMask |
+                             NSResizableWindowMask | NSMiniaturizableWindowMask)
+                    backing:NSBackingStoreBuffered
+                      defer:YES];
+    [logWindow setTitle:NSLocalizedString(@"Installation Log", @"")];
+    [logWindow setMinSize:NSMakeSize(400, 200)];
+
+    if (self = [super initWithWindow:logWindow]) {
+        NSView *contentView = [logWindow contentView];
+        NSRect frame = [contentView bounds];
+
+        _scrollView = [[NSScrollView alloc] initWithFrame:frame];
+        [_scrollView setHasVerticalScroller:YES];
+        [_scrollView setHasHorizontalScroller:NO];
+        [_scrollView setBorderType:NSNoBorder];
+        [_scrollView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+
+        NSSize contentSize = [_scrollView contentSize];
+        _logView = [[NSTextView alloc] initWithFrame:
+            NSMakeRect(0, 0, contentSize.width, contentSize.height)];
+        [_logView setMinSize:NSMakeSize(0.0, contentSize.height)];
+        [_logView setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+        [_logView setVerticallyResizable:YES];
+        [_logView setHorizontallyResizable:NO];
+        [_logView setEditable:NO];
+        [_logView setSelectable:YES];
+        [_logView setFont:[NSFont userFixedPitchFontOfSize:10]];
+        [_logView setTextColor:[NSColor darkGrayColor]];
+        [_logView setBackgroundColor:[NSColor whiteColor]];
+        [[_logView textContainer] setContainerSize:NSMakeSize(contentSize.width, FLT_MAX)];
+        [[_logView textContainer] setWidthTracksTextView:YES];
+
+        [_scrollView setDocumentView:_logView];
+        [contentView addSubview:_scrollView];
+    }
+    [logWindow release];
+    return self;
+}
+
+- (void)dealloc
+{
+    [_scrollView release];
+    [_logView release];
+    [super dealloc];
+}
+
+- (void)appendLog:(NSString *)text
+{
+    if (!text || !_logView) return;
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont userFixedPitchFontOfSize:10],
+        NSForegroundColorAttributeName: [NSColor darkGrayColor]
+    };
+    NSAttributedString *astr = [[NSAttributedString alloc] initWithString:text
+                                                               attributes:attrs];
+    [[_logView textStorage] appendAttributedString:astr];
+    [astr release];
+    [_logView scrollRangeToVisible:NSMakeRange([[_logView string] length], 0)];
+}
+
+- (void)clearLog
+{
+    if (!_logView) return;
+    [[_logView textStorage] replaceCharactersInRange:
+        NSMakeRange(0, [[_logView string] length]) withString:@""];
+}
+
+@end
+
+// ============================================================================
 // IAInstallProgressStep - run installer script and parse PROGRESS lines
 // ============================================================================
 
@@ -933,20 +1012,19 @@ NSString *IACheckImageSourceAvailable(void)
     [_detailLabel release];
     [_percentLabel release];
     [_elapsedLabel release];
-    [_logScrollView release];
-    [_logView release];
     [_lineBuffer release];
     [_outputPipe release];
     [_installerTask release];
+    [self setLogWindowController:nil];
     [super dealloc];
 }
 
 - (void)setupView
 {
-    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 250)];
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 140)];
 
     /* Phase label at top */
-    _phaseLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 220, 400, 20)];
+    _phaseLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 110, 360, 20)];
     [_phaseLabel setBezeled:NO]; [_phaseLabel setDrawsBackground:NO];
     [_phaseLabel setEditable:NO]; [_phaseLabel setSelectable:NO];
     [_phaseLabel setFont:[NSFont boldSystemFontOfSize:12]];
@@ -954,7 +1032,7 @@ NSString *IACheckImageSourceAvailable(void)
     [_stepView addSubview:_phaseLabel];
 
     /* Detail label */
-    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 198, 400, 18)];
+    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 86, 360, 18)];
     [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO];
     [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
     [_detailLabel setFont:[NSFont systemFontOfSize:11]];
@@ -962,51 +1040,28 @@ NSString *IACheckImageSourceAvailable(void)
     [_stepView addSubview:_detailLabel];
 
     /* Progress bar */
-    _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 174, 340, 16)];
+    _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 58, 310, 16)];
     [_progressBar setIndeterminate:NO];
     [_progressBar setMinValue:0.0];
     [_progressBar setMaxValue:100.0];
     [_stepView addSubview:_progressBar];
 
     /* Percent label right of progress bar */
-    _percentLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(366, 174, 54, 16)];
+    _percentLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(336, 58, 44, 16)];
     [_percentLabel setBezeled:NO]; [_percentLabel setDrawsBackground:NO];
     [_percentLabel setEditable:NO]; [_percentLabel setSelectable:NO];
     [_percentLabel setAlignment:NSRightTextAlignment];
-    [_percentLabel setFont:[NSFont systemFontOfSize:11]];    [_percentLabel setStringValue:@"0%"];
+    [_percentLabel setFont:[NSFont systemFontOfSize:11]];
+    [_percentLabel setStringValue:@"0%"];
     [_stepView addSubview:_percentLabel];
 
     /* Elapsed time label */
-    _elapsedLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 154, 400, 16)];
+    _elapsedLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 34, 360, 16)];
     [_elapsedLabel setBezeled:NO]; [_elapsedLabel setDrawsBackground:NO];
     [_elapsedLabel setEditable:NO]; [_elapsedLabel setSelectable:NO];
     [_elapsedLabel setFont:[NSFont systemFontOfSize:10]];
     [_elapsedLabel setTextColor:[NSColor grayColor]];
     [_stepView addSubview:_elapsedLabel];
-
-    /* Log view in scroll view */
-    _logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 4, 400, 144)];
-    [_logScrollView setHasVerticalScroller:YES];
-    [_logScrollView setHasHorizontalScroller:NO];
-    [_logScrollView setBorderType:NSBezelBorder];
-    [_logScrollView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-
-    NSSize contentSize = [_logScrollView contentSize];
-    _logView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
-    [_logView setMinSize:NSMakeSize(0.0, contentSize.height)];
-    [_logView setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
-    [_logView setVerticallyResizable:YES];
-    [_logView setHorizontallyResizable:NO];
-    [_logView setEditable:NO];
-    [_logView setSelectable:YES];
-    [_logView setFont:[NSFont userFixedPitchFontOfSize:9]];
-    [_logView setTextColor:[NSColor darkGrayColor]];
-    [_logView setBackgroundColor:[NSColor colorWithCalibratedWhite:0.97 alpha:1.0]];
-    [[_logView textContainer] setContainerSize:NSMakeSize(contentSize.width, FLT_MAX)];
-    [[_logView textContainer] setWidthTracksTextView:YES];
-
-    [_logScrollView setDocumentView:_logView];
-    [_stepView addSubview:_logScrollView];
 
     _lineBuffer = [[NSMutableString alloc] init];
 }
@@ -1038,8 +1093,9 @@ NSString *IACheckImageSourceAvailable(void)
     [_percentLabel setStringValue:@"0%"];
     [_progressBar setDoubleValue:0.0];
     [_elapsedLabel setStringValue:@""];
-    [[_logView textStorage] replaceCharactersInRange:
-        NSMakeRange(0, [[_logView string] length]) withString:@""];
+    if ([self logWindowController]) {
+        [[self logWindowController] clearLog];
+    }
 
     /* Start elapsed time timer */
     [_elapsedTimer invalidate];
@@ -1188,20 +1244,14 @@ NSString *IACheckImageSourceAvailable(void)
     }
 }
 
-/* ---- Append text to log view ---- */
+/* ---- Append text to log window ---- */
 - (void)_appendLog:(NSString *)text
 {
-    if (!_logView || !text) return;
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont userFixedPitchFontOfSize:9],
-        NSForegroundColorAttributeName: [NSColor darkGrayColor]
-    };
-    NSAttributedString *astr = [[NSAttributedString alloc] initWithString:text
-                                                               attributes:attrs];
-    [[_logView textStorage] appendAttributedString:astr];
-    [astr release];
-    /* Auto-scroll to bottom */
-    [_logView scrollRangeToVisible:NSMakeRange([[_logView string] length], 0)];
+    if (!text) return;
+    IALogWindowController *logWC = [self logWindowController];
+    if (logWC) {
+        [logWC appendLog:text];
+    }
 }
 
 /* ---- Task terminated ---- */
@@ -1232,7 +1282,7 @@ NSString *IACheckImageSourceAvailable(void)
         [self _appendLog:[NSString stringWithFormat:
             @"\n--- Installation FAILED (exit code %d) ---\n", status]];
         [_detailLabel setStringValue:
-            NSLocalizedString(@"Installation failed. Check the log below.", @"")];
+            NSLocalizedString(@"Installation failed. See log for details.", @"")];
     }
 
     /* Update elapsed time one final time */
@@ -1281,88 +1331,6 @@ NSString *IACheckImageSourceAvailable(void)
 - (BOOL)isFinished { return _isFinished; }
 - (BOOL)wasSuccessful { return _wasSuccessful; }
 - (BOOL)canContinue { return _isFinished; }
-
-@end
-
-// ============================================================================
-// IACompletionStep - show success/failure
-// ============================================================================
-
-@implementation IACompletionStep
-
-@synthesize stepTitle, stepDescription;
-
-- (instancetype)init
-{
-    if (self = [super init]) {
-        self.stepTitle = NSLocalizedString(@"Finished", @"");
-        self.stepDescription = NSLocalizedString(@"Installation complete", @"");
-        [self setupView];
-    }
-    return self;
-}
-
-- (void)dealloc
-{
-    [_stepView release];
-    [_messageLabel release];
-    [_detailLabel release];
-    [_iconView release];
-    [_restartButton release];
-    [super dealloc];
-}
-
-- (void)setupView
-{
-    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
-
-    _iconView = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 120, 64, 64)];
-    [_stepView addSubview:_iconView];
-
-    _messageLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 140, 280, 40)];
-    [_messageLabel setBezeled:NO]; [_messageLabel setDrawsBackground:NO]; [_messageLabel setEditable:NO]; [_messageLabel setSelectable:NO];
-    [_messageLabel setFont:[NSFont boldSystemFontOfSize:14]];
-    [_stepView addSubview:_messageLabel];
-
-    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(100, 100, 280, 30)];
-    [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO]; [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
-    [_stepView addSubview:_detailLabel];
-
-    _restartButton = [[NSButton alloc] initWithFrame:NSMakeRect(100, 20, 120, 30)];
-    [_restartButton setTitle:NSLocalizedString(@"Restart", @"")];
-    [_restartButton setTarget:self];
-    [_restartButton setAction:@selector(restartAction:)];
-    [_stepView addSubview:_restartButton];
-}
-
-- (void)showSuccessWithDisk:(IADiskInfo *)disk
-{
-    [_iconView setImage:[NSImage imageNamed:@"status-available"]];
-    [_messageLabel setStringValue:NSLocalizedString(@"Installation completed successfully.", @"")];
-    [_detailLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Installed to %@", @""), disk.devicePath ?: @""]];
-}
-
-- (void)showFailureWithMessage:(NSString *)message
-{
-    [_iconView setImage:[NSImage imageNamed:@"status-unavailable"]];
-    [_messageLabel setStringValue:NSLocalizedString(@"Installation failed", @"")];
-    if (message) [_detailLabel setStringValue:message];
-}
-
-- (void)restartAction:(id)sender
-{
-    // For safety, don't implement automatic restart here - leave as a no-op
-    NSAlert *a = [[NSAlert alloc] init];
-    [a setMessageText:NSLocalizedString(@"Restart requested", @"")];
-    [a setInformativeText:NSLocalizedString(@"Please restart the system manually.", @"")];
-    [a addButtonWithTitle:NSLocalizedString(@"OK", @"")];
-    [a runModal];
-    [a release];
-}
-
-- (NSView *)stepView { return _stepView; }
-- (NSString *)stepTitle { return stepTitle; }
-- (NSString *)stepDescription { return stepDescription; }
-- (BOOL)canContinue { return YES; }
+- (BOOL)canGoBack { return NO; }
 
 @end
