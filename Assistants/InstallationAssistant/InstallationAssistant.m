@@ -27,6 +27,10 @@
     @public
     IADiskInfo *_selectedDisk;
     NSString *_imageSourcePath;
+    IAInstallProgressStep *_progressStep;
+    IACompletionStep *_completionStep;
+    IAConfirmStep *_confirmStep;
+    GSAssistantWindow *_assistantWindow;
 }
 @end
 
@@ -36,6 +40,7 @@
 {
     [_selectedDisk release];
     [_imageSourcePath release];
+    /* _progressStep, _completionStep, _confirmStep, _assistantWindow are not owned */
     [super dealloc];
 }
 
@@ -60,10 +65,32 @@
     return YES;
 }
 
+- (void)assistantWindow:(GSAssistantWindow *)window willShowStep:(id<GSAssistantStepProtocol>)step
+{
+    (void)window;
+    /* Update the confirm step with the currently selected disk */
+    if (_confirmStep && step == (id<GSAssistantStepProtocol>)_confirmStep) {
+        NSLog(@"InstallationDelegate: updating confirm step with disk %@", _selectedDisk.devicePath);
+        [_confirmStep updateWithDisk:_selectedDisk];
+    }
+}
+
+- (void)assistantWindow:(GSAssistantWindow *)window didShowStep:(id<GSAssistantStepProtocol>)step
+{
+    (void)window;
+    /* Auto-start installation when the progress step becomes visible */
+    if (_progressStep && step == (id<GSAssistantStepProtocol>)_progressStep) {
+        NSLog(@"InstallationDelegate: progress step appeared, starting installation to %@",
+              _selectedDisk.devicePath);
+        [_progressStep startInstallationToDisk:_selectedDisk source:_imageSourcePath];
+    }
+}
+
 - (void)diskSelectionStep:(id)step didSelectDisk:(IADiskInfo *)disk {
     (void)step;
     [_selectedDisk release];
     _selectedDisk = [disk retain];
+    NSLog(@"InstallationDelegate: disk selected: %@", _selectedDisk.devicePath);
 }
 
 - (void)installTypeStep:(id)step didSelectImageSource:(NSString *)imageSourcePath {
@@ -74,7 +101,17 @@
 }
 
 - (void)installProgressDidFinish:(BOOL)success {
-    (void)success;
+    NSLog(@"InstallationDelegate: installation finished, success=%d", success);
+    if (success) {
+        [_completionStep showSuccessWithDisk:_selectedDisk];
+    } else {
+        [_completionStep showFailureWithMessage:
+            NSLocalizedString(@"The installation did not complete successfully. Check the log for details.", @"")];
+    }
+    /* Enable navigation to move to the completion step */
+    if (_assistantWindow) {
+        [_assistantWindow updateNavigationButtons];
+    }
 }
 
 @end
@@ -121,6 +158,9 @@ int main(int argc, const char *argv[]) {
         
         [diskStep setDelegate:delegate];
         [progressStep setDelegate:delegate];
+        delegate->_progressStep = progressStep;
+        delegate->_completionStep = completionStep;
+        delegate->_confirmStep = confirmStep;
         
         GSAssistantBuilder *builder = [GSAssistantBuilder builder];
         [builder withTitle:NSLocalizedString(@"Install Operating System", @"")];
@@ -139,6 +179,7 @@ int main(int argc, const char *argv[]) {
         
         GSAssistantWindow *assistant = [builder build];
         [assistant setDelegate:delegate];
+        delegate->_assistantWindow = assistant;
         [[assistant window] makeKeyAndOrderFront:nil];
         
         [NSApp run];

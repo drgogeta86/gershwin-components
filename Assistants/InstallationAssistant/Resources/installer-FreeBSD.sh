@@ -349,8 +349,6 @@ sleep 1
 
 report_progress "Preparing" 5 "Unmounting existing partitions..."
 
-set -x
-
 # Cleanup
 umount_disk_partitions "$DISK"
 umount_recursive

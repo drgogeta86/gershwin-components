@@ -923,38 +923,90 @@ NSString *IACheckImageSourceAvailable(void)
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [_elapsedTimer invalidate];
+    [_elapsedTimer release];
+    [_startTime release];
     [_stepView release];
     [_progressBar release];
     [_phaseLabel release];
     [_detailLabel release];
     [_percentLabel release];
+    [_elapsedLabel release];
+    [_logScrollView release];
+    [_logView release];
     [_lineBuffer release];
+    [_outputPipe release];
+    [_installerTask release];
     [super dealloc];
 }
 
 - (void)setupView
 {
-    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, 250)];
 
-    _phaseLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 140, 360, 20)];
-    [_phaseLabel setBezeled:NO]; [_phaseLabel setDrawsBackground:NO]; [_phaseLabel setEditable:NO]; [_phaseLabel setSelectable:NO];
-    [_phaseLabel setStringValue:NSLocalizedString(@"Phase: preparing", @"")];
+    /* Phase label at top */
+    _phaseLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 220, 400, 20)];
+    [_phaseLabel setBezeled:NO]; [_phaseLabel setDrawsBackground:NO];
+    [_phaseLabel setEditable:NO]; [_phaseLabel setSelectable:NO];
+    [_phaseLabel setFont:[NSFont boldSystemFontOfSize:12]];
+    [_phaseLabel setStringValue:NSLocalizedString(@"Waiting to start...", @"")];
     [_stepView addSubview:_phaseLabel];
 
-    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 110, 360, 20)];
-    [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO]; [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
+    /* Detail label */
+    _detailLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 198, 400, 18)];
+    [_detailLabel setBezeled:NO]; [_detailLabel setDrawsBackground:NO];
+    [_detailLabel setEditable:NO]; [_detailLabel setSelectable:NO];
+    [_detailLabel setFont:[NSFont systemFontOfSize:11]];
+    [_detailLabel setTextColor:[NSColor darkGrayColor]];
     [_stepView addSubview:_detailLabel];
 
-    _percentLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 80, 360, 20)];
-    [_percentLabel setBezeled:NO]; [_percentLabel setDrawsBackground:NO]; [_percentLabel setEditable:NO]; [_percentLabel setSelectable:NO];
-    [_percentLabel setStringValue:@"0%"];
-    [_stepView addSubview:_percentLabel];
-
-    _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 40, 360, 20)];
+    /* Progress bar */
+    _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 174, 340, 16)];
     [_progressBar setIndeterminate:NO];
     [_progressBar setMinValue:0.0];
     [_progressBar setMaxValue:100.0];
     [_stepView addSubview:_progressBar];
+
+    /* Percent label right of progress bar */
+    _percentLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(366, 174, 54, 16)];
+    [_percentLabel setBezeled:NO]; [_percentLabel setDrawsBackground:NO];
+    [_percentLabel setEditable:NO]; [_percentLabel setSelectable:NO];
+    [_percentLabel setAlignment:NSRightTextAlignment];
+    [_percentLabel setFont:[NSFont systemFontOfSize:11]];    [_percentLabel setStringValue:@"0%"];
+    [_stepView addSubview:_percentLabel];
+
+    /* Elapsed time label */
+    _elapsedLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 154, 400, 16)];
+    [_elapsedLabel setBezeled:NO]; [_elapsedLabel setDrawsBackground:NO];
+    [_elapsedLabel setEditable:NO]; [_elapsedLabel setSelectable:NO];
+    [_elapsedLabel setFont:[NSFont systemFontOfSize:10]];
+    [_elapsedLabel setTextColor:[NSColor grayColor]];
+    [_stepView addSubview:_elapsedLabel];
+
+    /* Log view in scroll view */
+    _logScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 4, 400, 144)];
+    [_logScrollView setHasVerticalScroller:YES];
+    [_logScrollView setHasHorizontalScroller:NO];
+    [_logScrollView setBorderType:NSBezelBorder];
+    [_logScrollView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+
+    NSSize contentSize = [_logScrollView contentSize];
+    _logView = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
+    [_logView setMinSize:NSMakeSize(0.0, contentSize.height)];
+    [_logView setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+    [_logView setVerticallyResizable:YES];
+    [_logView setHorizontallyResizable:NO];
+    [_logView setEditable:NO];
+    [_logView setSelectable:YES];
+    [_logView setFont:[NSFont userFixedPitchFontOfSize:9]];
+    [_logView setTextColor:[NSColor darkGrayColor]];
+    [_logView setBackgroundColor:[NSColor colorWithCalibratedWhite:0.97 alpha:1.0]];
+    [[_logView textContainer] setContainerSize:NSMakeSize(contentSize.width, FLT_MAX)];
+    [[_logView textContainer] setWidthTracksTextView:YES];
+
+    [_logScrollView setDocumentView:_logView];
+    [_stepView addSubview:_logScrollView];
 
     _lineBuffer = [[NSMutableString alloc] init];
 }
@@ -966,79 +1018,230 @@ NSString *IACheckImageSourceAvailable(void)
 
 - (void)startInstallationToDisk:(IADiskInfo *)disk source:(NSString *)sourcePathOrNil
 {
-    if (!disk) return;
-    if (_isRunning) return;
+    if (!disk) {
+        NSLog(@"IAInstallProgressStep: ERROR - no disk provided");
+        return;
+    }
+    if (_isRunning) {
+        NSLog(@"IAInstallProgressStep: already running, ignoring duplicate start");
+        return;
+    }
 
     _isRunning = YES;
     _isFinished = NO;
     _wasSuccessful = NO;
+    [_startTime release];
+    _startTime = [[NSDate date] retain];
+    [_lineBuffer setString:@""];
     [_phaseLabel setStringValue:NSLocalizedString(@"Phase: starting", @"")];
     [_detailLabel setStringValue:@""];
     [_percentLabel setStringValue:@"0%"];
     [_progressBar setDoubleValue:0.0];
+    [_elapsedLabel setStringValue:@""];
+    [[_logView textStorage] replaceCharactersInRange:
+        NSMakeRange(0, [[_logView string] length]) withString:@""];
 
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *scriptPath = IAInstallerScriptPath();
-        NSLog(@"IAInstallProgressStep: using script %@", scriptPath);
-        NSMutableArray *args = [NSMutableArray arrayWithObjects:@"--noninteractive", @"--disk", disk.devicePath, @"--debug", nil];
-        if (sourcePathOrNil && [sourcePathOrNil length] > 0) {
-            [args addObject:@"--source"];
-            [args addObject:sourcePathOrNil];
-            NSLog(@"IAInstallProgressStep: using image source %@", sourcePathOrNil);
+    /* Start elapsed time timer */
+    [_elapsedTimer invalidate];
+    [_elapsedTimer release];
+    _elapsedTimer = [[NSTimer scheduledTimerWithTimeInterval:1.0
+                                                     target:self
+                                                   selector:@selector(_updateElapsed:)
+                                                   userInfo:nil
+                                                    repeats:YES] retain];
+
+    NSString *scriptPath = IAInstallerScriptPath();
+    NSLog(@"IAInstallProgressStep: launching installer %@", scriptPath);
+
+    NSMutableArray *taskArgs = [NSMutableArray array];
+    /* If not running as root, use sudo */
+    NSString *launchBinary = nil;
+    if (getuid() != 0) {
+        launchBinary = @"/usr/bin/env";
+        [taskArgs addObject:@"sudo"];
+        [taskArgs addObject:scriptPath];
+        NSLog(@"IAInstallProgressStep: not root (uid=%u), wrapping in sudo", getuid());
+    } else {
+        launchBinary = scriptPath;
+        NSLog(@"IAInstallProgressStep: running as root");
+    }
+
+    [taskArgs addObjectsFromArray:@[@"--noninteractive", @"--disk", disk.devicePath, @"--debug"]];
+
+    if (sourcePathOrNil && [sourcePathOrNil length] > 0) {
+        [taskArgs addObject:@"--source"];
+        [taskArgs addObject:sourcePathOrNil];
+        NSLog(@"IAInstallProgressStep: using image source %@", sourcePathOrNil);
+    }
+
+    [self _appendLog:[NSString stringWithFormat:@"--- Installation started ---\n"]];
+    [self _appendLog:[NSString stringWithFormat:@"Script: %@\n", scriptPath]];
+    [self _appendLog:[NSString stringWithFormat:@"Target: %@\n\n", disk.devicePath]];
+
+    _installerTask = [[NSTask alloc] init];
+    [_installerTask setLaunchPath:launchBinary];
+    [_installerTask setArguments:taskArgs];
+
+    [_outputPipe release];
+    _outputPipe = [[NSPipe pipe] retain];
+    [_installerTask setStandardOutput:_outputPipe];
+    [_installerTask setStandardError:_outputPipe]; /* merge stderr into stdout for logging */
+
+    NSFileHandle *readHandle = [_outputPipe fileHandleForReading];
+
+    /* Register for async read notifications (arrives on current run loop) */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_gotOutputData:)
+                                                 name:NSFileHandleReadCompletionNotification
+                                               object:readHandle];
+
+    /* Register for task termination */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_taskDidTerminate:)
+                                                 name:NSTaskDidTerminateNotification
+                                               object:_installerTask];
+
+    @try {
+        [_installerTask launch];
+        NSLog(@"IAInstallProgressStep: task launched (PID %d)",
+              [_installerTask processIdentifier]);
+    } @catch (NSException *ex) {
+        NSLog(@"IAInstallProgressStep: launch failed: %@", ex);
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:NSFileHandleReadCompletionNotification
+                                                      object:readHandle];
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:NSTaskDidTerminateNotification
+                                                      object:_installerTask];
+        [_installerTask release]; _installerTask = nil;
+        [_outputPipe release]; _outputPipe = nil;
+        [self _installLaunchFailed:@{@"error": [ex description]}];
+        return;
+    }
+
+    /* Begin async reading */
+    [readHandle readInBackgroundAndNotify];
+}
+
+/* ---- Async output handler ---- */
+- (void)_gotOutputData:(NSNotification *)notification
+{
+    NSData *data = [[notification userInfo] objectForKey:NSFileHandleNotificationDataItem];
+    if (!data || [data length] == 0) {
+        /* EOF - flush remaining buffer */
+        if ([_lineBuffer length] > 0) {
+            [self _processLine:[NSString stringWithString:_lineBuffer]];
+            [_lineBuffer setString:@""];
         }
-        NSTask *task = [[NSTask alloc] init];
-        [task setLaunchPath:scriptPath];
-        [task setArguments:args];
+        return;
+    }
 
-        NSPipe *outPipe = [NSPipe pipe];
-        NSPipe *errPipe = [NSPipe pipe];
-        [task setStandardOutput:outPipe];
-        [task setStandardError:errPipe];
+    NSString *str = [[[NSString alloc] initWithData:data
+                                           encoding:NSUTF8StringEncoding] autorelease];
+    if (!str) {
+        str = [[[NSString alloc] initWithData:data
+                                     encoding:NSASCIIStringEncoding] autorelease];
+    }
+    if (str) {
+        [_lineBuffer appendString:str];
 
-        @try {
-            [task launch];
-        } @catch (NSException *ex) {
-            NSDictionary *info = @{@"error": [NSString stringWithFormat:@"%@", ex]};
-            [self performSelectorOnMainThread:@selector(_installLaunchFailed:) withObject:info waitUntilDone:NO];
-            [task release];
-            return;
+        /* Extract and process complete lines */
+        NSRange range;
+        while ((range = [_lineBuffer rangeOfString:@"\n"]).location != NSNotFound) {
+            NSString *line = [_lineBuffer substringToIndex:range.location];
+            [_lineBuffer deleteCharactersInRange:
+                NSMakeRange(0, range.location + 1)];
+            [self _processLine:line];
         }
+    }
 
-        // Read output to end and parse PROGRESS lines
-        NSData *outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
-        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
-        [task waitUntilExit];
-        int term = [task terminationStatus];
+    /* Continue reading next chunk */
+    [[notification object] readInBackgroundAndNotify];
+}
 
-        NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
-        NSString *errStr = errData ? [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease] : @"";
+/* ---- Process a single output line ---- */
+- (void)_processLine:(NSString *)line
+{
+    if ([line length] == 0) return;
 
-        // Parse PROGRESS: lines and update UI via main thread
-        NSArray *lines = [outStr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-        for (NSString *line in lines) {
-            if ([line hasPrefix:@"PROGRESS:"]) {
-                NSArray *parts = [line componentsSeparatedByString:@":"];
-                if ([parts count] >= 4) {
-                    NSString *phase = parts[1];
-                    NSString *percentStr = parts[2];
-                    NSString *message = [[parts subarrayWithRange:NSMakeRange(3, [parts count]-3)] componentsJoinedByString:@":"];
-                    NSDictionary *progressInfo = @{
-                        @"phase": phase ?: @"",
-                        @"percent": [NSNumber numberWithDouble:[percentStr doubleValue]],
-                        @"message": message ?: @""
-                    };
-                    [self performSelectorOnMainThread:@selector(_updateProgress:) withObject:progressInfo waitUntilDone:NO];
-                }
-            }
+    /* Append to log view */
+    [self _appendLog:[line stringByAppendingString:@"\n"]];
+
+    /* Parse PROGRESS: lines */
+    if ([line hasPrefix:@"PROGRESS:"]) {
+        NSArray *parts = [line componentsSeparatedByString:@":"];
+        if ([parts count] >= 4) {
+            NSString *phase = parts[1];
+            NSString *percentStr = parts[2];
+            NSString *message = [[parts subarrayWithRange:
+                NSMakeRange(3, [parts count] - 3)]
+                componentsJoinedByString:@":"];
+            double pct = [percentStr doubleValue];
+
+            [_phaseLabel setStringValue:
+                [NSString stringWithFormat:NSLocalizedString(@"Phase: %@", @""), phase]];
+            [_detailLabel setStringValue:message ? message : @""];
+            [_percentLabel setStringValue:
+                [NSString stringWithFormat:@"%.0f%%", pct]];
+            [_progressBar setDoubleValue:pct];
         }
+    }
+}
 
-        NSMutableDictionary *result = [NSMutableDictionary dictionary];
-        [result setObject:[NSNumber numberWithBool:(term == 0)] forKey:@"success"];
-        [result setObject:(errStr ?: @"") forKey:@"stderr"];
-        [self performSelectorOnMainThread:@selector(_installCompleted:) withObject:result waitUntilDone:NO];
+/* ---- Append text to log view ---- */
+- (void)_appendLog:(NSString *)text
+{
+    if (!_logView || !text) return;
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont userFixedPitchFontOfSize:9],
+        NSForegroundColorAttributeName: [NSColor darkGrayColor]
+    };
+    NSAttributedString *astr = [[NSAttributedString alloc] initWithString:text
+                                                               attributes:attrs];
+    [[_logView textStorage] appendAttributedString:astr];
+    [astr release];
+    /* Auto-scroll to bottom */
+    [_logView scrollRangeToVisible:NSMakeRange([[_logView string] length], 0)];
+}
 
-        [task release];
-    });
+/* ---- Task terminated ---- */
+- (void)_taskDidTerminate:(NSNotification *)notification
+{
+    NSTask *task = [notification object];
+    int status = [task terminationStatus];
+    NSLog(@"IAInstallProgressStep: task terminated with status %d", status);
+
+    [_elapsedTimer invalidate];
+    [_elapsedTimer release];
+    _elapsedTimer = nil;
+
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSFileHandleReadCompletionNotification
+                                                  object:[_outputPipe fileHandleForReading]];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSTaskDidTerminateNotification
+                                                  object:_installerTask];
+
+    _isRunning = NO;
+    _isFinished = YES;
+    _wasSuccessful = (status == 0);
+
+    if (_wasSuccessful) {
+        [self _appendLog:@"\n--- Installation completed successfully ---\n"];
+    } else {
+        [self _appendLog:[NSString stringWithFormat:
+            @"\n--- Installation FAILED (exit code %d) ---\n", status]];
+        [_detailLabel setStringValue:
+            NSLocalizedString(@"Installation failed. Check the log below.", @"")];
+    }
+
+    /* Update elapsed time one final time */
+    [self _updateElapsed:nil];
+
+    /* Notify delegate */
+    if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
+        [delegate installProgressDidFinish:_wasSuccessful];
+    }
 }
 
 /* Main-thread callback: installer script failed to launch */
@@ -1048,40 +1251,28 @@ NSString *IACheckImageSourceAvailable(void)
     _isRunning = NO;
     _isFinished = YES;
     _wasSuccessful = NO;
-    [_detailLabel setStringValue:NSLocalizedString(@"Failed to launch installer", @"")];
+    [_elapsedTimer invalidate];
+    [_elapsedTimer release];
+    _elapsedTimer = nil;
+    [_phaseLabel setStringValue:NSLocalizedString(@"Error", @"")];
+    [_detailLabel setStringValue:NSLocalizedString(@"Failed to launch installer script", @"")];
+    [self _appendLog:[NSString stringWithFormat:@"LAUNCH ERROR: %@\n",
+                      [info objectForKey:@"error"]]];
     if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
         [delegate installProgressDidFinish:NO];
     }
 }
 
-/* Main-thread callback: update progress UI */
-- (void)_updateProgress:(NSDictionary *)info
+/* ---- Elapsed time timer ---- */
+- (void)_updateElapsed:(NSTimer *)timer
 {
-    NSString *phase = [info objectForKey:@"phase"];
-    NSNumber *percent = [info objectForKey:@"percent"];
-    NSString *message = [info objectForKey:@"message"];
-    [_phaseLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Phase: %@", @""), phase]];
-    [_detailLabel setStringValue:message];
-    [_percentLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [percent doubleValue]]];
-    [_progressBar setDoubleValue:[percent doubleValue]];
-}
-
-/* Main-thread callback: installation completed */
-- (void)_installCompleted:(NSDictionary *)info
-{
-    BOOL success = [[info objectForKey:@"success"] boolValue];
-    NSString *errStr = [info objectForKey:@"stderr"];
-
-    _isRunning = NO;
-    _isFinished = YES;
-    _wasSuccessful = success;
-    if (!success) {
-        NSString *msg = (errStr && [errStr length] > 0) ? errStr : NSLocalizedString(@"Installation failed.", @"");
-        [_detailLabel setStringValue:msg];
-    }
-    if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
-        [delegate installProgressDidFinish:success];
-    }
+    (void)timer;
+    if (!_startTime) return;
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:_startTime];
+    int mins = (int)(elapsed / 60.0);
+    int secs = (int)elapsed % 60;
+    [_elapsedLabel setStringValue:
+        [NSString stringWithFormat:NSLocalizedString(@"Elapsed: %d:%02d", @""), mins, secs]];
 }
 
 - (NSView *)stepView { return _stepView; }
