@@ -9,7 +9,9 @@ InstallationAssistant_OBJC_FILES = InstallationAssistant.m InstallationSteps.m
 # Resource files
 InstallationAssistant_RESOURCE_FILES = \
 	Resources/en.lproj/Localizable.strings \
-	Resources/de.lproj/Localizable.strings
+	Resources/de.lproj/Localizable.strings \
+	Resources/installer-FreeBSD.sh \
+	Resources/installer-Linux.sh
 
 # Required frameworks and libraries - use GNUstep naming
 InstallationAssistant_GUI_LIBS += -lgnustep-gui -lgnustep-base
@@ -35,6 +37,10 @@ after-all::
 	fi
 	@cp Resources/de.lproj/Localizable.strings $(APP_NAME).app/Resources/de.lproj/ 2>/dev/null || true
 	@echo "Localized resource structure fixed"
+	@echo "Making installer scripts executable..."
+	@chmod +x $(APP_NAME).app/Resources/installer-FreeBSD.sh 2>/dev/null || true
+	@chmod +x $(APP_NAME).app/Resources/installer-Linux.sh 2>/dev/null || true
+	@echo "Installer scripts ready"
 
 # Custom install target
 .PHONY: custom-install custom-uninstall

@@ -13,6 +13,40 @@
 #import "GSAssistantFramework.h"
 
 // ============================================================================
+// Helper: get path to the correct installer script based on uname
+// ============================================================================
+NSString *IAInstallerScriptPath(void);
+NSString *IACheckImageSourceAvailable(void);
+
+// ============================================================================
+// IAInstallTypeDelegate - Callback when install type changes
+// ============================================================================
+@protocol IAInstallTypeDelegate <NSObject>
+- (void)installTypeStep:(id)step didSelectImageSource:(NSString *)imageSourcePath;
+@end
+
+// ============================================================================
+// IAInstallTypeStep - Choose between clone and image-based installation
+// ============================================================================
+@interface IAInstallTypeStep : NSObject <GSAssistantStepProtocol>
+{
+    NSView *_stepView;
+    NSButton *_cloneRadio;
+    NSButton *_imageRadio;
+    NSTextField *_imageSourceLabel;
+    NSString *_detectedImageSource;
+    BOOL _imageSourceAvailable;
+}
+@property (copy, nonatomic) NSString *stepTitle;
+@property (copy, nonatomic) NSString *stepDescription;
+@property (assign, nonatomic) id<IAInstallTypeDelegate> delegate;
+- (BOOL)useImageInstall;
+- (NSString *)imageSourcePath;
+- (void)detectImageSource;
+- (void)setImageSource:(NSString *)sourcePath;
+@end
+
+// ============================================================================
 // IAWelcomeStep - Introduction screen
 // ============================================================================
 @interface IAWelcomeStep : NSObject <GSAssistantStepProtocol>
@@ -153,6 +187,7 @@
 @property (copy, nonatomic) NSString *stepDescription;
 @property (assign, nonatomic) id<IAInstallProgressDelegate> delegate;
 - (void)startInstallationToDisk:(IADiskInfo *)disk;
+- (void)startInstallationToDisk:(IADiskInfo *)disk source:(NSString *)sourcePathOrNil;
 - (BOOL)isFinished;
 - (BOOL)wasSuccessful;
 @end

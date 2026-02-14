@@ -21,10 +21,12 @@
 
 @interface InstallationDelegate : NSObject <GSAssistantWindowDelegate,
                                             IADiskSelectionDelegate,
-                                            IAInstallProgressDelegate>
+                                            IAInstallProgressDelegate,
+                                            IAInstallTypeDelegate>
 {
     @public
     IADiskInfo *_selectedDisk;
+    NSString *_imageSourcePath;
 }
 @end
 
@@ -33,6 +35,7 @@
 - (void)dealloc
 {
     [_selectedDisk release];
+    [_imageSourcePath release];
     [super dealloc];
 }
 
@@ -63,6 +66,13 @@
     _selectedDisk = [disk retain];
 }
 
+- (void)installTypeStep:(id)step didSelectImageSource:(NSString *)imageSourcePath {
+    (void)step;
+    [_imageSourcePath release];
+    _imageSourcePath = [imageSourcePath copy];
+    NSLog(@"InstallationDelegate: image source path set to %@", _imageSourcePath ?: @"(none)");
+}
+
 - (void)installProgressDidFinish:(BOOL)success {
     (void)success;
 }
@@ -90,8 +100,20 @@ int main(int argc, const char *argv[]) {
         
         InstallationDelegate *delegate = [[InstallationDelegate alloc] init];
         
+        /* Check for image-based installation source before building UI */
+        NSString *imageSource = IACheckImageSourceAvailable();
+        BOOL imageAvailable = (imageSource != nil && [imageSource length] > 0);
+        NSLog(@"Image source available: %@ (%@)", imageAvailable ? @"YES" : @"NO",
+              imageSource ?: @"none");
+        
         IAWelcomeStep *welcomeStep = [[IAWelcomeStep alloc] init];
         IALicenseStep *licenseStep = [[IALicenseStep alloc] init];
+        IAInstallTypeStep *installTypeStep = nil;
+        if (imageAvailable) {
+            installTypeStep = [[IAInstallTypeStep alloc] init];
+            [installTypeStep setDelegate:delegate];
+            [installTypeStep setImageSource:imageSource];
+        }
         IADiskSelectionStep *diskStep = [[IADiskSelectionStep alloc] init];
         IAConfirmStep *confirmStep = [[IAConfirmStep alloc] init];
         IAInstallProgressStep *progressStep = [[IAInstallProgressStep alloc] init];
@@ -107,6 +129,9 @@ int main(int argc, const char *argv[]) {
         
         [builder addStep:welcomeStep];
         [builder addStep:licenseStep];
+        if (installTypeStep) {
+            [builder addStep:installTypeStep];
+        }
         [builder addStep:diskStep];
         [builder addStep:confirmStep];
         [builder addStep:progressStep];

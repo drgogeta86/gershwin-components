@@ -12,6 +12,114 @@
 
 #import "InstallationSteps.h"
 
+#import <sys/utsname.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+
+// ============================================================================
+// Helper: Detect whether the real kernel is FreeBSD (even under Linux compat)
+// ============================================================================
+static BOOL IAIsFreeBSD(void)
+{
+    struct utsname u;
+    if (uname(&u) == 0 && strcmp(u.sysname, "FreeBSD") == 0) {
+        return YES;
+    }
+    /* uname may report "Linux" under FreeBSD Linux compatibility layer.
+     * Detect real FreeBSD by checking for freebsd-version or /etc/rc.conf
+     * combined with sysctl kern.ostype. */
+    if (access("/bin/freebsd-version", X_OK) == 0) {
+        NSLog(@"IAIsFreeBSD: detected FreeBSD via /bin/freebsd-version");
+        return YES;
+    }
+    if (access("/etc/rc.conf", R_OK) == 0 && access("/sbin/sysctl", X_OK) == 0) {
+        /* Double check with sysctl kern.ostype */
+        FILE *fp = popen("sysctl -n kern.ostype 2>/dev/null", "r");
+        if (fp) {
+            char buf[64] = {0};
+            if (fgets(buf, sizeof(buf), fp) != NULL) {
+                /* Strip trailing newline */
+                char *nl = strchr(buf, '\n');
+                if (nl) *nl = '\0';
+                if (strcmp(buf, "FreeBSD") == 0) {
+                    pclose(fp);
+                    NSLog(@"IAIsFreeBSD: detected FreeBSD via sysctl kern.ostype");
+                    return YES;
+                }
+            }
+            pclose(fp);
+        }
+    }
+    return NO;
+}
+
+// ============================================================================
+// Helper: Determine installer script path from app bundle
+// ============================================================================
+NSString *IAInstallerScriptPath(void)
+{
+    NSString *scriptName = IAIsFreeBSD() ? @"installer-FreeBSD" : @"installer-Linux";
+    NSLog(@"IAInstallerScriptPath: selected script %@", scriptName);
+
+    NSString *path = [[NSBundle mainBundle] pathForResource:scriptName ofType:@"sh"];
+    if (!path) {
+        NSLog(@"IAInstallerScriptPath: script %@.sh not found in bundle, searching in Resources/", scriptName);
+        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+        path = [bundlePath stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"Resources/%@.sh", scriptName]];
+    }
+    NSLog(@"IAInstallerScriptPath: using script at %@", path);
+    return path;
+}
+
+// ============================================================================
+// Helper: Synchronously check for image source availability
+// Returns the mount path of the image source, or nil if none found.
+// ============================================================================
+NSString *IACheckImageSourceAvailable(void)
+{
+    NSString *scriptPath = IAInstallerScriptPath();
+    NSLog(@"IACheckImageSourceAvailable: running %@ --check-image-source", scriptPath);
+
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:scriptPath];
+    [task setArguments:@[@"--check-image-source"]];
+
+    NSPipe *outPipe = [NSPipe pipe];
+    NSPipe *errPipe = [NSPipe pipe];
+    [task setStandardOutput:outPipe];
+    [task setStandardError:errPipe];
+
+    NSString *result = nil;
+    @try {
+        [task launch];
+        NSData *outData = [[outPipe fileHandleForReading] readDataToEndOfFile];
+        [task waitUntilExit];
+
+        NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
+        NSLog(@"IACheckImageSourceAvailable: script output: %@", outStr);
+
+        NSArray *lines = [outStr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+        for (NSString *line in lines) {
+            if ([line hasPrefix:@"IMAGE_SOURCE:"]) {
+                NSString *src = [line substringFromIndex:[@"IMAGE_SOURCE:" length]];
+                src = [src stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if ([src length] > 0) {
+                    result = src;
+                }
+                break;
+            }
+        }
+    } @catch (NSException *ex) {
+        NSLog(@"IACheckImageSourceAvailable: exception: %@", ex);
+    }
+    [task release];
+
+    NSLog(@"IACheckImageSourceAvailable: result = %@", result ?: @"(none)");
+    return result;
+}
+
 @implementation IADiskInfo
 @synthesize devicePath, name, diskDescription, sizeBytes, formattedSize;
 @end
@@ -318,10 +426,147 @@
 @end
 
 // ============================================================================
-// IADiskSelectionStep - enumerates disks using external installer scripts
+// IAInstallTypeStep - Choose clone vs image-based installation
 // ============================================================================
 
-#import <sys/utsname.h>
+@implementation IAInstallTypeStep
+
+@synthesize stepTitle, stepDescription, delegate;
+
+- (instancetype)init
+{
+    if (self = [super init]) {
+        self.stepTitle = NSLocalizedString(@"Installation Type", @"");
+        self.stepDescription = NSLocalizedString(@"Choose how to install the system", @"");
+        _detectedImageSource = nil;
+        _imageSourceAvailable = NO;
+        [self setupView];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_stepView release];
+    [stepTitle release];
+    [stepDescription release];
+    [_detectedImageSource release];
+    [super dealloc];
+}
+
+- (void)setupView
+{
+    _stepView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+
+    NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 160, 360, 20)];
+    [label setBezeled:NO];
+    [label setDrawsBackground:NO];
+    [label setEditable:NO];
+    [label setSelectable:NO];
+    [label setStringValue:NSLocalizedString(@"Choose the installation method:", @"")];
+    [_stepView addSubview:label];
+    [label release];
+
+    _cloneRadio = [[NSButton alloc] initWithFrame:NSMakeRect(20, 126, 360, 24)];
+    [_cloneRadio setButtonType:NSRadioButton];
+    [_cloneRadio setTitle:NSLocalizedString(@"Clone running system to disk", @"")];
+    [_cloneRadio setState:NSOnState];
+    [_cloneRadio setTarget:self];
+    [_cloneRadio setAction:@selector(radioChanged:)];
+    [_stepView addSubview:_cloneRadio];
+
+    _imageRadio = [[NSButton alloc] initWithFrame:NSMakeRect(20, 90, 360, 24)];
+    [_imageRadio setButtonType:NSRadioButton];
+    [_imageRadio setTitle:NSLocalizedString(@"Image based installation (from external media)", @"")];
+    [_imageRadio setState:NSOffState];
+    [_imageRadio setEnabled:NO];
+    [_imageRadio setTarget:self];
+    [_imageRadio setAction:@selector(radioChanged:)];
+    [_stepView addSubview:_imageRadio];
+
+    _imageSourceLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 62, 340, 20)];
+    [_imageSourceLabel setBezeled:NO];
+    [_imageSourceLabel setDrawsBackground:NO];
+    [_imageSourceLabel setEditable:NO];
+    [_imageSourceLabel setSelectable:NO];
+    [_imageSourceLabel setTextColor:[NSColor grayColor]];
+    [_imageSourceLabel setStringValue:NSLocalizedString(@"No installation media detected", @"")];
+    [_stepView addSubview:_imageSourceLabel];
+}
+
+- (void)radioChanged:(id)sender
+{
+    if (sender == _cloneRadio) {
+        [_cloneRadio setState:NSOnState];
+        [_imageRadio setState:NSOffState];
+    } else if (sender == _imageRadio) {
+        [_imageRadio setState:NSOnState];
+        [_cloneRadio setState:NSOffState];
+    }
+    if (delegate && [delegate respondsToSelector:@selector(installTypeStep:didSelectImageSource:)]) {
+        [delegate installTypeStep:self didSelectImageSource:[self useImageInstall] ? _detectedImageSource : nil];
+    }
+}
+
+- (void)detectImageSource
+{
+    /* Called externally if the caller already knows the image source path.
+     * Alternatively runs the check script to detect it. */
+    NSString *source = IACheckImageSourceAvailable();
+    if (source && [source length] > 0) {
+        [_detectedImageSource release];
+        _detectedImageSource = [source copy];
+        _imageSourceAvailable = YES;
+        [_imageRadio setEnabled:YES];
+        [_imageSourceLabel setStringValue:[NSString stringWithFormat:
+            NSLocalizedString(@"Image source detected: %@", @""), _detectedImageSource]];
+        [_imageSourceLabel setTextColor:[NSColor controlTextColor]];
+        NSLog(@"IAInstallTypeStep: image source available at %@", _detectedImageSource);
+    } else {
+        _imageSourceAvailable = NO;
+        [_imageRadio setEnabled:NO];
+        [_imageSourceLabel setStringValue:NSLocalizedString(@"No installation media detected", @"")];
+        [_imageSourceLabel setTextColor:[NSColor grayColor]];
+        NSLog(@"IAInstallTypeStep: no image source available");
+    }
+}
+
+- (void)setImageSource:(NSString *)sourcePath
+{
+    [_detectedImageSource release];
+    _detectedImageSource = [sourcePath copy];
+    if (_detectedImageSource && [_detectedImageSource length] > 0) {
+        _imageSourceAvailable = YES;
+        [_imageRadio setEnabled:YES];
+        [_imageSourceLabel setStringValue:[NSString stringWithFormat:
+            NSLocalizedString(@"Image source detected: %@", @""), _detectedImageSource]];
+        [_imageSourceLabel setTextColor:[NSColor controlTextColor]];
+    }
+}
+
+- (BOOL)useImageInstall
+{
+    return (_imageSourceAvailable && [_imageRadio state] == NSOnState);
+}
+
+- (NSString *)imageSourcePath
+{
+    if ([self useImageInstall]) {
+        return _detectedImageSource;
+    }
+    return nil;
+}
+
+- (NSView *)stepView { return _stepView; }
+- (NSString *)stepTitle { return stepTitle; }
+- (NSString *)stepDescription { return stepDescription; }
+- (BOOL)canContinue { return YES; }
+
+@end
+
+// ============================================================================
+// IADiskSelectionStep - enumerates disks using external installer scripts
+// ============================================================================
 
 @implementation IADiskSelectionStep
 
@@ -335,10 +580,9 @@
         _disks = [[NSMutableArray alloc] init];
         _diagnostics = [[NSMutableString alloc] init];
         [self setupView];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self refreshDiskList];
-        });
+        /* Use performSelector:afterDelay: instead of dispatch_after on main queue
+         * because GCD main queue is not integrated with the GNUstep NSRunLoop. */
+        [self performSelector:@selector(refreshDiskList) withObject:nil afterDelay:0.5];
     }
     return self;
 }
@@ -395,15 +639,6 @@
     [_stepView addSubview:_spinner];
 }
 
-static BOOL isRunningLinux()
-{
-    struct utsname u;
-    if (uname(&u) == 0) {
-        return (strcmp(u.sysname, "Linux") == 0);
-    }
-    return NO;
-}
-
 - (void)refreshDiskList
 {
     NSLog(@"IADiskSelectionStep: refreshDiskList");
@@ -412,10 +647,11 @@ static BOOL isRunningLinux()
     [_spinner startAnimation:nil];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *scriptPath = isRunningLinux() ? @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer-linux.sh" : @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer.sh";
+        NSString *scriptPath = IAInstallerScriptPath();
+        NSLog(@"IADiskSelectionStep: using script %@", scriptPath);
         NSTask *task = [[NSTask alloc] init];
         [task setLaunchPath:scriptPath];
-        [task setArguments:@[@"--list-disks", @"--debug=1"]];
+        [task setArguments:@[@"--list-disks", @"--debug"]];
 
         NSPipe *outPipe = [NSPipe pipe];
         NSPipe *errPipe = [NSPipe pipe];
@@ -425,11 +661,8 @@ static BOOL isRunningLinux()
         @try {
             [task launch];
         } @catch (NSException *ex) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [_spinner stopAnimation:nil];
-                [_statusLabel setStringValue:NSLocalizedString(@"Failed to start disk enumeration script", @"")];
-                [_diagnostics appendFormat:@"Exception launching script: %@\n", ex];
-            });
+            NSDictionary *info = @{@"error": [NSString stringWithFormat:@"Exception launching script: %@", ex]};
+            [self performSelectorOnMainThread:@selector(_diskScanFailed:) withObject:info waitUntilDone:NO];
             [task release];
             return;
         }
@@ -442,53 +675,75 @@ static BOOL isRunningLinux()
         NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
         NSString *errStr = errData ? [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease] : @"";
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [_spinner stopAnimation:nil];
-
-            if (outStr && [outStr length] > 0) {
-                NSError *jsonError = nil;
-                id obj = nil;
-                @try {
-                    obj = [NSJSONSerialization JSONObjectWithData:outData options:0 error:&jsonError];
-                } @catch (NSException *ex) {
-                    obj = nil;
-                    [_diagnostics appendFormat:@"JSON parse exception: %@\n", ex];
-                }
-
-                if (obj && [obj isKindOfClass:[NSArray class]]) {
-                    [_disks removeAllObjects];
-                    for (NSDictionary *d in obj) {
-                        IADiskInfo *disk = [[IADiskInfo alloc] init];
-                        disk.devicePath = [d objectForKey:@"devicePath"] ?: @"";
-                        disk.name = [d objectForKey:@"name"] ?: @"";
-                        disk.diskDescription = [d objectForKey:@"description"] ?: @"";
-                        disk.sizeBytes = [[d objectForKey:@"sizeBytes"] unsignedLongLongValue];
-                        disk.formattedSize = [d objectForKey:@"formattedSize"] ?: @"";
-                        [_disks addObject:disk];
-                        [disk release];
-                    }
-                    [_statusLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Found %lu disk(s)", @""), (unsigned long)[_disks count]]];
-                    [_tableView reloadData];
-                } else {
-                    [_diagnostics appendString:@"Unexpected JSON output from script\n"];
-                    if (jsonError) [_diagnostics appendFormat:@"JSON error: %@\n", [jsonError localizedDescription]];
-                    if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
-                    [_statusLabel setStringValue:NSLocalizedString(@"Error enumerating disks - see Details", @"")];
-                }
-            } else {
-                [_diagnostics appendString:@"No output from disk enumeration script\n"];
-                if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
-                [_statusLabel setStringValue:NSLocalizedString(@"No disks found - see Details", @"")];
-            }
-
-            // If the script exited with non-zero status, append that info
-            if (term != 0) {
-                [_diagnostics appendFormat:@"Script exited with status %d\n", term];
-            }
-        });
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        [result setObject:(outStr ?: @"") forKey:@"stdout"];
+        [result setObject:(errStr ?: @"") forKey:@"stderr"];
+        [result setObject:[NSNumber numberWithInt:term] forKey:@"exitCode"];
+        if (outData) [result setObject:outData forKey:@"outData"];
+        [self performSelectorOnMainThread:@selector(_diskScanCompleted:) withObject:result waitUntilDone:NO];
 
         [task release];
     });
+}
+
+/* Main-thread callback: disk scan failed to launch */
+- (void)_diskScanFailed:(NSDictionary *)info
+{
+    [_spinner stopAnimation:nil];
+    [_statusLabel setStringValue:NSLocalizedString(@"Failed to start disk enumeration script", @"")];
+    [_diagnostics appendFormat:@"%@\n", [info objectForKey:@"error"]];
+}
+
+/* Main-thread callback: disk scan completed (possibly with errors) */
+- (void)_diskScanCompleted:(NSDictionary *)info
+{
+    [_spinner stopAnimation:nil];
+
+    NSString *outStr = [info objectForKey:@"stdout"];
+    NSString *errStr = [info objectForKey:@"stderr"];
+    NSData *outData = [info objectForKey:@"outData"];
+    int term = [[info objectForKey:@"exitCode"] intValue];
+
+    if (outStr && [outStr length] > 0 && outData) {
+        NSError *jsonError = nil;
+        id obj = nil;
+        @try {
+            obj = [NSJSONSerialization JSONObjectWithData:outData options:0 error:&jsonError];
+        } @catch (NSException *ex) {
+            obj = nil;
+            [_diagnostics appendFormat:@"JSON parse exception: %@\n", ex];
+        }
+
+        if (obj && [obj isKindOfClass:[NSArray class]]) {
+            [_disks removeAllObjects];
+            for (NSDictionary *d in obj) {
+                IADiskInfo *disk = [[IADiskInfo alloc] init];
+                disk.devicePath = [d objectForKey:@"devicePath"] ?: @"";
+                disk.name = [d objectForKey:@"name"] ?: @"";
+                disk.diskDescription = [d objectForKey:@"description"] ?: @"";
+                disk.sizeBytes = [[d objectForKey:@"sizeBytes"] unsignedLongLongValue];
+                disk.formattedSize = [d objectForKey:@"formattedSize"] ?: @"";
+                [_disks addObject:disk];
+                [disk release];
+            }
+            [_statusLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Found %lu disk(s)", @""), (unsigned long)[_disks count]]];
+            [_tableView reloadData];
+            NSLog(@"IADiskSelectionStep: found %lu disk(s)", (unsigned long)[_disks count]);
+        } else {
+            [_diagnostics appendString:@"Unexpected JSON output from script\n"];
+            if (jsonError) [_diagnostics appendFormat:@"JSON error: %@\n", [jsonError localizedDescription]];
+            if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
+            [_statusLabel setStringValue:NSLocalizedString(@"Error enumerating disks - see Details", @"")];
+        }
+    } else {
+        [_diagnostics appendString:@"No output from disk enumeration script\n"];
+        if (errStr && [errStr length] > 0) [_diagnostics appendFormat:@"Script stderr:\n%@\n", errStr];
+        [_statusLabel setStringValue:NSLocalizedString(@"No disks found - see Details", @"")];
+    }
+
+    if (term != 0) {
+        [_diagnostics appendFormat:@"Script exited with status %d\n", term];
+    }
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView
@@ -509,12 +764,20 @@ static BOOL isRunningLinux()
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification
 {
+    (void)notification;
     NSInteger sel = [_tableView selectedRow];
     if (sel >= 0 && (NSUInteger)sel < [_disks count]) {
         IADiskInfo *d = [_disks objectAtIndex:sel];
         if (delegate && [delegate respondsToSelector:@selector(diskSelectionStep:didSelectDisk:)]) {
             [delegate diskSelectionStep:self didSelectDisk:d];
         }
+    }
+    /* Update the assistant navigation buttons so Continue reflects canContinue */
+    NSWindow *window = [[self stepView] window];
+    if (!window) window = [NSApp keyWindow];
+    NSWindowController *wc = [window windowController];
+    if ([wc isKindOfClass:[GSAssistantWindow class]]) {
+        [(GSAssistantWindow *)wc updateNavigationButtons];
     }
 }
 
@@ -698,6 +961,11 @@ static BOOL isRunningLinux()
 
 - (void)startInstallationToDisk:(IADiskInfo *)disk
 {
+    [self startInstallationToDisk:disk source:nil];
+}
+
+- (void)startInstallationToDisk:(IADiskInfo *)disk source:(NSString *)sourcePathOrNil
+{
     if (!disk) return;
     if (_isRunning) return;
 
@@ -710,10 +978,17 @@ static BOOL isRunningLinux()
     [_progressBar setDoubleValue:0.0];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *scriptPath = isRunningLinux() ? @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer-linux.sh" : @"/home/user/Developer/repos/gershwin-system/Library/Scripts/installer.sh";
+        NSString *scriptPath = IAInstallerScriptPath();
+        NSLog(@"IAInstallProgressStep: using script %@", scriptPath);
+        NSMutableArray *args = [NSMutableArray arrayWithObjects:@"--noninteractive", @"--disk", disk.devicePath, @"--debug", nil];
+        if (sourcePathOrNil && [sourcePathOrNil length] > 0) {
+            [args addObject:@"--source"];
+            [args addObject:sourcePathOrNil];
+            NSLog(@"IAInstallProgressStep: using image source %@", sourcePathOrNil);
+        }
         NSTask *task = [[NSTask alloc] init];
         [task setLaunchPath:scriptPath];
-        [task setArguments:@[@"--noninteractive", @"--disk", disk.devicePath, @"--debug=1"]];
+        [task setArguments:args];
 
         NSPipe *outPipe = [NSPipe pipe];
         NSPipe *errPipe = [NSPipe pipe];
@@ -723,15 +998,8 @@ static BOOL isRunningLinux()
         @try {
             [task launch];
         } @catch (NSException *ex) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                _isRunning = NO;
-                _isFinished = YES;
-                _wasSuccessful = NO;
-                [_detailLabel setStringValue:NSLocalizedString(@"Failed to launch installer", @"")];
-                if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
-                    [delegate installProgressDidFinish:NO];
-                }
-            });
+            NSDictionary *info = @{@"error": [NSString stringWithFormat:@"%@", ex]};
+            [self performSelectorOnMainThread:@selector(_installLaunchFailed:) withObject:info waitUntilDone:NO];
             [task release];
             return;
         }
@@ -745,7 +1013,7 @@ static BOOL isRunningLinux()
         NSString *outStr = outData ? [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] autorelease] : @"";
         NSString *errStr = errData ? [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease] : @"";
 
-        // Parse PROGRESS: lines
+        // Parse PROGRESS: lines and update UI via main thread
         NSArray *lines = [outStr componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
         for (NSString *line in lines) {
             if ([line hasPrefix:@"PROGRESS:"]) {
@@ -754,33 +1022,66 @@ static BOOL isRunningLinux()
                     NSString *phase = parts[1];
                     NSString *percentStr = parts[2];
                     NSString *message = [[parts subarrayWithRange:NSMakeRange(3, [parts count]-3)] componentsJoinedByString:@":"];
-                    double percent = [percentStr doubleValue];
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [_phaseLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Phase: %@", @""), phase]];
-                        [_detailLabel setStringValue:message];
-                        [_percentLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", percent]];
-                        [_progressBar setDoubleValue:percent];
-                    });
+                    NSDictionary *progressInfo = @{
+                        @"phase": phase ?: @"",
+                        @"percent": [NSNumber numberWithDouble:[percentStr doubleValue]],
+                        @"message": message ?: @""
+                    };
+                    [self performSelectorOnMainThread:@selector(_updateProgress:) withObject:progressInfo waitUntilDone:NO];
                 }
             }
         }
 
-        BOOL success = (term == 0);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            _isRunning = NO;
-            _isFinished = YES;
-            _wasSuccessful = success;
-            if (!success) {
-                NSString *msg = (errStr && [errStr length] > 0) ? errStr : NSLocalizedString(@"Installation failed.", @"");
-                [_detailLabel setStringValue:msg];
-            }
-            if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
-                [delegate installProgressDidFinish:success];
-            }
-        });
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        [result setObject:[NSNumber numberWithBool:(term == 0)] forKey:@"success"];
+        [result setObject:(errStr ?: @"") forKey:@"stderr"];
+        [self performSelectorOnMainThread:@selector(_installCompleted:) withObject:result waitUntilDone:NO];
 
         [task release];
     });
+}
+
+/* Main-thread callback: installer script failed to launch */
+- (void)_installLaunchFailed:(NSDictionary *)info
+{
+    (void)info;
+    _isRunning = NO;
+    _isFinished = YES;
+    _wasSuccessful = NO;
+    [_detailLabel setStringValue:NSLocalizedString(@"Failed to launch installer", @"")];
+    if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
+        [delegate installProgressDidFinish:NO];
+    }
+}
+
+/* Main-thread callback: update progress UI */
+- (void)_updateProgress:(NSDictionary *)info
+{
+    NSString *phase = [info objectForKey:@"phase"];
+    NSNumber *percent = [info objectForKey:@"percent"];
+    NSString *message = [info objectForKey:@"message"];
+    [_phaseLabel setStringValue:[NSString stringWithFormat:NSLocalizedString(@"Phase: %@", @""), phase]];
+    [_detailLabel setStringValue:message];
+    [_percentLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", [percent doubleValue]]];
+    [_progressBar setDoubleValue:[percent doubleValue]];
+}
+
+/* Main-thread callback: installation completed */
+- (void)_installCompleted:(NSDictionary *)info
+{
+    BOOL success = [[info objectForKey:@"success"] boolValue];
+    NSString *errStr = [info objectForKey:@"stderr"];
+
+    _isRunning = NO;
+    _isFinished = YES;
+    _wasSuccessful = success;
+    if (!success) {
+        NSString *msg = (errStr && [errStr length] > 0) ? errStr : NSLocalizedString(@"Installation failed.", @"");
+        [_detailLabel setStringValue:msg];
+    }
+    if (delegate && [delegate respondsToSelector:@selector(installProgressDidFinish:)]) {
+        [delegate installProgressDidFinish:success];
+    }
 }
 
 - (NSView *)stepView { return _stepView; }
