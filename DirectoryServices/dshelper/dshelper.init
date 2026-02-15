@@ -27,7 +27,7 @@ case "$1" in
             exit 1
         fi
         # Start gdomap if not already running (required for distributed objects)
-        if ! pgrep -q gdomap; then
+        if ! pgrep gdomap; then
             echo "Starting gdomap"
             /System/Library/Tools/gdomap -p
         fi
@@ -40,7 +40,7 @@ case "$1" in
             rm -f "$PIDFILE"
         fi
         # Stop gdomap if running
-        if pgrep -q gdomap; then
+        if pgrep gdomap; then
             echo "Stopping gdomap"
             pkill gdomap
         fi
