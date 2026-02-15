@@ -1654,30 +1654,9 @@ static int handleX11Error(Display *display, XErrorEvent *event)
     [self reregisterShortcutsForMenu:menu];
     
     NSLog(@"AppMenuWidget: Successfully loaded fallback menu with %lu items", (unsigned long)[[menu itemArray] count]);
-    
-    // For fallback menus, also register Alt+W shortcut through X11ShortcutManager
-    [self registerAltWShortcutForWindow:windowId];
-}
+} 
 
-- (void)registerAltWShortcutForWindow:(unsigned long)windowId
-{
-    // Create a temporary menu item for Alt+W registration
-    NSMenuItem *altWMenuItem = [[NSMenuItem alloc] initWithTitle:@"Close" action:@selector(closeActiveWindow:) keyEquivalent:@"w"];
-    [altWMenuItem setKeyEquivalentModifierMask:NSAlternateKeyMask];
-    [altWMenuItem setTarget:self];
-    // Don't set representedObject - we'll determine the active window dynamically
-    
-    // Register this shortcut with the X11ShortcutManager
-    BOOL ok = [[X11ShortcutManager sharedManager] registerDirectShortcutForMenuItem:altWMenuItem
-                                                                              target:self
-                                                                              action:@selector(closeActiveWindow:)];
-    if (!ok) {
-        NSLog(@"AppMenuWidget: Failed to register Alt+W fallback shortcut for window %lu", windowId);
-    } else {
-        NSLog(@"AppMenuWidget: Registered Alt+W fallback shortcut for window %lu", windowId);
-    }
-    
-}
+
 
 // Background-run helpers: use libdispatch when available, otherwise fall back to performSelectorInBackground
 - (void)appMenuBackgroundRunner:(id)blockObj
