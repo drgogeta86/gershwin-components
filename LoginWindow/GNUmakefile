@@ -1,9 +1,9 @@
 # GNUmakefile for LoginWindow GNUstep Application
 
 include $(GNUSTEP_MAKEFILES)/common.make
+GNUSTEP_APPS = $(GNUSTEP_SYSTEM_SERVICES)
 
 APP_NAME = LoginWindow
-GNUSTEP_INSTALLATION_DOMAIN = SYSTEM
 VERSION = 1.0
 
 LoginWindow_OBJC_FILES = \
