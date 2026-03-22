@@ -42,6 +42,7 @@ static int savedStdoutFd = -1;
 - (void)detailsClicked:(id)sender;
 - (void)applicationWillFinishLaunching:(NSNotification *)notification;
 - (void)applicationDidFinishLaunching:(NSNotification *)notification;
+- (BOOL)application:(NSApplication *)app openFile:(NSString *)filename;
 
 @end
 
@@ -223,6 +224,14 @@ static int savedStdoutFd = -1;
     }
 }
 
+- (BOOL)application:(NSApplication *)app openFile:(NSString *)filename
+{
+    // Sudo passes a prompt string as an argument to the askpass program.
+    // GNUstep interprets unknown arguments as files to open and shows an
+    // alert when it can't. Return YES to silently accept and ignore them.
+    return YES;
+}
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
     return NSTerminateNow;
@@ -390,12 +399,11 @@ int main(int argc, const char * argv[])
     // sudo reads the password from our stdout, so it must be clean.
     savedStdoutFd = dup(STDOUT_FILENO);
 
-    // Redirect both stdout and stderr to /dev/null so GNUstep
-    // initialization noise doesn't reach sudo or the terminal.
+    // Redirect stdout to /dev/null so GNUstep initialization noise
+    // doesn't reach sudo. Keep stderr open for debugging.
     int devnull = open("/dev/null", O_WRONLY);
     if (devnull != -1) {
         dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
         close(devnull);
     }
 
