@@ -8,6 +8,7 @@
 
 #import "ALSABackend.h"
 #import <AppKit/AppKit.h>
+#import <dispatch/dispatch.h>
 
 // ALSA mixer control names we look for
 static NSString *const kMasterControl = @"Master";
@@ -51,8 +52,8 @@ static NSString *const kMicControl = @"Mic";
         
         [self findToolPaths];
         [self enumerateDevices];
-        [self loadDefaultDevices];
         [self loadAlertSounds];
+        [self loadDefaultDevices];
     }
     return self;
 }
@@ -60,9 +61,11 @@ static NSString *const kMicControl = @"Mic";
 - (void)dealloc
 {
     // Cancel any pending deferred save and flush immediately
-    [NSObject cancelPreviousPerformRequestsWithTarget:self
-                                             selector:@selector(savePreferences)
-                                               object:nil];
+    if (deferredSaveTimer) {
+        dispatch_source_cancel(deferredSaveTimer);
+        dispatch_release(deferredSaveTimer);
+        deferredSaveTimer = nil;
+    }
     [self savePreferences];
 
     [self stopInputLevelMonitoring];
@@ -918,33 +921,36 @@ static NSString *const kMicControl = @"Mic";
 - (BOOL)startInputLevelMonitoring
 {
     if (isMonitoringInputLevel) return YES;
-    
+
     isMonitoringInputLevel = YES;
-    inputLevelTimer = [NSTimer scheduledTimerWithTimeInterval:0.1
-                                                       target:self
-                                                     selector:@selector(inputLevelTimerFired:)
-                                                     userInfo:nil
-                                                      repeats:YES];
-    [inputLevelTimer retain];
-    
+    inputLevelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                             dispatch_get_main_queue());
+    dispatch_source_set_timer(inputLevelTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+                              100 * NSEC_PER_MSEC, 0);
+    dispatch_source_set_event_handler(inputLevelTimer, ^{
+        [self inputLevelTimerFired];
+    });
+    dispatch_resume(inputLevelTimer);
+
     return YES;
 }
 
 - (BOOL)stopInputLevelMonitoring
 {
     if (!isMonitoringInputLevel) return YES;
-    
+
     isMonitoringInputLevel = NO;
     if (inputLevelTimer) {
-        [inputLevelTimer invalidate];
-        [inputLevelTimer release];
+        dispatch_source_cancel(inputLevelTimer);
+        dispatch_release(inputLevelTimer);
         inputLevelTimer = nil;
     }
-    
+
     return YES;
 }
 
-- (void)inputLevelTimerFired:(NSTimer *)timer
+- (void)inputLevelTimerFired
 {
     float level = [self measureInputLevel];
     
@@ -1294,6 +1300,7 @@ static NSString *const kMicControl = @"Mic";
             if (alertSoundName) {
                 for (AlertSound *sound in cachedAlertSounds) {
                     if ([sound.name isEqualToString:alertSoundName]) {
+                        [currentAlert release];
                         currentAlert = [sound retain];
                         break;
                     }
@@ -1425,10 +1432,28 @@ static NSString *const kMicControl = @"Mic";
     // Cancel any previously scheduled save, then schedule a new one.
     // This coalesces rapid changes (e.g. clicking through sounds quickly)
     // into a single disk write after activity settles.
-    [NSObject cancelPreviousPerformRequestsWithTarget:self
-                                             selector:@selector(savePreferences)
-                                               object:nil];
-    [self performSelector:@selector(savePreferences) withObject:nil afterDelay:0.5];
+    //
+    // Uses dispatch timer instead of performSelector:afterDelay: because
+    // this method is called from a GCD queue (backendQueue) which does not
+    // run an NSRunLoop, so performSelector:afterDelay: would never fire.
+    if (deferredSaveTimer) {
+        dispatch_source_cancel(deferredSaveTimer);
+        dispatch_release(deferredSaveTimer);
+        deferredSaveTimer = nil;
+    }
+
+    deferredSaveTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                               dispatch_get_main_queue());
+    dispatch_source_set_timer(deferredSaveTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(deferredSaveTimer, ^{
+        [self savePreferences];
+        dispatch_source_cancel(deferredSaveTimer);
+        dispatch_release(deferredSaveTimer);
+        deferredSaveTimer = nil;
+    });
+    dispatch_resume(deferredSaveTimer);
 }
 
 - (BOOL)savePreferences
@@ -1505,30 +1530,38 @@ static NSString *const kMicControl = @"Mic";
 - (NSString *)runCommand:(NSString *)command withArguments:(NSArray *)args
 {
     if (!command) return nil;
-    
-    NSTask *task = [[NSTask alloc] init];
-    NSPipe *pipe = [NSPipe pipe];
-    
-    [task setLaunchPath:command];
-    [task setArguments:args];
-    [task setStandardOutput:pipe];
-    [task setStandardError:[NSPipe pipe]];
-    
-    @try {
-        [task launch];
+
+    // Wrap in @autoreleasepool to ensure NSPipe file handles and other
+    // temporary objects are released promptly.  Without this, objects
+    // created on GCD queue threads (which lack an automatic autorelease
+    // pool drain) accumulate and leak file descriptors, eventually
+    // hitting the "Too many open files" limit.
+    NSString *result = nil;
+    @autoreleasepool {
+        NSTask *task = [[NSTask alloc] init];
+        NSPipe *pipe = [NSPipe pipe];
+
+        [task setLaunchPath:command];
+        [task setArguments:args];
+        [task setStandardOutput:pipe];
+        [task setStandardError:[NSPipe pipe]];
+
+        @try {
+            [task launch];
+        } @catch (NSException *e) {
+            NSLog(@"Failed to run command %@: %@", command, e);
+            [task release];
+            return nil;
+        }
+
+        NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
         [task waitUntilExit];
-    } @catch (NSException *e) {
-        NSLog(@"Failed to run command %@: %@", command, e);
+
+        result = [[NSString alloc] initWithData:data
+                                       encoding:NSUTF8StringEncoding];
         [task release];
-        return nil;
     }
-    
-    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
-    NSString *output = [[[NSString alloc] initWithData:data 
-                                              encoding:NSUTF8StringEncoding] autorelease];
-    
-    [task release];
-    return output;
+    return [result autorelease];
 }
 
 - (NSString *)runCommandWithPipe:(NSString *)command arguments:(NSArray *)args

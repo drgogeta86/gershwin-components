@@ -32,7 +32,7 @@
     BOOL playVolumeChangeFeedback;
 
     // Input level monitoring
-    NSTimer *inputLevelTimer;
+    dispatch_source_t inputLevelTimer;
     BOOL isMonitoringInputLevel;
 
     // Mixer file descriptor for default device
@@ -84,7 +84,7 @@
 - (NSString *)userAlertSoundDirectory;
 
 // Input level monitoring
-- (void)inputLevelTimerFired:(NSTimer *)timer;
+- (void)inputLevelTimerFired;
 - (float)measureInputLevel;
 
 // Sound playback

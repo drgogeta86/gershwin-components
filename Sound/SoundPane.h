@@ -13,7 +13,7 @@
 @interface SoundPane : NSPreferencePane
 {
     SoundController *controller;
-    NSTimer *refreshTimer;
+    dispatch_source_t refreshTimer;
 }
 
 @end

@@ -11,6 +11,7 @@
 
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
+#import <dispatch/dispatch.h>
 #import "SoundBackend.h"
 
 @interface SoundController : NSObject <NSTableViewDataSource, NSTableViewDelegate, SoundBackendDelegate>
@@ -101,6 +102,10 @@
     // State
     BOOL isUpdatingUI;
     BOOL isInitializing;
+    BOOL isRefreshing;
+
+    // Background queue for backend operations
+    dispatch_queue_t backendQueue;
 }
 
 // View creation
@@ -111,12 +116,14 @@
 - (void)createUnavailableView;
 
 // Refresh
-- (void)refreshDevices:(NSTimer *)timer;
+- (void)refreshDevices;
 - (void)updateOutputDeviceList;
 - (void)updateInputDeviceList;
 - (void)updateAlertSoundsList;
 - (void)updateOutputControls;
 - (void)updateInputControls;
+- (void)updateOutputControlsWithVolume:(float)volume muted:(BOOL)muted balance:(float)balance;
+- (void)updateInputControlsWithVolume:(float)volume muted:(BOOL)muted;
 - (BOOL)selectOutputDevice:(AudioDevice *)device;
 - (BOOL)selectInputDevice:(AudioDevice *)device;
 

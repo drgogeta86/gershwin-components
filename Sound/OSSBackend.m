@@ -15,6 +15,7 @@
 
 #import "OSSBackend.h"
 #import <AppKit/AppKit.h>
+#import <dispatch/dispatch.h>
 #import <sys/ioctl.h>
 #import <sys/soundcard.h>
 #import <fcntl.h>
@@ -56,8 +57,8 @@
 
         // Initialize
         [self enumerateDevices];
-        [self loadDefaultDevices];
         [self loadAlertSounds];
+        [self loadDefaultDevices];
     }
     return self;
 }
@@ -676,6 +677,7 @@
             if (alertSoundName) {
                 for (AlertSound *sound in cachedAlertSounds) {
                     if ([sound.name isEqualToString:alertSoundName]) {
+                        [currentAlert release];
                         currentAlert = [sound retain];
                         break;
                     }
@@ -1139,12 +1141,15 @@
     if (isMonitoringInputLevel) return YES;
 
     isMonitoringInputLevel = YES;
-    inputLevelTimer = [NSTimer scheduledTimerWithTimeInterval:0.1
-                                                       target:self
-                                                     selector:@selector(inputLevelTimerFired:)
-                                                     userInfo:nil
-                                                      repeats:YES];
-    [inputLevelTimer retain];
+    inputLevelTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                             dispatch_get_main_queue());
+    dispatch_source_set_timer(inputLevelTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC),
+                              100 * NSEC_PER_MSEC, 0);
+    dispatch_source_set_event_handler(inputLevelTimer, ^{
+        [self inputLevelTimerFired];
+    });
+    dispatch_resume(inputLevelTimer);
 
     return YES;
 }
@@ -1155,15 +1160,15 @@
 
     isMonitoringInputLevel = NO;
     if (inputLevelTimer) {
-        [inputLevelTimer invalidate];
-        [inputLevelTimer release];
+        dispatch_source_cancel(inputLevelTimer);
+        dispatch_release(inputLevelTimer);
         inputLevelTimer = nil;
     }
 
     return YES;
 }
 
-- (void)inputLevelTimerFired:(NSTimer *)timer
+- (void)inputLevelTimerFired
 {
     float level = [self measureInputLevel];
 

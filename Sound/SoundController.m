@@ -39,7 +39,11 @@ static const CGFloat kTableRowHeight = 18.0;
         selectedAlertSound = nil;
         isUpdatingUI = NO;
         isInitializing = YES;
-        
+        isRefreshing = NO;
+
+        // Create serial background queue for backend operations (amixer, aplay, etc.)
+        backendQueue = dispatch_queue_create("org.gershwin.sound.backend", DISPATCH_QUEUE_SERIAL);
+
         // Initialize backend - try OSS first (FreeBSD), then ALSA (Linux)
         backend = nil;
 
@@ -94,6 +98,10 @@ static const CGFloat kTableRowHeight = 18.0;
 - (void)dealloc
 {
     [self stopInputLevelMonitoring];
+    if (backendQueue) {
+        dispatch_release(backendQueue);
+        backendQueue = nil;
+    }
     [outputDevices release];
     [inputDevices release];
     [alertSounds release];
@@ -705,36 +713,61 @@ static const CGFloat kTableRowHeight = 18.0;
 
 #pragma mark - Refresh
 
-- (void)refreshDevices:(NSTimer *)timer
+- (void)refreshDevices
 {
     if (!backend) return;
-    
-    NSLog(@"SoundController: refreshDevices: called (timer=%@)", timer ? @"YES" : @"NO");
-    
-    isUpdatingUI = YES;
-    
-    // Refresh backend data
-    [backend refresh];
-    
-    // Update device lists
-    [self updateOutputDeviceList];
-    [self updateInputDeviceList];
-    [self updateAlertSoundsList];
-    
-    // Update controls
-    [self updateOutputControls];
-    [self updateInputControls];
-    
-    isUpdatingUI = NO;
-    
-    // After first refresh during initialization, mark that we're done initializing
-    // Subsequent device selections will now trigger actual device switches and audio changes
-    if (isInitializing && timer == nil) {
-        isInitializing = NO;
-        NSLog(@"SoundController: refreshDevices: completed initialization phase");
+
+    // Skip if a refresh is already in progress to avoid queueing up stale work
+    if (isRefreshing) {
+        NSLog(@"SoundController: refreshDevices skipped - already in progress");
+        return;
     }
-    
-    NSLog(@"SoundController: refreshDevices: completed");
+
+    NSLog(@"SoundController: refreshDevices called");
+    isRefreshing = YES;
+
+    // Dispatch blocking backend operations to background queue
+    dispatch_async(backendQueue, ^{
+        @autoreleasepool {
+        // Refresh backend data (calls amixer, aplay, etc. - blocking)
+        [backend refresh];
+
+        // Pre-fetch control values on background queue to avoid blocking main thread
+        float outVol = [backend outputVolume];
+        BOOL outMuted = [backend isOutputMuted];
+        float outBalance = [backend outputBalance];
+        float inVol = [backend inputVolume];
+        BOOL inMuted = [backend isInputMuted];
+        float alertVol = [backend alertVolume];
+
+        // Dispatch UI updates back to the main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            isUpdatingUI = YES;
+
+            // Update device lists
+            [self updateOutputDeviceList];
+            [self updateInputDeviceList];
+            [self updateAlertSoundsList];
+
+            // Update controls with pre-fetched values (no blocking backend calls)
+            [self updateOutputControlsWithVolume:outVol muted:outMuted balance:outBalance];
+            [self updateInputControlsWithVolume:inVol muted:inMuted];
+            [alertVolumeSlider setFloatValue:alertVol];
+
+            isUpdatingUI = NO;
+            isRefreshing = NO;
+
+            // After first refresh during initialization, mark that we're done initializing
+            // Subsequent device selections will now trigger actual device switches and audio changes
+            if (isInitializing) {
+                isInitializing = NO;
+                NSLog(@"SoundController: refreshDevices completed initialization phase");
+            }
+
+            NSLog(@"SoundController: refreshDevices completed");
+        });
+        } // @autoreleasepool
+    });
 }
 
 - (void)updateOutputDeviceList
@@ -851,8 +884,6 @@ static const CGFloat kTableRowHeight = 18.0;
         }
     }
     
-    // Update alert volume slider
-    [alertVolumeSlider setFloatValue:[backend alertVolume]];
 }
 
 - (void)updateOutputControls
@@ -883,7 +914,34 @@ static const CGFloat kTableRowHeight = 18.0;
 {
     float volume = [backend inputVolume];
     BOOL muted = [backend isInputMuted];
-    
+
+    [inputVolumeSlider setFloatValue:volume];
+    [inputMuteCheckbox setState:muted ? NSOnState : NSOffState];
+}
+
+// Non-blocking variants that use pre-fetched values (call from main thread only)
+- (void)updateOutputControlsWithVolume:(float)volume muted:(BOOL)muted balance:(float)balance
+{
+    [outputVolumeSlider setFloatValue:volume];
+    [outputMuteCheckbox setState:muted ? NSOnState : NSOffState];
+    [outputBalanceSlider setFloatValue:balance];
+
+    // Update the main volume slider on effects tab too
+    NSView *effectsTabView = [[mainTabView tabViewItemAtIndex:0] view];
+    for (NSView *subview in [effectsTabView subviews]) {
+        if ([subview isKindOfClass:[NSSlider class]] &&
+            [(NSSlider *)subview tag] == 100) {
+            [(NSSlider *)subview setFloatValue:volume];
+        }
+        if ([subview isKindOfClass:[NSButton class]] &&
+            [(NSButton *)subview tag] == 100) {
+            [(NSButton *)subview setState:muted ? NSOnState : NSOffState];
+        }
+    }
+}
+
+- (void)updateInputControlsWithVolume:(float)volume muted:(BOOL)muted
+{
     [inputVolumeSlider setFloatValue:volume];
     [inputMuteCheckbox setState:muted ? NSOnState : NSOffState];
 }
@@ -894,19 +952,29 @@ static const CGFloat kTableRowHeight = 18.0;
         NSLog(@"SoundController: selectOutputDevice: FAILED - device is nil");
         return NO;
     }
-    
+
     NSLog(@"SoundController: selectOutputDevice: %@", device.name);
     [selectedOutputDevice release];
     selectedOutputDevice = [device retain];
-    
+
     // During initialization, just read current state without switching devices
     if (!isInitializing) {
-        // Use force immediate switch to change devices even if audio is playing
-        BOOL success = [backend forceImmediateOutputDeviceSwitch:device];
-        NSLog(@"SoundController: forceImmediateOutputDeviceSwitch: %@", success ? @"SUCCESS" : @"FAILED");
+        AudioDevice *retained = [device retain];
+        dispatch_async(backendQueue, ^{
+            @autoreleasepool {
+            BOOL success = [backend forceImmediateOutputDeviceSwitch:retained];
+            NSLog(@"SoundController: forceImmediateOutputDeviceSwitch: %@", success ? @"SUCCESS" : @"FAILED");
+            [retained release];
+            // Fetch control values while still on background queue
+            float vol = [backend outputVolume];
+            BOOL muted = [backend isOutputMuted];
+            float bal = [backend outputBalance];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self updateOutputControlsWithVolume:vol muted:muted balance:bal];
+            });
+            } // @autoreleasepool
+        });
     }
-    
-    [self updateOutputControls];
     return YES;
 }
 
@@ -916,19 +984,28 @@ static const CGFloat kTableRowHeight = 18.0;
         NSLog(@"SoundController: selectInputDevice: FAILED - device is nil");
         return NO;
     }
-    
+
     NSLog(@"SoundController: selectInputDevice: %@", device.name);
     [selectedInputDevice release];
     selectedInputDevice = [device retain];
-    
+
     // During initialization, just read current state without switching devices
     if (!isInitializing) {
-        // Use force immediate switch to change devices even if audio is playing
-        BOOL success = [backend forceImmediateInputDeviceSwitch:device];
-        NSLog(@"SoundController: forceImmediateInputDeviceSwitch: %@", success ? @"SUCCESS" : @"FAILED");
+        AudioDevice *retained = [device retain];
+        dispatch_async(backendQueue, ^{
+            @autoreleasepool {
+            BOOL success = [backend forceImmediateInputDeviceSwitch:retained];
+            NSLog(@"SoundController: forceImmediateInputDeviceSwitch: %@", success ? @"SUCCESS" : @"FAILED");
+            [retained release];
+            // Fetch control values while still on background queue
+            float vol = [backend inputVolume];
+            BOOL muted = [backend isInputMuted];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self updateInputControlsWithVolume:vol muted:muted];
+            });
+            } // @autoreleasepool
+        });
     }
-    
-    [self updateInputControls];
     return YES;
 }
 
@@ -1043,7 +1120,7 @@ static const CGFloat kTableRowHeight = 18.0;
 {
     NSLog(@"SoundController: UI ACTION - alertSoundSelected:");
     NSInteger row = [alertSoundsTable selectedRow];
-    NSLog(@"SoundController:   selected row = %ld, alertSounds count = %lu", 
+    NSLog(@"SoundController:   selected row = %ld, alertSounds count = %lu",
           (long)row, (unsigned long)[alertSounds count]);
     if (row >= 0 && row < (NSInteger)[alertSounds count]) {
         AlertSound *sound = [alertSounds objectAtIndex:row];
@@ -1051,19 +1128,24 @@ static const CGFloat kTableRowHeight = 18.0;
         [selectedAlertSound release];
         selectedAlertSound = [sound retain];
 
-        // Play preview first for immediate feedback
-        NSLog(@"SoundController:   calling playAlertSound:");
-        BOOL success = [backend playAlertSound:sound];
-        NSLog(@"SoundController:   playAlertSound: %@", success ? @"SUCCESS" : @"FAILED");
+        // Dispatch playback and save to background queue
+        AlertSound *retained = [sound retain];
+        dispatch_async(backendQueue, ^{
+            NSLog(@"SoundController:   calling playAlertSound:");
+            BOOL success = [backend playAlertSound:retained];
+            NSLog(@"SoundController:   playAlertSound: %@", success ? @"SUCCESS" : @"FAILED");
 
-        // Then update the backend selection (saves asynchronously)
-        BOOL saved = [backend setCurrentAlertSound:sound];
-        NSLog(@"SoundController:   setCurrentAlertSound: %@", saved ? @"SUCCESS" : @"FAILED");
-        if (!success) {
-            NSRunAlertPanel(@"Sound Error", 
-                          @"Could not play the selected alert sound. Please check your audio hardware and settings.",
-                          @"OK", nil, nil);
-        }
+            BOOL saved = [backend setCurrentAlertSound:retained];
+            NSLog(@"SoundController:   setCurrentAlertSound: %@", saved ? @"SUCCESS" : @"FAILED");
+            [retained release];
+            if (!success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSRunAlertPanel(@"Sound Error",
+                                  @"Could not play the selected alert sound. Please check your audio hardware and settings.",
+                                  @"OK", nil, nil);
+                });
+            }
+        });
     }
 }
 
@@ -1072,13 +1154,17 @@ static const CGFloat kTableRowHeight = 18.0;
     NSLog(@"SoundController: UI ACTION - alertVolumeChanged:");
     float volume = [alertVolumeSlider floatValue];
     NSLog(@"SoundController:   volume = %.2f", volume);
-    BOOL success = [backend setAlertVolume:volume];
-    NSLog(@"SoundController:   setAlertVolume: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Volume Error", 
-                      @"Could not change the alert volume. Please try again.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setAlertVolume:volume];
+        NSLog(@"SoundController:   setAlertVolume: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Volume Error",
+                              @"Could not change the alert volume. Please try again.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (IBAction)alertDeviceChanged:(id)sender
@@ -1088,15 +1174,20 @@ static const CGFloat kTableRowHeight = 18.0;
     NSLog(@"SoundController:   selected index = %ld, outputDevices count = %lu",
           (long)index, (unsigned long)[outputDevices count]);
     if (index >= 0 && index < (NSInteger)[outputDevices count]) {
-        AudioDevice *device = [outputDevices objectAtIndex:index];
+        AudioDevice *device = [[outputDevices objectAtIndex:index] retain];
         NSLog(@"SoundController:   device name = %@", device.name);
-        BOOL success = [backend setAlertSoundDevice:device];
-        NSLog(@"SoundController:   setAlertSoundDevice: %@", success ? @"SUCCESS" : @"FAILED");
-        if (!success) {
-            NSRunAlertPanel(@"Device Error", 
-                          @"Could not change the alert sound output device. Please check your audio hardware.",
-                          @"OK", nil, nil);
-        }
+        dispatch_async(backendQueue, ^{
+            BOOL success = [backend setAlertSoundDevice:device];
+            [device release];
+            NSLog(@"SoundController:   setAlertSoundDevice: %@", success ? @"SUCCESS" : @"FAILED");
+            if (!success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSRunAlertPanel(@"Device Error",
+                                  @"Could not change the alert sound output device. Please check your audio hardware.",
+                                  @"OK", nil, nil);
+                });
+            }
+        });
     }
 }
 
@@ -1105,13 +1196,17 @@ static const CGFloat kTableRowHeight = 18.0;
     NSLog(@"SoundController: UI ACTION - playUIEffectsChanged:");
     BOOL play = ([playUIEffectsCheckbox state] == NSOnState);
     NSLog(@"SoundController:   play = %@", play ? @"YES" : @"NO");
-    BOOL success = [backend setPlayUserInterfaceSoundEffects:play];
-    NSLog(@"SoundController:   setPlayUserInterfaceSoundEffects: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Settings Error", 
-                      @"Could not change the user interface sound effects setting.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setPlayUserInterfaceSoundEffects:play];
+        NSLog(@"SoundController:   setPlayUserInterfaceSoundEffects: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Settings Error",
+                              @"Could not change the user interface sound effects setting.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (IBAction)playVolumeFeedbackChanged:(id)sender
@@ -1119,13 +1214,17 @@ static const CGFloat kTableRowHeight = 18.0;
     NSLog(@"SoundController: UI ACTION - playVolumeFeedbackChanged:");
     BOOL play = ([playVolumeFeedbackCheckbox state] == NSOnState);
     NSLog(@"SoundController:   play = %@", play ? @"YES" : @"NO");
-    BOOL success = [backend setPlayFeedbackWhenVolumeIsChanged:play];
-    NSLog(@"SoundController:   setPlayFeedbackWhenVolumeIsChanged: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Settings Error", 
-                      @"Could not change the volume feedback setting.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setPlayFeedbackWhenVolumeIsChanged:play];
+        NSLog(@"SoundController:   setPlayFeedbackWhenVolumeIsChanged: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Settings Error",
+                              @"Could not change the volume feedback setting.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (void)alertSoundsTableDoubleClicked:(id)sender
@@ -1135,15 +1234,20 @@ static const CGFloat kTableRowHeight = 18.0;
     NSInteger row = [alertSoundsTable clickedRow];
     NSLog(@"SoundController:   clicked row = %ld", (long)row);
     if (row >= 0 && row < (NSInteger)[alertSounds count]) {
-        AlertSound *sound = [alertSounds objectAtIndex:row];
+        AlertSound *sound = [[alertSounds objectAtIndex:row] retain];
         NSLog(@"SoundController:   sound name = %@, path = %@", sound.name, sound.path);
-        BOOL success = [backend playAlertSound:sound];
-        NSLog(@"SoundController:   playAlertSound: %@", success ? @"SUCCESS" : @"FAILED");
-        if (!success) {
-            NSRunAlertPanel(@"Sound Error", 
-                          @"Could not play the alert sound. Please check your audio hardware and settings.",
-                          @"OK", nil, nil);
-        }
+        dispatch_async(backendQueue, ^{
+            BOOL success = [backend playAlertSound:sound];
+            [sound release];
+            NSLog(@"SoundController:   playAlertSound: %@", success ? @"SUCCESS" : @"FAILED");
+            if (!success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSRunAlertPanel(@"Sound Error",
+                                  @"Could not play the alert sound. Please check your audio hardware and settings.",
+                                  @"OK", nil, nil);
+                });
+            }
+        });
     }
 }
 
@@ -1159,55 +1263,51 @@ static const CGFloat kTableRowHeight = 18.0;
 {
     NSLog(@"SoundController: UI ACTION - outputVolumeChanged: (tag=%ld)", (long)[sender tag]);
     if (isUpdatingUI) return;
-    
+
     float volume = [(NSSlider *)sender floatValue];
+    BOOL fromEffectsTab = ([sender tag] == 100);
     NSLog(@"SoundController:   volume = %.2f", volume);
-    BOOL success = [backend setOutputVolume:volume];
-    NSLog(@"SoundController:   setOutputVolume: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Volume Error", 
-                      @"Could not change the output volume. Please check your audio hardware and ALSA configuration.",
-                      @"OK", nil, nil);
-        return;
-    }
-    
-    // Sync the other volume slider
-    if ([sender tag] != 100) {
-        // Updated from Output tab, sync Effects tab
+
+    // Sync the other volume slider immediately for responsive UI
+    if (!fromEffectsTab) {
         NSView *effectsTabView = [[mainTabView tabViewItemAtIndex:0] view];
         for (NSView *subview in [effectsTabView subviews]) {
-            if ([subview isKindOfClass:[NSSlider class]] && 
+            if ([subview isKindOfClass:[NSSlider class]] &&
                 [(NSSlider *)subview tag] == 100) {
                 [(NSSlider *)subview setFloatValue:volume];
             }
         }
     } else {
-        // Updated from Effects tab, sync Output tab
         [outputVolumeSlider setFloatValue:volume];
     }
+
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setOutputVolume:volume];
+        NSLog(@"SoundController:   setOutputVolume: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Volume Error",
+                              @"Could not change the output volume. Please check your audio hardware and ALSA configuration.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (IBAction)outputMuteChanged:(id)sender
 {
     NSLog(@"SoundController: UI ACTION - outputMuteChanged: (tag=%ld)", (long)[sender tag]);
     if (isUpdatingUI) return;
-    
+
     BOOL muted = ([(NSButton *)sender state] == NSOnState);
+    BOOL fromEffectsTab = ([sender tag] == 100);
     NSLog(@"SoundController:   muted = %@", muted ? @"YES" : @"NO");
-    BOOL success = [backend setOutputMuted:muted];
-    NSLog(@"SoundController:   setOutputMuted: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Mute Error", 
-                      @"Could not change the mute setting. Please check your audio hardware and ALSA configuration.",
-                      @"OK", nil, nil);
-        return;
-    }
-    
-    // Sync the other mute checkbox
-    if ([sender tag] != 100) {
+
+    // Sync the other mute checkbox immediately for responsive UI
+    if (!fromEffectsTab) {
         NSView *effectsTabView = [[mainTabView tabViewItemAtIndex:0] view];
         for (NSView *subview in [effectsTabView subviews]) {
-            if ([subview isKindOfClass:[NSButton class]] && 
+            if ([subview isKindOfClass:[NSButton class]] &&
                 [(NSButton *)subview tag] == 100) {
                 [(NSButton *)subview setState:muted ? NSOnState : NSOffState];
             }
@@ -1215,22 +1315,38 @@ static const CGFloat kTableRowHeight = 18.0;
     } else {
         [outputMuteCheckbox setState:muted ? NSOnState : NSOffState];
     }
+
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setOutputMuted:muted];
+        NSLog(@"SoundController:   setOutputMuted: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Mute Error",
+                              @"Could not change the mute setting. Please check your audio hardware and ALSA configuration.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (IBAction)outputBalanceChanged:(id)sender
 {
     NSLog(@"SoundController: UI ACTION - outputBalanceChanged:");
     if (isUpdatingUI) return;
-    
+
     float balance = [outputBalanceSlider floatValue];
     NSLog(@"SoundController:   balance = %.2f", balance);
-    BOOL success = [backend setOutputBalance:balance];
-    NSLog(@"SoundController:   setOutputBalance: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Balance Error", 
-                      @"Could not change the audio balance. This feature may not be supported by your current audio device.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setOutputBalance:balance];
+        NSLog(@"SoundController:   setOutputBalance: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Balance Error",
+                              @"Could not change the audio balance. This feature may not be supported by your current audio device.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 #pragma mark - Actions - Input
@@ -1245,32 +1361,40 @@ static const CGFloat kTableRowHeight = 18.0;
 {
     NSLog(@"SoundController: UI ACTION - inputVolumeChanged:");
     if (isUpdatingUI) return;
-    
+
     float volume = [inputVolumeSlider floatValue];
     NSLog(@"SoundController:   volume = %.2f", volume);
-    BOOL success = [backend setInputVolume:volume];
-    NSLog(@"SoundController:   setInputVolume: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Volume Error", 
-                      @"Could not change the input volume. Please check your audio input device and ALSA configuration.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setInputVolume:volume];
+        NSLog(@"SoundController:   setInputVolume: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Volume Error",
+                              @"Could not change the input volume. Please check your audio input device and ALSA configuration.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 - (IBAction)inputMuteChanged:(id)sender
 {
     NSLog(@"SoundController: UI ACTION - inputMuteChanged:");
     if (isUpdatingUI) return;
-    
+
     BOOL muted = ([inputMuteCheckbox state] == NSOnState);
     NSLog(@"SoundController:   muted = %@", muted ? @"YES" : @"NO");
-    BOOL success = [backend setInputMuted:muted];
-    NSLog(@"SoundController:   setInputMuted: %@", success ? @"SUCCESS" : @"FAILED");
-    if (!success) {
-        NSRunAlertPanel(@"Mute Error", 
-                      @"Could not change the input mute setting. Please check your audio input device and ALSA configuration.",
-                      @"OK", nil, nil);
-    }
+    dispatch_async(backendQueue, ^{
+        BOOL success = [backend setInputMuted:muted];
+        NSLog(@"SoundController:   setInputMuted: %@", success ? @"SUCCESS" : @"FAILED");
+        if (!success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRunAlertPanel(@"Mute Error",
+                              @"Could not change the input mute setting. Please check your audio input device and ALSA configuration.",
+                              @"OK", nil, nil);
+            });
+        }
+    });
 }
 
 #pragma mark - SoundBackendDelegate

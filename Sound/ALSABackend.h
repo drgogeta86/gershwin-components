@@ -33,7 +33,7 @@
     BOOL playVolumeChangeFeedback;
     
     // Input level monitoring
-    NSTimer *inputLevelTimer;
+    dispatch_source_t inputLevelTimer;
     BOOL isMonitoringInputLevel;
     
     // Tool paths
@@ -52,6 +52,9 @@
 
     // Volume feedback task tracking
     NSTask *currentFeedbackTask;
+
+    // Deferred save timer (dispatch-based, replaces performSelector:afterDelay:)
+    dispatch_source_t deferredSaveTimer;
 }
 
 @property (assign) id<SoundBackendDelegate> delegate;
@@ -92,7 +95,7 @@
 - (NSString *)userAlertSoundDirectory;
 
 // Input level monitoring
-- (void)inputLevelTimerFired:(NSTimer *)timer;
+- (void)inputLevelTimerFired;
 - (float)measureInputLevel;
 
 // Helper methods

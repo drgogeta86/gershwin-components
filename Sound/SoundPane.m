@@ -8,6 +8,7 @@
 
 #import "SoundPane.h"
 #import "SoundController.h"
+#import <dispatch/dispatch.h>
 
 @implementation SoundPane
 
@@ -31,12 +32,15 @@
 {
     if (!refreshTimer) {
         NSLog(@"SoundPane: Starting device refresh timer (2 second interval)");
-        refreshTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
-                                                        target:controller
-                                                      selector:@selector(refreshDevices:)
-                                                      userInfo:nil
-                                                       repeats:YES];
-        [refreshTimer retain];
+        refreshTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                              dispatch_get_main_queue());
+        dispatch_source_set_timer(refreshTimer,
+                                 dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+                                 2 * NSEC_PER_SEC, 0);
+        dispatch_source_set_event_handler(refreshTimer, ^{
+            [controller refreshDevices];
+        });
+        dispatch_resume(refreshTimer);
         NSLog(@"SoundPane: Device refresh timer started");
     } else {
         NSLog(@"SoundPane: Refresh timer already running");
@@ -47,8 +51,8 @@
 {
     if (refreshTimer) {
         NSLog(@"SoundPane: Stopping device refresh timer");
-        [refreshTimer invalidate];
-        [refreshTimer release];
+        dispatch_source_cancel(refreshTimer);
+        dispatch_release(refreshTimer);
         refreshTimer = nil;
         NSLog(@"SoundPane: Device refresh timer stopped");
     }
@@ -70,7 +74,7 @@
 - (void)mainViewDidLoad
 {
     // Initial data refresh
-    [controller refreshDevices:nil];
+    [controller refreshDevices];
     [self setInitialKeyView:nil];
 }
 
@@ -79,7 +83,7 @@
     [super didSelect];
     NSLog(@"SoundPane: didSelect called, starting device refresh timer");
     // Refresh data when the pane is selected
-    [controller refreshDevices:nil];
+    [controller refreshDevices];
     [controller startInputLevelMonitoring];
     // Start periodic device refresh (every 2 seconds)
     [self startRefreshTimer];
