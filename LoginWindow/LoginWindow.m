@@ -1954,196 +1954,207 @@ void signalHandler(int sig) {
     }
 }
 
+// Names of daemons that detach from the session (fork + new SID).
+// These escape process-group and session-based cleanup, so we match
+// them explicitly by UID + command name.
+static const char *detachedDaemons[] = { "gpbs", "gdnc", "dbus-daemon", NULL };
+
+static bool isDetachedDaemon(const char *comm)
+{
+    for (int i = 0; detachedDaemons[i] != NULL; i++) {
+        if (strcmp(comm, detachedDaemons[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
 - (void)killAllSessionProcesses:(uid_t)uid
 {
-    NSLog(@"[DEBUG] Starting targeted session cleanup for UID: %d", uid);
-    
-    // 1. Only kill the session process group, not all user processes
-    // 2. Use the session PID to target only session-related processes
-    // 3. Don't kill unrelated user processes (like those started from command line)
-    
+    NSDebugLog(@"Starting targeted session cleanup for UID: %d", uid);
+
     if (sessionPid <= 0) {
-        NSLog(@"[DEBUG] No session PID to clean up");
+        NSDebugLog(@"No session PID to clean up");
         return;
     }
-    
-    NSLog(@"[DEBUG] Cleaning up session process group for PID: %d", sessionPid);
-    
-    // Step 1: Send HUP signal to the session process group 
-    NSLog(@"[DEBUG] Sending SIGHUP to process group %d", sessionPid);
+
+    NSDebugLog(@"Cleaning up session process group for PID: %d", sessionPid);
+
+    // Step 1: Send HUP signal to the session process group
     if (killpg(sessionPid, SIGHUP) != 0) {
         if (errno != ESRCH) {
-            NSLog(@"[DEBUG] Failed to send SIGHUP to process group %d: %s", sessionPid, strerror(errno));
+            NSDebugLog(@"Failed to send SIGHUP to process group %d: %s", sessionPid, strerror(errno));
         }
     }
-    
+
     // Step 2: Send TERM signal to process group, if that fails send KILL
-    NSLog(@"[DEBUG] Sending SIGTERM to process group %d", sessionPid);
     if (killpg(sessionPid, SIGTERM) != 0) {
         if (errno != ESRCH) {
-            NSLog(@"[DEBUG] SIGTERM failed, sending SIGKILL to process group %d", sessionPid);
+            NSDebugLog(@"SIGTERM failed, sending SIGKILL to process group %d", sessionPid);
             killpg(sessionPid, SIGKILL);
         }
     } else {
-        // Give processes a moment to terminate gracefully
-        usleep(500000); // 500ms
-        
-        // Check if the session process still exists, if so, force kill
+        usleep(500000); // 500ms grace period
         if (kill(sessionPid, 0) == 0) {
-            NSLog(@"[DEBUG] Session process still alive, sending SIGKILL to process group %d", sessionPid);
+            NSDebugLog(@"Session process still alive, sending SIGKILL to process group %d", sessionPid);
             killpg(sessionPid, SIGKILL);
         }
     }
-    
+
     // Step 3: Kill the main session process directly
-    NSLog(@"[DEBUG] Killing main session process %d", sessionPid);
     if (kill(sessionPid, SIGKILL) != 0) {
         if (errno != ESRCH) {
-            NSLog(@"[DEBUG] Failed to kill session process %d: %s", sessionPid, strerror(errno));
+            NSDebugLog(@"Failed to kill session process %d: %s", sessionPid, strerror(errno));
         }
     }
-    
-    // Step 4: Additional cleanup - find any processes that might still be in the same session
-    NSLog(@"[DEBUG] Looking for remaining processes in session %d", sessionPid);
-    
+
+    // Step 4: Scan for remaining session-related processes AND detached
+    // daemons owned by this user (gpbs, gdnc, dbus-daemon).
+    NSDebugLog(@"Scanning for remaining session processes and detached daemons");
+
+    int sessionRelatedKilled = 0;
+
 #if defined(__linux__)
-    // Linux implementation using /proc filesystem
     DIR *proc_dir = opendir("/proc");
     if (!proc_dir) {
-        NSLog(@"[DEBUG] Failed to open /proc directory: %s", strerror(errno));
+        NSDebugLog(@"Failed to open /proc directory: %s", strerror(errno));
         return;
     }
-    
+
     struct dirent *entry;
-    int sessionRelatedKilled = 0;
-    
-    NSLog(@"[DEBUG] Checking /proc for session cleanup");
-    
     while ((entry = readdir(proc_dir)) != NULL) {
-        // Skip non-numeric entries
-        if (!isdigit(entry->d_name[0])) {
+        if (!isdigit(entry->d_name[0]))
             continue;
-        }
-        
+
         pid_t pid = atoi(entry->d_name);
-        
-        // Skip kernel processes, init, and our own process
-        if (pid <= 1 || pid == getpid()) {
+        if (pid <= 1 || pid == getpid())
             continue;
+
+        // Read process UID from /proc/PID/status
+        char status_path[256];
+        snprintf(status_path, sizeof(status_path), "/proc/%d/status", pid);
+        FILE *status_file = fopen(status_path, "r");
+        if (!status_file)
+            continue;
+
+        uid_t proc_uid = (uid_t)-1;
+        char line[256];
+        while (fgets(line, sizeof(line), status_file)) {
+            if (strncmp(line, "Uid:", 4) == 0) {
+                // Format: Uid: <real> <effective> <saved> <fs>
+                sscanf(line + 4, " %u", &proc_uid);
+                break;
+            }
         }
-        
-        // Read /proc/PID/stat to get process information
+        fclose(status_file);
+
+        if (proc_uid != uid)
+            continue;
+
+        // Read /proc/PID/stat for process info
         char stat_path[256];
         snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
-        
         FILE *stat_file = fopen(stat_path, "r");
-        if (!stat_file) {
-            continue; // Process might have disappeared
-        }
-        
-        // Parse the stat file - format: pid (comm) state ppid pgrp session ...
+        if (!stat_file)
+            continue;
+
         pid_t parsed_pid, ppid, pgrp, session;
         char comm[256];
         char state;
-        
-        if (fscanf(stat_file, "%d %s %c %d %d %d", 
+
+        if (fscanf(stat_file, "%d %s %c %d %d %d",
                    &parsed_pid, comm, &state, &ppid, &pgrp, &session) == 6) {
-            
-            bool isSessionRelated = false;
-            
-            // Check if this process is related to our session
-            if (ppid == sessionPid) {
-                NSLog(@"[DEBUG] Found child process: PID=%d, Command=%s", pid, comm);
-                isSessionRelated = true;
-            } else if (session == sessionPid) {
-                NSLog(@"[DEBUG] Found session process: PID=%d, SID=%d, Command=%s", pid, session, comm);
-                isSessionRelated = true;
-            } else if (pgrp == sessionPid) {
-                NSLog(@"[DEBUG] Found process group member: PID=%d, PGID=%d, Command=%s", pid, pgrp, comm);
-                isSessionRelated = true;
+
+            bool shouldKill = false;
+
+            // Session-related checks (same as before)
+            if (ppid == sessionPid || session == sessionPid || pgrp == sessionPid) {
+                NSDebugLog(@"Found session-related process: PID=%d, Command=%s", pid, comm);
+                shouldKill = true;
             }
-            
-            if (isSessionRelated) {
-                NSLog(@"[DEBUG] Killing session-related process: PID=%d, Command=%s", pid, comm);
+
+            // Detached daemon check — match by command name.
+            // comm is in format "(name)", so strip the parens.
+            char *name = comm;
+            if (name[0] == '(') name++;
+            char *paren = strchr(name, ')');
+            if (paren) *paren = '\0';
+
+            if (!shouldKill && isDetachedDaemon(name)) {
+                NSDebugLog(@"Found detached daemon: PID=%d, Command=%s", pid, name);
+                shouldKill = true;
+            }
+
+            if (shouldKill) {
                 if (kill(pid, SIGKILL) == 0) {
                     sessionRelatedKilled++;
                 } else if (errno != ESRCH) {
-                    NSLog(@"[DEBUG] Failed to kill session process %d: %s", pid, strerror(errno));
+                    NSDebugLog(@"Failed to kill process %d: %s", pid, strerror(errno));
                 }
             }
         }
-        
+
         fclose(stat_file);
     }
-    
+
     closedir(proc_dir);
-    
+
 #else
     // BSD implementation using sysctl
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_UID, uid};
     size_t size = 0;
-    
+
     if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0) {
-        NSLog(@"[DEBUG] Failed to get process list size: %s", strerror(errno));
+        NSDebugLog(@"Failed to get process list size: %s", strerror(errno));
         return;
     }
-    
+
     struct kinfo_proc *procs = malloc(size);
     if (!procs) {
-        NSLog(@"[DEBUG] Failed to allocate memory for process list");
+        NSDebugLog(@"Failed to allocate memory for process list");
         return;
     }
-    
+
     if (sysctl(mib, 4, procs, &size, NULL, 0) != 0) {
-        NSLog(@"[DEBUG] Failed to get process list: %s", strerror(errno));
+        NSDebugLog(@"Failed to get process list: %s", strerror(errno));
         free(procs);
         return;
     }
-    
+
     int numProcs = size / sizeof(struct kinfo_proc);
-    NSLog(@"[DEBUG] Checking %d processes for session cleanup", numProcs);
-    
-    int sessionRelatedKilled = 0;
     for (int i = 0; i < numProcs; i++) {
         pid_t pid = procs[i].ki_pid;
-        
-        // Skip kernel processes, init, and our own process
-        if (pid <= 1 || pid == getpid()) {
+        if (pid <= 1 || pid == getpid())
             continue;
+
+        bool shouldKill = false;
+
+        // Session-related checks
+        if (procs[i].ki_ppid == sessionPid || procs[i].ki_sid == sessionPid ||
+            procs[i].ki_pgid == sessionPid) {
+            NSDebugLog(@"Found session-related process: PID=%d, Command=%s", pid, procs[i].ki_comm);
+            shouldKill = true;
         }
-        
-        // Only kill processes that are related to our session:
-        // 1. Processes whose PPID is our session PID (direct children)
-        // 2. Processes whose SID is our session PID (same session)
-        // 3. Processes whose PGID is our session PID (same process group)
-        bool isSessionRelated = false;
-        
-        if (procs[i].ki_ppid == sessionPid) {
-            NSLog(@"[DEBUG] Found child process: PID=%d, Command=%s", pid, procs[i].ki_comm);
-            isSessionRelated = true;
-        } else if (procs[i].ki_sid == sessionPid) {
-            NSLog(@"[DEBUG] Found session process: PID=%d, SID=%d, Command=%s", pid, procs[i].ki_sid, procs[i].ki_comm);
-            isSessionRelated = true;
-        } else if (procs[i].ki_pgid == sessionPid) {
-            NSLog(@"[DEBUG] Found process group member: PID=%d, PGID=%d, Command=%s", pid, procs[i].ki_pgid, procs[i].ki_comm);
-            isSessionRelated = true;
+
+        // Detached daemon check
+        if (!shouldKill && isDetachedDaemon(procs[i].ki_comm)) {
+            NSDebugLog(@"Found detached daemon: PID=%d, Command=%s", pid, procs[i].ki_comm);
+            shouldKill = true;
         }
-        
-        if (isSessionRelated) {
-            NSLog(@"[DEBUG] Killing session-related process: PID=%d, Command=%s", pid, procs[i].ki_comm);
+
+        if (shouldKill) {
             if (kill(pid, SIGKILL) == 0) {
                 sessionRelatedKilled++;
             } else if (errno != ESRCH) {
-                NSLog(@"[DEBUG] Failed to kill session process %d: %s", pid, strerror(errno));
+                NSDebugLog(@"Failed to kill process %d: %s", pid, strerror(errno));
             }
         }
     }
-    
+
     free(procs);
 #endif
-    
-    NSLog(@"[DEBUG] Session cleanup complete: killed %d session-related processes", sessionRelatedKilled);
-    
+
+    NSDebugLog(@"Session cleanup complete: killed %d processes", sessionRelatedKilled);
+
     // Step 5: Reap any zombie children
     int status;
     int reaped = 0;
@@ -2151,7 +2162,7 @@ void signalHandler(int sig) {
         reaped++;
     }
     if (reaped > 0) {
-        NSLog(@"[DEBUG] Reaped %d zombie processes", reaped);
+        NSDebugLog(@"Reaped %d zombie processes", reaped);
     }
 }
 
