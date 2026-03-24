@@ -21,11 +21,12 @@ Console_HEADERS = \
 	ConsoleController.h
 
 Console_RESOURCE_FILES = \
-	Resources/Console.gorm
+	Resources/Console.gorm \
+	Resources/Console.png
 
 Console_MAIN_MODEL_FILE = Console.gorm
 
-Console_APPLICATION_ICON = Console.icns
+Console_APPLICATION_ICON = Console.png
 
 Console_OBJCFLAGS = -Wall -O2
 Console_LDFLAGS = -lgnustep-base -lgnustep-gui -Wl,-rpath,/System/Library/Libraries

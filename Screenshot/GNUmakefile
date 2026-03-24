@@ -11,7 +11,7 @@ Screenshot_APPLICATION_ICON = Screenshot.png
 # Resource files
 #
 Screenshot_RESOURCE_FILES = \
-	Screenshot.png \
+	Resources/Screenshot.png \
 	Resources/Info.plist \
 	Resources/Info-gnustep.plist
 

@@ -1,6 +1,6 @@
 {
     ApplicationDescription = "System log viewer";
-    ApplicationIcon = "Console.icns";
+    ApplicationIcon = "Console.png";
     ApplicationName = Console;
     ApplicationRelease = "1.0";
     Authors = (
@@ -9,7 +9,7 @@
     Copyright = "Copyright (C) 2026";
     FullVersionID = "1.0";
     NSExecutable = Console;
-    NSIcon = "Console.icns";
+    NSIcon = "Console.png";
     NSMainNibFile = "Console.gorm";
     NSPrincipalClass = NSApplication;
     NSRole = Application;

@@ -2,7 +2,9 @@ include $(GNUSTEP_MAKEFILES)/common.make
 
 APP_NAME = SudoAskPass
 SudoAskPass_OBJC_FILES = SudoAskPass.m
-SudoAskPass_RESOURCE_FILES =
+SudoAskPass_APPLICATION_ICON = SudoAskPass.png
+SudoAskPass_RESOURCE_FILES = \
+	Resources/SudoAskPass.png
 
 include $(GNUSTEP_MAKEFILES)/application.make
 
