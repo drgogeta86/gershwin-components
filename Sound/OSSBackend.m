@@ -1268,19 +1268,34 @@
 {
     [cachedAlertSounds removeAllObjects];
 
-    // Look for sounds in standard locations
-    NSArray *searchDirs = @[
-        [self alertSoundDirectory],
-        [self userAlertSoundDirectory],
-        [[NSBundle bundleForClass:[self class]] resourcePath]
-    ];
+    // Build list of directories to search - FreeBSD/OSS standard locations
+    NSMutableArray *searchDirs = [NSMutableArray array];
+
+    // Primary location for gershwin system sounds
+    [searchDirs addObject:@"/System/Library/Sounds"];
+
+    // FreeBSD system sound directories
+    [searchDirs addObject:@"/usr/local/share/sounds"];
+    [searchDirs addObject:@"/usr/share/sounds"];
+
+    // User sounds directory
+    [searchDirs addObject:[self userAlertSoundDirectory]];
+
+    // Bundle resources (nil-safe)
+    NSString *bundleResPath = [[NSBundle bundleForClass:[self class]] resourcePath];
+    if (bundleResPath) {
+        [searchDirs addObject:bundleResPath];
+    }
 
     NSArray *extensions = @[@"aiff", @"aif", @"wav", @"au", @"snd"];
     NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *userDir = [self userAlertSoundDirectory];
 
     for (NSString *dir in searchDirs) {
         if (![fm fileExistsAtPath:dir]) continue;
 
+        // Use contentsOfDirectoryAtPath for direct file listing on FreeBSD
+        // (FreeBSD typically has sounds directly in the directory)
         NSError *error = nil;
         NSArray *files = [fm contentsOfDirectoryAtPath:dir error:&error];
 
@@ -1291,7 +1306,7 @@
                 sound.name = [file stringByDeletingPathExtension];
                 sound.displayName = sound.name;
                 sound.path = [dir stringByAppendingPathComponent:file];
-                sound.isSystemSound = ![dir isEqualToString:[self userAlertSoundDirectory]];
+                sound.isSystemSound = ![dir isEqualToString:userDir];
 
                 [cachedAlertSounds addObject:sound];
                 [sound release];
@@ -1303,6 +1318,9 @@
     [cachedAlertSounds sortUsingComparator:^NSComparisonResult(AlertSound *a, AlertSound *b) {
         return [a.displayName compare:b.displayName];
     }];
+
+    NSLog(@"OSSBackend: loadAlertSounds: found %lu alert sounds",
+          (unsigned long)[cachedAlertSounds count]);
 
     // Set first sound as current if none selected
     if (!currentAlert && [cachedAlertSounds count] > 0) {

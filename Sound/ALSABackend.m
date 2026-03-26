@@ -1043,30 +1043,51 @@ static NSString *const kMicControl = @"Mic";
 {
     [cachedAlertSounds removeAllObjects];
 
-    // Look for sounds in standard locations
-    NSArray *searchDirs = @[
-        [self alertSoundDirectory],
-        [self userAlertSoundDirectory],
-        [[NSBundle bundleForClass:[self class]] resourcePath]
-    ];
+    // Build list of directories to search - include ALL standard locations
+    NSMutableArray *searchDirs = [NSMutableArray array];
+
+    // Primary location for gershwin system sounds
+    [searchDirs addObject:@"/System/Library/Sounds"];
+
+    // Linux system sound directories (may contain sounds in subdirectories)
+    [searchDirs addObject:@"/usr/share/sounds"];
+    [searchDirs addObject:@"/usr/local/share/sounds"];
+
+    // User sounds directory
+    [searchDirs addObject:[self userAlertSoundDirectory]];
+
+    // Bundle resources (nil-safe)
+    NSString *bundleResPath = [[NSBundle bundleForClass:[self class]] resourcePath];
+    if (bundleResPath) {
+        [searchDirs addObject:bundleResPath];
+    }
 
     NSArray *extensions = @[@"aiff", @"aif", @"wav", @"au", @"snd"];
     NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *userDir = [self userAlertSoundDirectory];
 
     for (NSString *dir in searchDirs) {
         if (![fm fileExistsAtPath:dir]) continue;
 
-        NSError *error = nil;
-        NSArray *files = [fm contentsOfDirectoryAtPath:dir error:&error];
+        // Use subpathsAtPath for recursive search - Linux stores sounds
+        // in subdirectories like /usr/share/sounds/alsa/*.wav
+        NSArray *files = [fm subpathsAtPath:dir];
+
+        if (!files) {
+            NSLog(@"ALSABackend: loadAlertSounds: could not scan %@", dir);
+            continue;
+        }
 
         for (NSString *file in files) {
             NSString *ext = [[file pathExtension] lowercaseString];
             if ([extensions containsObject:ext]) {
+                // Use just the filename (without subdirectory) as the display name
+                NSString *fileName = [file lastPathComponent];
                 AlertSound *sound = [[AlertSound alloc] init];
-                sound.name = [file stringByDeletingPathExtension];
+                sound.name = [fileName stringByDeletingPathExtension];
                 sound.displayName = sound.name;
                 sound.path = [dir stringByAppendingPathComponent:file];
-                sound.isSystemSound = ![dir isEqualToString:[self userAlertSoundDirectory]];
+                sound.isSystemSound = ![dir isEqualToString:userDir];
 
                 [cachedAlertSounds addObject:sound];
                 [sound release];
@@ -1078,6 +1099,9 @@ static NSString *const kMicControl = @"Mic";
     [cachedAlertSounds sortUsingComparator:^NSComparisonResult(AlertSound *a, AlertSound *b) {
         return [a.displayName compare:b.displayName];
     }];
+
+    NSLog(@"ALSABackend: loadAlertSounds: found %lu alert sounds",
+          (unsigned long)[cachedAlertSounds count]);
 
     // Set first sound as current if none selected
     if (currentAlert == nil && [cachedAlertSounds count] > 0) {

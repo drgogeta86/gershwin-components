@@ -98,6 +98,21 @@ static const CGFloat kTableRowHeight = 18.0;
 - (void)dealloc
 {
     [self stopInputLevelMonitoring];
+    if (outputVolumeTimer) {
+        dispatch_source_cancel(outputVolumeTimer);
+        dispatch_release(outputVolumeTimer);
+        outputVolumeTimer = nil;
+    }
+    if (alertVolumeTimer) {
+        dispatch_source_cancel(alertVolumeTimer);
+        dispatch_release(alertVolumeTimer);
+        alertVolumeTimer = nil;
+    }
+    if (inputVolumeTimer) {
+        dispatch_source_cancel(inputVolumeTimer);
+        dispatch_release(inputVolumeTimer);
+        inputVolumeTimer = nil;
+    }
     if (backendQueue) {
         dispatch_release(backendQueue);
         backendQueue = nil;
@@ -1151,12 +1166,27 @@ static const CGFloat kTableRowHeight = 18.0;
 
 - (IBAction)alertVolumeChanged:(id)sender
 {
-    NSLog(@"SoundController: UI ACTION - alertVolumeChanged:");
     float volume = [alertVolumeSlider floatValue];
-    NSLog(@"SoundController:   volume = %.2f", volume);
-    dispatch_async(backendQueue, ^{
-        BOOL success = [backend setAlertVolume:volume];
-        NSLog(@"SoundController:   setAlertVolume: %@", success ? @"SUCCESS" : @"FAILED");
+
+    // Coalesce rapid slider changes
+    pendingAlertVolume = volume;
+
+    if (alertVolumeTimer) {
+        dispatch_source_cancel(alertVolumeTimer);
+        dispatch_release(alertVolumeTimer);
+        alertVolumeTimer = nil;
+    }
+
+    alertVolumeTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                              backendQueue);
+    dispatch_source_set_timer(alertVolumeTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(alertVolumeTimer, ^{
+        float vol = pendingAlertVolume;
+        BOOL success = [backend setAlertVolume:vol];
+        NSLog(@"SoundController: setAlertVolume: %.2f %@", vol,
+              success ? @"SUCCESS" : @"FAILED");
         if (!success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSRunAlertPanel(@"Volume Error",
@@ -1165,6 +1195,7 @@ static const CGFloat kTableRowHeight = 18.0;
             });
         }
     });
+    dispatch_resume(alertVolumeTimer);
 }
 
 - (IBAction)alertDeviceChanged:(id)sender
@@ -1261,12 +1292,10 @@ static const CGFloat kTableRowHeight = 18.0;
 
 - (IBAction)outputVolumeChanged:(id)sender
 {
-    NSLog(@"SoundController: UI ACTION - outputVolumeChanged: (tag=%ld)", (long)[sender tag]);
     if (isUpdatingUI) return;
 
     float volume = [(NSSlider *)sender floatValue];
     BOOL fromEffectsTab = ([sender tag] == 100);
-    NSLog(@"SoundController:   volume = %.2f", volume);
 
     // Sync the other volume slider immediately for responsive UI
     if (!fromEffectsTab) {
@@ -1281,9 +1310,29 @@ static const CGFloat kTableRowHeight = 18.0;
         [outputVolumeSlider setFloatValue:volume];
     }
 
-    dispatch_async(backendQueue, ^{
-        BOOL success = [backend setOutputVolume:volume];
-        NSLog(@"SoundController:   setOutputVolume: %@", success ? @"SUCCESS" : @"FAILED");
+    // Coalesce rapid slider changes: store the latest value and schedule
+    // a single backend call after a short delay. This prevents flooding the
+    // serial backend queue with amixer/aplay subprocess launches.
+    pendingOutputVolume = volume;
+
+    if (outputVolumeTimer) {
+        dispatch_source_cancel(outputVolumeTimer);
+        dispatch_release(outputVolumeTimer);
+        outputVolumeTimer = nil;
+    }
+
+    outputVolumeTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                               backendQueue);
+    dispatch_source_set_timer(outputVolumeTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(outputVolumeTimer, ^{
+        // Use the latest pending value in case the slider moved further
+        // before this timer fired
+        float vol = pendingOutputVolume;
+        BOOL success = [backend setOutputVolume:vol];
+        NSLog(@"SoundController: setOutputVolume: %.2f %@", vol,
+              success ? @"SUCCESS" : @"FAILED");
         if (!success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSRunAlertPanel(@"Volume Error",
@@ -1292,6 +1341,7 @@ static const CGFloat kTableRowHeight = 18.0;
             });
         }
     });
+    dispatch_resume(outputVolumeTimer);
 }
 
 - (IBAction)outputMuteChanged:(id)sender
@@ -1359,14 +1409,29 @@ static const CGFloat kTableRowHeight = 18.0;
 
 - (IBAction)inputVolumeChanged:(id)sender
 {
-    NSLog(@"SoundController: UI ACTION - inputVolumeChanged:");
     if (isUpdatingUI) return;
 
     float volume = [inputVolumeSlider floatValue];
-    NSLog(@"SoundController:   volume = %.2f", volume);
-    dispatch_async(backendQueue, ^{
-        BOOL success = [backend setInputVolume:volume];
-        NSLog(@"SoundController:   setInputVolume: %@", success ? @"SUCCESS" : @"FAILED");
+
+    // Coalesce rapid slider changes
+    pendingInputVolume = volume;
+
+    if (inputVolumeTimer) {
+        dispatch_source_cancel(inputVolumeTimer);
+        dispatch_release(inputVolumeTimer);
+        inputVolumeTimer = nil;
+    }
+
+    inputVolumeTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                              backendQueue);
+    dispatch_source_set_timer(inputVolumeTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                              DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler(inputVolumeTimer, ^{
+        float vol = pendingInputVolume;
+        BOOL success = [backend setInputVolume:vol];
+        NSLog(@"SoundController: setInputVolume: %.2f %@", vol,
+              success ? @"SUCCESS" : @"FAILED");
         if (!success) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSRunAlertPanel(@"Volume Error",
@@ -1375,6 +1440,7 @@ static const CGFloat kTableRowHeight = 18.0;
             });
         }
     });
+    dispatch_resume(inputVolumeTimer);
 }
 
 - (IBAction)inputMuteChanged:(id)sender

@@ -106,6 +106,14 @@
 
     // Background queue for backend operations
     dispatch_queue_t backendQueue;
+
+    // Volume change coalescing to prevent flooding the backend queue
+    dispatch_source_t outputVolumeTimer;
+    float pendingOutputVolume;
+    dispatch_source_t alertVolumeTimer;
+    float pendingAlertVolume;
+    dispatch_source_t inputVolumeTimer;
+    float pendingInputVolume;
 }
 
 // View creation
