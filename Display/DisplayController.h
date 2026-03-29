@@ -44,6 +44,7 @@
     NSString *lastXrandrOutput; // Cached xrandr output to avoid redundant process spawns
     NSButton *saveButton;
     NSString *savedStateSnapshot; // Snapshot of display state at last save/load
+    NSUInteger previousDisplayCount; // Track display count to detect hot-plug
 }
 
 - (NSView *)createMainView;

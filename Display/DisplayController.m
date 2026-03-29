@@ -257,18 +257,37 @@ static NSMutableDictionary *activeDialogsByID = nil;
             }
 
             // Detect mirroring: all connected displays share the same position
-            if (mirrorDisplaysCheckbox && [displays count] > 1) {
-                BOOL mirrored = YES;
-                NSPoint firstPos = [[displays objectAtIndex:0] frame].origin;
-                for (NSUInteger i = 1; i < [displays count]; i++) {
-                    NSPoint pos = [[displays objectAtIndex:i] frame].origin;
-                    if (pos.x != firstPos.x || pos.y != firstPos.y) {
-                        mirrored = NO;
-                        break;
+            NSUInteger currentCount = [displays count];
+            BOOL wasMirrored = [mirrorDisplaysCheckbox state] == NSOnState;
+            if (mirrorDisplaysCheckbox) {
+                if (currentCount > 1) {
+                    BOOL mirrored = YES;
+                    NSPoint firstPos = [[displays objectAtIndex:0] frame].origin;
+                    for (NSUInteger i = 1; i < currentCount; i++) {
+                        NSPoint pos = [[displays objectAtIndex:i] frame].origin;
+                        if (pos.x != firstPos.x || pos.y != firstPos.y) {
+                            mirrored = NO;
+                            break;
+                        }
                     }
+                    [mirrorDisplaysCheckbox setState:mirrored ? NSOnState : NSOffState];
+                } else {
+                    // Single or no display — mirroring is not applicable
+                    [mirrorDisplaysCheckbox setState:NSOffState];
                 }
-                [mirrorDisplaysCheckbox setState:mirrored ? NSOnState : NSOffState];
             }
+
+            // A new display was hot-plugged: if mirroring was on before
+            // OR the new layout looks mirrored, activate it so the new
+            // display actually turns on (xrandr --auto --same-as).
+            BOOL isMirrored = [mirrorDisplaysCheckbox state] == NSOnState;
+            if ((wasMirrored || isMirrored) && currentCount > previousDisplayCount && currentCount > 1) {
+                NSDebugLog(@"DisplayController: New display detected while mirroring — auto-applying mirror");
+                previousDisplayCount = currentCount;
+                [self mirrorDisplaysChanged:nil];
+                return; // mirrorDisplaysChanged will trigger its own refresh
+            }
+            previousDisplayCount = currentCount;
 
             // Update resolution popup
             [self updateResolutionPopup];
@@ -560,6 +579,7 @@ static NSMutableDictionary *activeDialogsByID = nil;
 
                     [args addObject:@"--output"];
                     [args addObject:[display output]];
+                    [args addObject:@"--auto"];
                     [args addObject:@"--same-as"];
                     [args addObject:[primary output]];
                     NSDebugLog(@"DisplayController: Mirroring %@ to %@", [display name], [primary name]);

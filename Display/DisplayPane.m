@@ -71,6 +71,8 @@
     [super didSelect];
     // Refresh display data when the pane is (re-)selected
     [displayController refreshDisplays:nil];
+    // Start polling so hot-plugged monitors are detected while the pane is open
+    [self startRefreshTimer];
     [self setInitialKeyView:nil];
 }
 
@@ -83,7 +85,8 @@
 - (void)didUnselect
 {
     [super didUnselect];
-    // No polling to stop anymore
+    // Stop polling when the pane is no longer visible
+    [self stopRefreshTimer];
     NSDebugLog(@"DisplayPane: didUnselect called");
 }
 
