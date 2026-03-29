@@ -1146,7 +1146,7 @@ static NSString *const GERSHWIN_END   = @"# END Gershwin Display Settings";
     for (DisplayInfo *display in displays) {
         if (![display isConnected]) continue;
 
-        NSString *identifier = [NSString stringWithFormat:@"Monitor-%@", [display output]];
+        NSString *identifier = [display output];
 
         [conf appendFormat:@"Section \"Monitor\"\n"];
         [conf appendFormat:@"    Identifier \"%@\"\n", identifier];
