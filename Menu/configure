@@ -31,7 +31,7 @@ EOF
         rm -f conftest conftest.c
         return 0
     fi
-    rm -f conftest conftest.c
+    #rm -f conftest conftest.c
     return 1
 }
 
@@ -56,8 +56,8 @@ esac
 echo "Detecting DBUS paths manually..."
 
 # Common include paths to check
-INCLUDE_PATHS="/usr/include/dbus-1.0 /usr/local/include/dbus-1.0 /opt/local/include/dbus-1.0"
-ARCH_PATHS="/usr/lib/dbus-1.0/include /usr/lib/x86_64-linux-gnu/dbus-1.0/include /usr/lib/i386-linux-gnu/dbus-1.0/include /usr/lib/*-linux-gnu/dbus-1.0/include /usr/local/lib/dbus-1.0/include /opt/local/lib/dbus-1.0/include"
+INCLUDE_PATHS="/usr/include/dbus-1.0  /usr/local/include/dbus-1.0 /opt/local/include/dbus-1.0"
+ARCH_PATHS="/usr/lib/dbus-1.0/include /usr/lib/x86_64-linux-gnu/dbus-1.0/include /usr/lib/i386-linux-gnu/dbus-1.0/include /usr/lib/*-linux-gnu/dbus-1.0/include /usr/local/lib/dbus-1.0/include /opt/local/lib/dbus-1.0/include /usr/lib64/dbus-1.0/include"
 
 # Find main dbus include directory
 for path in $INCLUDE_PATHS; do
