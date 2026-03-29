@@ -9,7 +9,7 @@
 
 @implementation DisplayRectView
 
-@synthesize displayInfo, showsMenuBar, isSelected;
+@synthesize displayInfo, showsMenuBar, isSelected, isDraggingMenuBar, isMenuBarDropTarget, menuBarDragPoint;
 
 - (id)initWithFrame:(NSRect)frame
 {
@@ -68,16 +68,18 @@
         [displayName drawAtPoint:textPoint withAttributes:attrs];
     }
     
-    // Menu bar representation
-    if (showsMenuBar) {
-        float menuBarHeight = MIN(18, bounds.size.height * 0.25); // Scale menu bar height
+    // Menu bar representation (hide while being dragged)
+    if ((showsMenuBar && !isDraggingMenuBar) || isMenuBarDropTarget) {
+        float menuBarHeight = MIN(18, bounds.size.height * 0.25);
         NSRect menuBarRect = NSMakeRect(2, bounds.size.height - menuBarHeight - 2, bounds.size.width - 4, menuBarHeight);
-        [[NSColor colorWithCalibratedWhite:0.9 alpha:0.8] setFill];
+        // Brighter highlight when this is the drop target
+        float alpha = isMenuBarDropTarget ? 1.0 : 0.8;
+        [[NSColor colorWithCalibratedWhite:0.9 alpha:alpha] setFill];
         [NSBezierPath fillRect:menuBarRect];
-        
+
         [[NSColor blackColor] setStroke];
         NSBezierPath *menuBarBorder = [NSBezierPath bezierPathWithRect:menuBarRect];
-        [menuBarBorder setLineWidth:1.0];
+        [menuBarBorder setLineWidth:isMenuBarDropTarget ? 2.0 : 1.0];
         [menuBarBorder stroke];
     }
 }
@@ -89,12 +91,13 @@
     isDragging = NO;
     isDraggingMenuBar = NO;
 
-    // Check if the click is on the menu bar area of this (primary) display
+    // Check if the click is on the top portion of this (primary) display.
+    // Use a generous hit area (top third) so the menu bar is easy to grab.
     if (showsMenuBar) {
         NSRect bounds = [self bounds];
-        float menuBarHeight = MIN(18, bounds.size.height * 0.25);
-        NSRect menuBarRect = NSMakeRect(2, bounds.size.height - menuBarHeight - 2, bounds.size.width - 4, menuBarHeight);
-        if (NSPointInRect(localPoint, menuBarRect)) {
+        float hitHeight = bounds.size.height / 3.0;
+        NSRect hitRect = NSMakeRect(0, bounds.size.height - hitHeight, bounds.size.width, hitHeight);
+        if (NSPointInRect(localPoint, hitRect)) {
             isDraggingMenuBar = YES;
         }
     }
@@ -133,10 +136,22 @@
 
     NSPoint parentPoint = [[self superview] convertPoint:windowPoint fromView:nil];
 
-    // When dragging the menu bar, don't move the display rect — just track position
+    // When dragging the menu bar, don't move the display rect —
+    // highlight whichever display the cursor is over as the drop target.
     if (isDraggingMenuBar) {
         menuBarDragPoint = parentPoint;
-        [[self superview] setNeedsDisplay:YES];
+        NSView *parent = [self superview];
+        if (parent && [parent isKindOfClass:[DisplayView class]]) {
+            NSArray *siblings = [(DisplayView *)parent displayRects];
+            for (DisplayRectView *rect in siblings) {
+                BOOL over = (rect != self && NSPointInRect(parentPoint, [rect frame]));
+                if ([rect isMenuBarDropTarget] != over) {
+                    [rect setIsMenuBarDropTarget:over];
+                    [rect setNeedsDisplay:YES];
+                }
+            }
+        }
+        [self setNeedsDisplay:YES];
         return;
     }
 
@@ -185,7 +200,15 @@
         NSPoint windowPoint = [theEvent locationInWindow];
         NSPoint parentPoint = [parentView convertPoint:windowPoint fromView:nil];
 
+        // Clear all drop target highlights
         NSArray *allRectViews = [displayView displayRects];
+        for (DisplayRectView *rectView in allRectViews) {
+            if ([rectView isMenuBarDropTarget]) {
+                [rectView setIsMenuBarDropTarget:NO];
+                [rectView setNeedsDisplay:YES];
+            }
+        }
+
         DisplayRectView *targetView = nil;
         for (DisplayRectView *rectView in allRectViews) {
             if (rectView != self && NSPointInRect(parentPoint, [rectView frame])) {
@@ -203,17 +226,32 @@
             [displayInfo setIsPrimary:NO];
             [[targetView displayInfo] setIsPrimary:YES];
 
-            // Apply changes via controller
+            // Apply changes via controller (setPrimaryDisplay runs xrandr --primary,
+            // applyDisplayConfiguration applies the full layout including --primary,
+            // and updateSaveButtonState enables the Save Settings button)
             DisplayController *controller = [displayView controller];
-            if (controller && [controller respondsToSelector:@selector(setPrimaryDisplay:)]) {
-                [controller setPrimaryDisplay:[targetView displayInfo]];
+            if (controller) {
+                if ([controller respondsToSelector:@selector(setPrimaryDisplay:)]) {
+                    [controller setPrimaryDisplay:[targetView displayInfo]];
+                }
+                if ([controller respondsToSelector:@selector(applyDisplayConfiguration)]) {
+                    [controller applyDisplayConfiguration];
+                }
+                if ([controller respondsToSelector:@selector(updateSaveButtonState)]) {
+                    [controller updateSaveButtonState];
+                }
             }
         }
     } else {
         // Display arrangement drag: apply the new position
         DisplayController *controller = [displayView controller];
-        if (controller && [controller respondsToSelector:@selector(applyDisplayConfiguration)]) {
-            [controller applyDisplayConfiguration];
+        if (controller) {
+            if ([controller respondsToSelector:@selector(applyDisplayConfiguration)]) {
+                [controller applyDisplayConfiguration];
+            }
+            if ([controller respondsToSelector:@selector(updateSaveButtonState)]) {
+                [controller updateSaveButtonState];
+            }
         }
     }
 
@@ -261,9 +299,17 @@
         DisplayView *displayView = (DisplayView *)parentView;
         DisplayController *controller = [displayView controller];
         
-        if (controller && [controller respondsToSelector:@selector(setPrimaryDisplay:)]) {
-            [controller setPrimaryDisplay:targetDisplay];
-            
+        if (controller) {
+            if ([controller respondsToSelector:@selector(setPrimaryDisplay:)]) {
+                [controller setPrimaryDisplay:targetDisplay];
+            }
+            if ([controller respondsToSelector:@selector(applyDisplayConfiguration)]) {
+                [controller applyDisplayConfiguration];
+            }
+            if ([controller respondsToSelector:@selector(updateSaveButtonState)]) {
+                [controller updateSaveButtonState];
+            }
+
             // Update the visual state of all display rectangles
             NSArray *allRectViews = [displayView displayRects];
             for (DisplayRectView *rectView in allRectViews) {
@@ -302,7 +348,7 @@
     // Draw background
     [[NSColor colorWithCalibratedWhite:0.95 alpha:1.0] setFill];
     [NSBezierPath fillRect:[self bounds]];
-    
+
     // Draw border
     [[NSColor grayColor] setStroke];
     NSBezierPath *border = [NSBezierPath bezierPathWithRect:[self bounds]];

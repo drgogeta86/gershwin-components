@@ -14,18 +14,16 @@
 // Custom view that represents a single display rectangle
 @interface DisplayRectView : NSView
 {
-    DisplayInfo *displayInfo;
     BOOL isDragging;
-    BOOL isDraggingMenuBar;
-    BOOL showsMenuBar;
-    BOOL isSelected;
     NSPoint dragOffset;
-    NSPoint menuBarDragPoint;
 }
 
 @property (retain) DisplayInfo *displayInfo;
 @property BOOL showsMenuBar;
 @property BOOL isSelected;
+@property BOOL isDraggingMenuBar;
+@property BOOL isMenuBarDropTarget;
+@property NSPoint menuBarDragPoint;
 
 @end
 
