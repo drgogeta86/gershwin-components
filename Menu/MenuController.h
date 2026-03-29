@@ -74,6 +74,7 @@
 - (void)scanForNewMenus;
 - (AppMenuWidget *)appMenuWidget;
 
+- (void)screenParametersChanged:(NSNotification *)notification;
 - (void)createTimeMenu;
 - (void)updateTimeMenu;
 

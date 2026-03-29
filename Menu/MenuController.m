@@ -266,8 +266,90 @@ static NSUInteger _rapidDbusNotificationCount = 0;
     XMapWindow(self.strutDisplay, self.strutWindow);
     XSync(self.strutDisplay, False);
     
-    NSLog(@"MenuController: Created persistent X11 strut window (XID: %lu) - invisible 1x1 window with full-width struts", 
+    NSLog(@"MenuController: Created persistent X11 strut window (XID: %lu) - invisible 1x1 window with full-width struts",
           (unsigned long)self.strutWindow);
+}
+
+- (void)screenParametersChanged:(NSNotification *)notification
+{
+    NSLog(@"MenuController: Screen parameters changed, repositioning menu bar");
+
+    if (!self.menuBar) {
+        NSLog(@"MenuController: Menu bar not yet created, skipping reposition");
+        return;
+    }
+
+    // Re-read the primary screen geometry
+    self.screenFrame = [[NSScreen mainScreen] frame];
+    self.screenSize = self.screenFrame.size;
+    NSLog(@"MenuController: New screen frame: %.0f,%.0f %.0fx%.0f",
+          self.screenFrame.origin.x, self.screenFrame.origin.y,
+          self.screenSize.width, self.screenSize.height);
+
+    const CGFloat menuBarHeight = [[GSTheme theme] menuBarHeight];
+
+    // Reposition and resize the menu bar window using the screen frame origin
+    // (the origin may be non-zero if the virtual desktop geometry changed)
+    CGFloat originX = self.screenFrame.origin.x;
+    CGFloat originY = self.screenFrame.origin.y;
+    NSRect menuRect = NSMakeRect(originX,
+                                 originY + self.screenSize.height - menuBarHeight,
+                                 self.screenSize.width, menuBarHeight);
+    [self.menuBar setFrame:menuRect display:NO];
+    [self.menuBar setFrameTopLeftPoint:NSMakePoint(originX, originY + self.screenSize.height)];
+
+    // Resize the background view
+    [self.menuBarView setFrame:NSMakeRect(0, 0, self.screenSize.width, menuBarHeight)];
+
+    // Reposition status items at the right edge
+    StatusItemsView *statusItemsView = nil;
+    for (NSView *subview in [self.menuBarView subviews]) {
+        if ([subview isKindOfClass:NSClassFromString(@"StatusItemsView")]) {
+            statusItemsView = (StatusItemsView *)subview;
+            break;
+        }
+    }
+
+    CGFloat statusItemsWidth = 0;
+    if (statusItemsView) {
+        statusItemsWidth = [statusItemsView totalRequiredWidth];
+        [statusItemsView setFrame:NSMakeRect(self.screenSize.width - statusItemsWidth, 0,
+                                              statusItemsWidth, menuBarHeight)];
+    }
+
+    // Resize app menu widget to fill remaining space
+    CGFloat menuWidgetWidth = self.screenSize.width - statusItemsWidth;
+    [self.appMenuWidget setFrame:NSMakeRect(0, 0, menuWidgetWidth, menuBarHeight)];
+
+    // Resize rounded corners view
+    CGFloat cornerHeight = 10.0;
+    [self.roundedCornersView setFrame:NSMakeRect(0, menuBarHeight - cornerHeight,
+                                                  self.screenSize.width, cornerHeight)];
+
+    // Update the StatusItemManager's cached screen width
+    [self.statusItemManager setScreenWidth:self.screenSize.width];
+
+    // Update strut properties to match new width
+    if (self.strutWindow != None && self.strutDisplay) {
+        unsigned int width = (unsigned int)self.screenSize.width;
+        unsigned int height = (unsigned int)menuBarHeight;
+
+        Atom strutAtom = XInternAtom(self.strutDisplay, "_NET_WM_STRUT", False);
+        Atom strutPartialAtom = XInternAtom(self.strutDisplay, "_NET_WM_STRUT_PARTIAL", False);
+        unsigned long strut[4] = {0, 0, height, 0};
+        unsigned long strutPartial[12] = {0, 0, height, 0, 0, 0, 0, 0, 0, width - 1, 0, width - 1};
+
+        XChangeProperty(self.strutDisplay, self.strutWindow, strutAtom, XA_CARDINAL, 32,
+                       PropModeReplace, (unsigned char *)strut, 4);
+        XChangeProperty(self.strutDisplay, self.strutWindow, strutPartialAtom, XA_CARDINAL, 32,
+                       PropModeReplace, (unsigned char *)strutPartial, 12);
+        XSync(self.strutDisplay, False);
+        NSLog(@"MenuController: Updated strut properties for new screen width: %u", width);
+    }
+
+    // Redraw
+    [self.menuBar display];
+    NSLog(@"MenuController: Menu bar repositioned successfully");
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
@@ -377,8 +459,12 @@ static NSUInteger _rapidDbusNotificationCount = 0;
     NSLog(@"MenuController: Background color: %@", color);
         
     // Creation of the menuBar at the TOP of the screen (GNUstep coordinates: bottom-left origin)
-    rect = NSMakeRect(0, self.screenSize.height - menuBarHeight, self.screenSize.width, menuBarHeight);
-    NSLog(@"MenuController: Menu bar rect: %.0f,%.0f %.0fx%.0f", 
+    // Use screenFrame.origin to handle multi-monitor setups where the primary screen
+    // origin may be non-zero in the virtual desktop coordinate space.
+    rect = NSMakeRect(self.screenFrame.origin.x,
+                      self.screenFrame.origin.y + self.screenSize.height - menuBarHeight,
+                      self.screenSize.width, menuBarHeight);
+    NSLog(@"MenuController: Menu bar rect: %.0f,%.0f %.0fx%.0f",
           rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
     
     self.menuBar = [[NSWindow alloc] initWithContentRect:rect
@@ -402,7 +488,8 @@ static NSUInteger _rapidDbusNotificationCount = 0;
     [self createPersistentStrutWindow];
 
     // Position the window one menu height above the screen for animation effect
-    [self.menuBar setFrameTopLeftPoint:NSMakePoint(0, self.screenSize.height + menuBarHeight)];
+    [self.menuBar setFrameTopLeftPoint:NSMakePoint(self.screenFrame.origin.x,
+                                                    self.screenFrame.origin.y + self.screenSize.height + menuBarHeight)];
     NSLog(@"MenuController: Window positioned above screen for animation slide-in");
     
     // Create the main menu bar view that draws the background
@@ -518,6 +605,14 @@ static NSUInteger _rapidDbusNotificationCount = 0;
                                    userInfo:nil
                                     repeats:NO];
     NSLog(@"MenuController: Window shown, menu will slide in immediately (using NSTimer for compatibility)");
+
+    // Observe screen resolution/layout changes so we can reposition the menu bar.
+    // Registered here (after creation) rather than in init, to avoid interfering
+    // with startup if RRScreenChangeNotify events arrive before the menu exists.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(screenParametersChanged:)
+                                                 name:NSApplicationDidChangeScreenParametersNotification
+                                               object:nil];
 }
 
 - (void)setupMenuBar
@@ -967,7 +1062,7 @@ static NSUInteger _rapidDbusNotificationCount = 0;
     
     // Start animation timer for smooth slide-in from above
     self.slideInStartTime = [NSDate timeIntervalSinceReferenceDate];
-    self.slideInStartY = self.screenSize.height + menuBarHeight;
+    self.slideInStartY = self.screenFrame.origin.y + self.screenSize.height + menuBarHeight;
     
     self.slideInAnimationTimer = [NSTimer scheduledTimerWithTimeInterval:0.016  // ~60fps
                                                                   target:self
@@ -990,7 +1085,8 @@ static NSUInteger _rapidDbusNotificationCount = 0;
         self.slideInAnimationTimer = nil;
         
         // Set final position (place menu bar at very top of the screen)
-        [self.menuBar setFrameTopLeftPoint:NSMakePoint(0, self.screenSize.height)];
+        [self.menuBar setFrameTopLeftPoint:NSMakePoint(self.screenFrame.origin.x,
+                                                        self.screenFrame.origin.y + self.screenSize.height)];
         [self revealAppMenuWidget];
         NSLog(@"MenuController: Menu slide-in animation completed");
     } else {
@@ -1000,7 +1096,7 @@ static NSUInteger _rapidDbusNotificationCount = 0;
         
         // Interpolate position from above screen to final position
         CGFloat currentY = self.slideInStartY - (progress * menuBarHeight);
-        [self.menuBar setFrameTopLeftPoint:NSMakePoint(0, currentY)];
+        [self.menuBar setFrameTopLeftPoint:NSMakePoint(self.screenFrame.origin.x, currentY)];
     }
 }
 
