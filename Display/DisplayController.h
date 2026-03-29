@@ -64,5 +64,6 @@
 - (NSString *)findXrandrPath;
 - (BOOL)isXrandrAvailable;
 - (void)autoConfigureDisplays;
+- (void)saveSettings:(id)sender;
 
 @end

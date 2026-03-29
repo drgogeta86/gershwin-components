@@ -166,7 +166,17 @@ static NSMutableDictionary *activeDialogsByID = nil;
     [resolutionPopup setTarget:self];
     [resolutionPopup setAction:@selector(resolutionChanged:)];
     [mainView addSubview:resolutionPopup];
-    
+
+    // Save Settings button
+    NSButton *saveButton = [[NSButton alloc] initWithFrame:NSMakeRect(availableWidth - 120, 32, 100, 25)];
+    [saveButton setTitle:@"Save Settings"];
+    [saveButton setButtonType:NSMomentaryPushInButton];
+    [saveButton setBezelStyle:NSRoundedBezelStyle];
+    [saveButton setTarget:self];
+    [saveButton setAction:@selector(saveSettings:)];
+    [mainView addSubview:saveButton];
+    [saveButton release];
+
     // Do not call refreshDisplays: here — the DisplayPane's didSelect
     // will trigger it once the view is in the window hierarchy.
     // Calling it here races with didSelect and causes double async loads.
@@ -931,6 +941,151 @@ static NSMutableDictionary *activeDialogsByID = nil;
 - (DisplayInfo *)selectedDisplay
 {
     return selectedDisplay;
+}
+
+// Marker comments used to identify our managed sections in xorg.conf
+static NSString *const GERSHWIN_BEGIN = @"# BEGIN Gershwin Display Settings";
+static NSString *const GERSHWIN_END   = @"# END Gershwin Display Settings";
+
+- (NSString *)generateXorgConfSections
+{
+    NSMutableString *conf = [NSMutableString string];
+    [conf appendString:GERSHWIN_BEGIN];
+    [conf appendString:@"\n"];
+
+    for (DisplayInfo *display in displays) {
+        if (![display isConnected]) continue;
+
+        NSString *identifier = [NSString stringWithFormat:@"Monitor-%@", [display output]];
+
+        [conf appendFormat:@"Section \"Monitor\"\n"];
+        [conf appendFormat:@"    Identifier \"%@\"\n", identifier];
+        if ([display currentResolutionString]) {
+            [conf appendFormat:@"    Option \"PreferredMode\" \"%@\"\n", [display currentResolutionString]];
+        }
+        if ([display isPrimary]) {
+            [conf appendFormat:@"    Option \"Primary\" \"true\"\n"];
+        }
+        NSRect f = [display frame];
+        [conf appendFormat:@"    Option \"Position\" \"%.0f %.0f\"\n", f.origin.x, f.origin.y];
+        [conf appendString:@"EndSection\n\n"];
+
+        [conf appendFormat:@"Section \"Screen\"\n"];
+        [conf appendFormat:@"    Identifier \"Screen-%@\"\n", [display output]];
+        [conf appendFormat:@"    Monitor \"%@\"\n", identifier];
+        if ([display currentResolutionString]) {
+            [conf appendFormat:@"    DefaultDepth 24\n"];
+            [conf appendFormat:@"    SubSection \"Display\"\n"];
+            [conf appendFormat:@"        Depth 24\n"];
+            [conf appendFormat:@"        Modes \"%@\"\n", [display currentResolutionString]];
+            [conf appendFormat:@"    EndSubSection\n"];
+        }
+        [conf appendString:@"EndSection\n\n"];
+    }
+
+    [conf appendString:GERSHWIN_END];
+    return conf;
+}
+
+- (void)saveSettings:(id)sender
+{
+    if ([displays count] == 0) {
+        NSRunAlertPanel(@"Save Settings",
+                       @"No displays detected to save.",
+                       @"OK", nil, nil);
+        return;
+    }
+
+    NSString *xorgConfPath = @"/etc/X11/xorg.conf";
+    NSString *newSections = [self generateXorgConfSections];
+    NSString *finalContent = nil;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:xorgConfPath]) {
+        NSString *existing = [NSString stringWithContentsOfFile:xorgConfPath
+                                                      encoding:NSUTF8StringEncoding
+                                                         error:NULL];
+        if (existing) {
+            // Strip any previous Gershwin managed block
+            NSRange beginRange = [existing rangeOfString:GERSHWIN_BEGIN];
+            NSRange endRange = [existing rangeOfString:GERSHWIN_END];
+
+            if (beginRange.location != NSNotFound && endRange.location != NSNotFound) {
+                NSUInteger blockEnd = endRange.location + endRange.length;
+                // Also consume a trailing newline if present
+                if (blockEnd < [existing length] &&
+                    [existing characterAtIndex:blockEnd] == '\n') {
+                    blockEnd++;
+                }
+                NSMutableString *stripped = [NSMutableString stringWithString:existing];
+                [stripped deleteCharactersInRange:NSMakeRange(beginRange.location,
+                                                              blockEnd - beginRange.location)];
+                existing = stripped;
+            }
+
+            // Trim trailing whitespace from existing content, then append our block
+            existing = [existing stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if ([existing length] > 0) {
+                finalContent = [NSString stringWithFormat:@"%@\n\n%@\n", existing, newSections];
+            } else {
+                finalContent = [NSString stringWithFormat:@"%@\n", newSections];
+            }
+        } else {
+            finalContent = [NSString stringWithFormat:@"%@\n", newSections];
+        }
+    } else {
+        finalContent = [NSString stringWithFormat:@"%@\n", newSections];
+    }
+
+    // Write via a temp file and sudo mv for atomic root-owned write
+    NSString *tmpPath = @"/tmp/gershwin-xorg.conf.tmp";
+    NSError *error = nil;
+    BOOL wrote = [finalContent writeToFile:tmpPath
+                                atomically:YES
+                                  encoding:NSUTF8StringEncoding
+                                     error:&error];
+    if (!wrote) {
+        NSRunAlertPanel(@"Save Settings",
+                       @"Failed to write temporary file: %@",
+                       @"OK", nil, nil, [error localizedDescription]);
+        return;
+    }
+
+    // Ensure /etc/X11 directory exists, then move the file into place
+    NSString *cmd = [NSString stringWithFormat:
+        @"sudo -A -E /bin/sh -c 'mkdir -p /etc/X11 && mv %@ %@'",
+        tmpPath, xorgConfPath];
+
+    NSTask *task = [[NSTask alloc] init];
+    NSPipe *errPipe = [NSPipe pipe];
+    [task setLaunchPath:@"/bin/sh"];
+    [task setArguments:@[@"-c", cmd]];
+    [task setStandardError:errPipe];
+
+    @try {
+        [task launch];
+        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+        [task waitUntilExit];
+
+        if ([task terminationStatus] == 0) {
+            NSRunAlertPanel(@"Save Settings",
+                           @"Display settings saved to %@.\n"
+                           @"They will take effect on next X server restart.",
+                           @"OK", nil, nil, xorgConfPath);
+        } else {
+            NSString *errStr = [[[NSString alloc] initWithData:errData
+                                                      encoding:NSUTF8StringEncoding] autorelease];
+            NSRunAlertPanel(@"Save Settings",
+                           @"Failed to save settings: %@",
+                           @"OK", nil, nil, errStr);
+        }
+    } @catch (NSException *exception) {
+        NSRunAlertPanel(@"Save Settings",
+                       @"Failed to save settings: %@",
+                       @"OK", nil, nil, [exception reason]);
+    }
+    [task release];
 }
 
 - (void)autoConfigureDisplays
