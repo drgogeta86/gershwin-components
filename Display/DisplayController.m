@@ -275,11 +275,14 @@ static NSMutableDictionary *activeDialogsByID = nil;
                             break;
                         }
                     }
-                    // Only report mirrored when the user saved a mirror config
-                    BOOL mirrored = positionsMatch && [self hasSavedMirrorConfig];
+                    // Report mirrored when the user saved a mirror config OR
+                    // when the user just toggled mirroring on (checkbox is
+                    // already ON) but hasn't saved yet.
+                    BOOL mirrored = positionsMatch && (wasMirrored || [self hasSavedMirrorConfig]);
                     [mirrorDisplaysCheckbox setState:mirrored ? NSOnState : NSOffState];
 
-                    // Positions overlap but no saved mirror config — auto-extend
+                    // Positions overlap but no saved mirror config and user
+                    // did not explicitly request mirroring — auto-extend
                     if (positionsMatch && !mirrored) {
                         NSDebugLog(@"DisplayController: Displays at same position without saved mirror config — auto-extending");
                         CGFloat xOffset = 0;
