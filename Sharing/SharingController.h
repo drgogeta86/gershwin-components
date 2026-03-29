@@ -68,5 +68,6 @@
 - (void)toggleSFTP:(id)sender;
 - (void)toggleAFP:(id)sender;
 - (void)toggleSMB:(id)sender;
+- (void)hostnameDidChange:(NSNotification *)notification;
 
 @end

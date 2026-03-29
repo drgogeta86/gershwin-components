@@ -87,6 +87,7 @@ static const float METRICS_SPACE_20 = 20.0;  // Between control groups, checkbox
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [hostnameField release];
     [applyHostnameButton release];
     [hostnameStatusLabel release];
@@ -359,7 +360,8 @@ static const float METRICS_SPACE_20 = 20.0;  // Between control groups, checkbox
         }
         
         NSDebugLog(@"SharingController: Hostname changed to %@", newHostname);
-        
+        [applyHostnameButton setEnabled:NO];
+
     } else {
         NSRunAlertPanel(@"Hostname Error", 
                        @"Failed to change hostname. Check system logs for details.", 
@@ -370,6 +372,13 @@ static const float METRICS_SPACE_20 = 20.0;  // Between control groups, checkbox
 - (void)clearHostnameStatus
 {
     [hostnameStatusLabel setStringValue:@""];
+}
+
+- (void)hostnameDidChange:(NSNotification *)notification
+{
+    NSString *newValue = [hostnameField stringValue];
+    BOOL changed = ![newValue isEqualToString:currentHostname];
+    [applyHostnameButton setEnabled:changed];
 }
 
 - (void)toggleSSH:(id)sender
@@ -899,8 +908,14 @@ static const float METRICS_SPACE_20 = 20.0;  // Between control groups, checkbox
     [applyHostnameButton setAction:@selector(applyHostname:)];
     [applyHostnameButton setBezelStyle:NSRoundedBezelStyle];
     [applyHostnameButton setFont:[NSFont systemFontOfSize:13]];  // METRICS_FONT_SYSTEM_REGULAR_13
+    [applyHostnameButton setEnabled:NO];
     [mainView addSubview:applyHostnameButton];
-    
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(hostnameDidChange:)
+                                                 name:NSControlTextDidChangeNotification
+                                               object:hostnameField];
+
     yPos -= METRICS_TEXT_INPUT_FIELD_HEIGHT + METRICS_SPACE_8;  // Move below field + 8px gap
     
     hostnameStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(fieldLeft, yPos, fieldWidth, 17)];
